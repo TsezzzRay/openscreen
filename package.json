@@ -1,0 +1,17 @@
+{
+  "name": "openscreen",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:agent": "tsc -p agent/tsconfig.json",
+    "test:agent": "npm run build:agent && node --test agent/dist/main.test.js",
+    "dev": "npm run build:agent && swift run OpenScreen"
+  },
+  "dependencies": {
+    "openai": "latest"
+  },
+  "devDependencies": {
+    "@types/node": "latest",
+    "typescript": "latest"
+  }
+}
