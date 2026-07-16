@@ -1,0 +1,9 @@
+.DS_Store
+.build/
+.swiftpm/
+.superpowers/
+node_modules/
+agent/dist/
+.env
+.vscode/
+.worktrees/
