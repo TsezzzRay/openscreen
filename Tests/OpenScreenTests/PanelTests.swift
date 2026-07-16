@@ -4,6 +4,17 @@ import XCTest
 
 @MainActor
 final class PanelTests: XCTestCase {
+    func testAgentRequestEncoding() throws {
+        let data = try AgentRequest(text: "What is on screen?", imagePath: "/tmp/window.png").encodedLine()
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: data) as? [String: [String: String]]
+        )
+
+        XCTAssertEqual(object["input"]?["text"], "What is on screen?")
+        XCTAssertEqual(object["input"]?["image"], "/tmp/window.png")
+        XCTAssertEqual(data.last, Character("\n").asciiValue)
+    }
+
     func testPanelStaysAboveOtherApplications() {
         let panel = makePanel()
 
