@@ -2,7 +2,7 @@
 
 OpenScreen is an early-stage, open-source macOS assistant that answers questions about the window you are currently using.
 
-Press `Option + Space` to open a floating panel, ask a question, and OpenScreen captures the active window immediately before sending the request to an OpenAI-compatible vision provider.
+Press `Option + Space` to open a floating panel, ask a question, and OpenScreen captures the active window immediately before sending the request to a Responses API-compatible vision provider.
 
 > OpenScreen is under active development. It can understand the current screen, but it cannot click, type, run commands, or complete multi-step tasks yet. Issues and pull requests are temporarily disabled while the core product is changing.
 
@@ -12,14 +12,14 @@ Press `Option + Space` to open a floating panel, ask a question, and OpenScreen 
 - Movable floating panel that stays above other applications.
 - Active-window capture using ScreenCaptureKit.
 - One in-memory multi-turn conversation per app launch.
-- OpenAI-compatible Chat Completions providers with image input.
+- Streaming Responses API providers with image input.
 
 ## Requirements
 
 - macOS 15 or later.
 - Swift 6.2 toolchain.
 - Node.js and npm.
-- An API key and model from an OpenAI-compatible provider that supports image input.
+- An API key and reasoning-capable model from a Responses API-compatible provider that supports image input and streaming. OpenAI-compatible models and MiniMax M3 are supported.
 
 ## Run locally
 
@@ -34,11 +34,22 @@ Start OpenScreen from the repository root:
 ```bash
 OPENAI_API_KEY="your-api-key" \
 OPENAI_BASE_URL="https://provider.example/v1" \
-OPENAI_MODEL="vision-model" \
+OPENAI_MODEL="responses-vision-model" \
 npm run dev
 ```
 
-`OPENAI_BASE_URL` can be omitted when using the OpenAI API directly.
+`OPENAI_BASE_URL` can be omitted when using the OpenAI API directly. The configured provider and model must support the Responses API, image input, and streaming.
+
+For MiniMax M3, use:
+
+```bash
+OPENAI_API_KEY="your-minimax-api-key" \
+OPENAI_BASE_URL="https://api.minimax.io/v1" \
+OPENAI_MODEL="MiniMax-M3" \
+npm run dev
+```
+
+OpenScreen sends `reasoning.summary: "auto"` to other Responses API providers and `reasoning.effort: "minimal"` to MiniMax M3.
 
 On first launch, macOS will request Screen Recording permission. After granting permission, press `Option + Space`, enter a question, and press `Enter`. Use `Shift + Enter` to insert a newline. Stop OpenScreen with `Control + C` in the launching terminal.
 
@@ -59,7 +70,7 @@ Screenshots are not deleted automatically in the current version. Review your pr
 - Development launch only; there is no signed app bundle or installer.
 - One active request at a time.
 - Conversation history is not persisted across app launches.
-- No streaming responses.
+- No request cancellation or parallel requests.
 - No click, type, scroll, application control, Bash, or tool execution.
 - Limited error recovery and no settings interface.
 
@@ -69,11 +80,11 @@ Screenshots are not deleted automatically in the current version. Review your pr
 macOS app (Swift, AppKit, SwiftUI, ScreenCaptureKit)
     -> JSON Lines over stdin/stdout
 local agent (Node.js, TypeScript, OpenAI SDK)
-    -> Chat Completions with text and a Base64 PNG
-configured OpenAI-compatible provider
+    -> streaming Responses API with text and a Base64 PNG
+configured Responses API-compatible provider
 ```
 
-The macOS process owns the panel, shortcut, capture, and local screenshot files. The Node.js process owns the in-memory text history and model request.
+The macOS process owns the panel, shortcut, capture, and local screenshot files. The Node.js process owns the in-memory text history and model request. Streaming events are correlated by `requestId`; reasoning summaries and final-answer text are rendered separately, while only the final answer is retained as conversation context.
 
 ## Development
 

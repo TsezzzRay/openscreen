@@ -6,9 +6,11 @@ struct AgentRequest: Encodable {
         let image: String
     }
 
+    let requestId: UUID
     let input: Input
 
-    init(text: String, imagePath: String) {
+    init(requestID: UUID = UUID(), text: String, imagePath: String) {
+        requestId = requestID
         input = Input(text: text, image: imagePath)
     }
 
@@ -19,21 +21,58 @@ struct AgentRequest: Encodable {
     }
 }
 
-private struct AgentResponse: Decodable {
-    let output: String
+struct AgentEvent: Decodable, Equatable, Sendable {
+    enum Kind: String, Decodable, Sendable {
+        case started
+        case reasoningDelta = "reasoning_delta"
+        case answerDelta = "answer_delta"
+        case completed
+        case failed
+    }
+
+    let requestId: UUID
+    let type: Kind
+    let delta: String?
+    let message: String?
+
+    init(
+        requestID: UUID = UUID(),
+        type: Kind,
+        delta: String? = nil,
+        message: String? = nil
+    ) {
+        requestId = requestID
+        self.type = type
+        self.delta = delta
+        self.message = message
+    }
 }
 
-enum AgentClientError: Error {
+enum AgentClientError: LocalizedError {
     case requestAlreadyRunning
     case processExited
+    case requestFailed(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .requestAlreadyRunning: "A request is already running."
+        case .processExited: "The agent process exited."
+        case .requestFailed(let message): message
+        }
+    }
 }
 
 actor AgentClient {
+    private struct Pending {
+        let requestID: UUID
+        let continuation: AsyncThrowingStream<AgentEvent, Error>.Continuation
+    }
+
     private let process = Process()
     private let inputPipe = Pipe()
     private let outputPipe = Pipe()
     private var outputBuffer = Data()
-    private var pending: CheckedContinuation<String, Error>?
+    private var pending: Pending?
 
     func start() throws {
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
@@ -43,7 +82,7 @@ actor AgentClient {
         process.standardOutput = outputPipe
         process.standardError = FileHandle.standardError
         process.terminationHandler = { [weak self] _ in
-            Task { await self?.finish(with: .failure(AgentClientError.processExited)) }
+            Task { await self?.finish(throwing: AgentClientError.processExited) }
         }
         outputPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let data = handle.availableData
@@ -52,22 +91,28 @@ actor AgentClient {
         try process.run()
     }
 
-    func send(text: String, imageURL: URL) async throws -> String {
+    func send(text: String, imageURL: URL) throws -> AsyncThrowingStream<AgentEvent, Error> {
         guard pending == nil else {
             throw AgentClientError.requestAlreadyRunning
         }
 
-        return try await withCheckedThrowingContinuation { continuation in
-            pending = continuation
-            do {
-                try inputPipe.fileHandleForWriting.write(
-                    contentsOf: AgentRequest(text: text, imagePath: imageURL.path).encodedLine()
-                )
-            } catch {
-                pending = nil
-                continuation.resume(throwing: error)
-            }
+        let requestID = UUID()
+        let (stream, continuation) = AsyncThrowingStream<AgentEvent, Error>.makeStream()
+        pending = Pending(requestID: requestID, continuation: continuation)
+        do {
+            try inputPipe.fileHandleForWriting.write(
+                contentsOf: AgentRequest(
+                    requestID: requestID,
+                    text: text,
+                    imagePath: imageURL.path
+                ).encodedLine()
+            )
+        } catch {
+            pending = nil
+            continuation.finish(throwing: error)
+            throw error
         }
+        return stream
     }
 
     func stop() {
@@ -80,7 +125,7 @@ actor AgentClient {
 
     private func consume(_ data: Data) {
         guard !data.isEmpty else {
-            finish(with: .failure(AgentClientError.processExited))
+            finish(throwing: AgentClientError.processExited)
             return
         }
 
@@ -89,17 +134,30 @@ actor AgentClient {
             let line = outputBuffer[..<newline]
             outputBuffer.removeSubrange(...newline)
             do {
-                let response = try JSONDecoder().decode(AgentResponse.self, from: line)
-                finish(with: .success(response.output))
+                let event = try JSONDecoder().decode(AgentEvent.self, from: line)
+                guard let pending, event.requestId == pending.requestID else { continue }
+                switch event.type {
+                case .failed:
+                    finish(throwing: AgentClientError.requestFailed(event.message ?? "Model request failed"))
+                case .completed:
+                    pending.continuation.yield(event)
+                    finish()
+                case .started, .reasoningDelta, .answerDelta:
+                    pending.continuation.yield(event)
+                }
             } catch {
-                finish(with: .failure(error))
+                finish(throwing: error)
             }
         }
     }
 
-    private func finish(with result: Result<String, Error>) {
+    private func finish(throwing error: Error? = nil) {
         guard let pending else { return }
         self.pending = nil
-        pending.resume(with: result)
+        if let error {
+            pending.continuation.finish(throwing: error)
+        } else {
+            pending.continuation.finish()
+        }
     }
 }

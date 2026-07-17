@@ -4,6 +4,7 @@ import SwiftUI
 struct ChatTurn: Identifiable {
     let id = UUID()
     let question: String
+    var reasoning: String
     var answer: String
 }
 
@@ -27,13 +28,25 @@ final class ChatViewModel: ObservableObject {
     }
 
     func startTurn(question: String) -> Int {
-        turns.append(ChatTurn(question: question, answer: ""))
+        turns.append(ChatTurn(question: question, reasoning: "", answer: ""))
         return turns.index(before: turns.endIndex)
     }
 
     func finishTurn(at index: Int, answer: String) {
         guard turns.indices.contains(index) else { return }
         turns[index].answer = answer
+    }
+
+    func apply(_ event: AgentEvent, at index: Int) {
+        guard turns.indices.contains(index), let delta = event.delta else { return }
+        switch event.type {
+        case .reasoningDelta:
+            turns[index].reasoning += delta
+        case .answerDelta:
+            turns[index].answer += delta
+        case .started, .completed, .failed:
+            break
+        }
     }
 
     func submit() {
@@ -47,10 +60,10 @@ final class ChatViewModel: ObservableObject {
         Task {
             do {
                 let imageURL = try await windowCapture.captureActiveWindow()
-                finishTurn(
-                    at: turnIndex,
-                    answer: try await agentClient.send(text: text, imageURL: imageURL)
-                )
+                let events = try await agentClient.send(text: text, imageURL: imageURL)
+                for try await event in events {
+                    apply(event, at: turnIndex)
+                }
             } catch {
                 finishTurn(at: turnIndex, answer: "Unable to answer: \(error.localizedDescription)")
             }
@@ -76,6 +89,19 @@ struct ChatView: View {
                                 .padding(.vertical, 12)
                                 .background(Color.accentColor.opacity(0.85))
                                 .clipShape(RoundedRectangle(cornerRadius: 18))
+                        }
+                        if !turn.reasoning.isEmpty {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("Reasoning summary")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                    Text(turn.reasoning)
+                                        .font(.callout)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer(minLength: 48)
+                            }
                         }
                         if !turn.answer.isEmpty {
                             HStack {

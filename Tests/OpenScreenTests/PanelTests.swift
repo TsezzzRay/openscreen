@@ -6,14 +6,32 @@ import XCTest
 @MainActor
 final class PanelTests: XCTestCase {
     func testAgentRequestEncoding() throws {
-        let data = try AgentRequest(text: "What is on screen?", imagePath: "/tmp/window.png").encodedLine()
+        let requestID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
+        let data = try AgentRequest(
+            requestID: requestID,
+            text: "What is on screen?",
+            imagePath: "/tmp/window.png"
+        ).encodedLine()
         let object = try XCTUnwrap(
-            JSONSerialization.jsonObject(with: data) as? [String: [String: String]]
+            JSONSerialization.jsonObject(with: data) as? [String: Any]
+        )
+        let input = try XCTUnwrap(object["input"] as? [String: String])
+
+        XCTAssertEqual(object["requestId"] as? String, requestID.uuidString)
+        XCTAssertEqual(input["text"], "What is on screen?")
+        XCTAssertEqual(input["image"], "/tmp/window.png")
+        XCTAssertEqual(data.last, Character("\n").asciiValue)
+    }
+
+    func testAgentEventDecoding() throws {
+        let data = Data(
+            #"{"requestId":"00000000-0000-0000-0000-000000000001","type":"answer_delta","delta":"Hello"}"#.utf8
         )
 
-        XCTAssertEqual(object["input"]?["text"], "What is on screen?")
-        XCTAssertEqual(object["input"]?["image"], "/tmp/window.png")
-        XCTAssertEqual(data.last, Character("\n").asciiValue)
+        let event = try JSONDecoder().decode(AgentEvent.self, from: data)
+
+        XCTAssertEqual(event.type, .answerDelta)
+        XCTAssertEqual(event.delta, "Hello")
     }
 
     func testChatViewModelRetainsCompletedTurns() {
@@ -29,6 +47,21 @@ final class PanelTests: XCTestCase {
 
         XCTAssertEqual(viewModel.turns.map(\.question), ["First question", "Second question"])
         XCTAssertEqual(viewModel.turns.map(\.answer), ["First answer", "Second answer"])
+    }
+
+    func testChatViewModelAppliesStreamingDeltas() {
+        let viewModel = ChatViewModel(
+            agentClient: AgentClient(),
+            windowCapture: WindowCapture()
+        )
+        let turn = viewModel.startTurn(question: "Question")
+
+        viewModel.apply(.init(type: .reasoningDelta, delta: "Checking "), at: turn)
+        viewModel.apply(.init(type: .reasoningDelta, delta: "screen"), at: turn)
+        viewModel.apply(.init(type: .answerDelta, delta: "The answer"), at: turn)
+
+        XCTAssertEqual(viewModel.turns[turn].reasoning, "Checking screen")
+        XCTAssertEqual(viewModel.turns[turn].answer, "The answer")
     }
 
     func testWindowSelectionSkipsFullscreenToolbar() {
