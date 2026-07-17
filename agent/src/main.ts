@@ -19,6 +19,11 @@ type InputEnvelope = {
   };
 };
 
+export type Turn = {
+  user: string;
+  assistant: string;
+};
+
 export function getModel(env: NodeJS.ProcessEnv = process.env) {
   const model = env.OPENAI_MODEL?.trim();
   if (!model) throw new Error("OPENAI_MODEL is required");
@@ -29,11 +34,16 @@ export function makeRequest(
   model: string,
   text: string,
   imageBase64: string,
+  turns: Turn[] = [],
 ): OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming {
   return {
     model,
     messages: [
       { role: "system", content: instructions },
+      ...turns.flatMap((turn) => [
+        { role: "user" as const, content: turn.user },
+        { role: "assistant" as const, content: turn.assistant },
+      ]),
       {
         role: "user",
         content: [
@@ -54,15 +64,17 @@ export function makeRequest(
 async function run() {
   const client = new OpenAI();
   const model = getModel();
+  const turns: Turn[] = [];
   const lines = createInterface({ input: process.stdin, crlfDelay: Infinity });
 
   for await (const line of lines) {
     const { input } = JSON.parse(line) as InputEnvelope;
     const imageBase64 = (await readFile(input.image)).toString("base64");
     const response = await client.chat.completions.create(
-      makeRequest(model, input.text, imageBase64),
+      makeRequest(model, input.text, imageBase64, turns),
     );
     const output = response.choices[0]?.message.content ?? "";
+    turns.push({ user: input.text, assistant: output });
     process.stdout.write(`${JSON.stringify({ output })}\n`);
   }
 }

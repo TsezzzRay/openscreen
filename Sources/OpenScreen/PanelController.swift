@@ -48,7 +48,7 @@ final class PanelController {
         let hostingView = NSHostingView(rootView: ChatView(viewModel: viewModel))
         self.hostingView = hostingView
         panel = makePanel(contentView: hostingView)
-        redrawObservation = Publishers.CombineLatest(viewModel.$question, viewModel.$answer)
+        redrawObservation = viewModel.$turns
             .dropFirst()
             .sink { [weak hostingView] _ in
                 DispatchQueue.main.async {

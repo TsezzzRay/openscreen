@@ -11,7 +11,7 @@ Press `Option + Space` to open a floating panel, ask a question, and OpenScreen 
 - Global `Option + Space` shortcut.
 - Movable floating panel that stays above other applications.
 - Active-window capture using ScreenCaptureKit.
-- Single-turn questions about the captured window.
+- One in-memory multi-turn conversation per app launch.
 - OpenAI-compatible Chat Completions providers with image input.
 
 ## Requirements
@@ -57,8 +57,8 @@ Screenshots are not deleted automatically in the current version. Review your pr
 ## Current limitations
 
 - Development launch only; there is no signed app bundle or installer.
-- One question and one answer at a time.
-- No conversation history or persisted chat text.
+- One active request at a time.
+- Conversation history is not persisted across app launches.
 - No streaming responses.
 - No click, type, scroll, application control, Bash, or tool execution.
 - Limited error recovery and no settings interface.
@@ -73,7 +73,7 @@ local agent (Node.js, TypeScript, OpenAI SDK)
 configured OpenAI-compatible provider
 ```
 
-The macOS process owns the panel, shortcut, capture, and local screenshot files. The Node.js process owns the model request.
+The macOS process owns the panel, shortcut, capture, and local screenshot files. The Node.js process owns the in-memory text history and model request.
 
 ## Development
 

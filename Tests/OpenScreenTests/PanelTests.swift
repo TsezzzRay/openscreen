@@ -16,6 +16,21 @@ final class PanelTests: XCTestCase {
         XCTAssertEqual(data.last, Character("\n").asciiValue)
     }
 
+    func testChatViewModelRetainsCompletedTurns() {
+        let viewModel = ChatViewModel(
+            agentClient: AgentClient(),
+            windowCapture: WindowCapture()
+        )
+
+        let first = viewModel.startTurn(question: "First question")
+        viewModel.finishTurn(at: first, answer: "First answer")
+        let second = viewModel.startTurn(question: "Second question")
+        viewModel.finishTurn(at: second, answer: "Second answer")
+
+        XCTAssertEqual(viewModel.turns.map(\.question), ["First question", "Second question"])
+        XCTAssertEqual(viewModel.turns.map(\.answer), ["First answer", "Second answer"])
+    }
+
     func testWindowSelectionSkipsFullscreenToolbar() {
         let processIdentifier: pid_t = 42
         let windows: [[String: Any]] = [

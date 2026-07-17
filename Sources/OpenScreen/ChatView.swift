@@ -1,11 +1,16 @@
 import AppKit
 import SwiftUI
 
+struct ChatTurn: Identifiable {
+    let id = UUID()
+    let question: String
+    var answer: String
+}
+
 @MainActor
 final class ChatViewModel: ObservableObject {
     @Published var draft = ""
-    @Published private(set) var question = ""
-    @Published private(set) var answer = ""
+    @Published private(set) var turns: [ChatTurn] = []
     @Published private(set) var isSending = false
     @Published private(set) var focusRequest = 0
 
@@ -21,21 +26,33 @@ final class ChatViewModel: ObservableObject {
         focusRequest += 1
     }
 
+    func startTurn(question: String) -> Int {
+        turns.append(ChatTurn(question: question, answer: ""))
+        return turns.index(before: turns.endIndex)
+    }
+
+    func finishTurn(at index: Int, answer: String) {
+        guard turns.indices.contains(index) else { return }
+        turns[index].answer = answer
+    }
+
     func submit() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !isSending else { return }
 
-        question = text
-        answer = ""
+        let turnIndex = startTurn(question: text)
         draft = ""
         isSending = true
 
         Task {
             do {
                 let imageURL = try await windowCapture.captureActiveWindow()
-                answer = try await agentClient.send(text: text, imageURL: imageURL)
+                finishTurn(
+                    at: turnIndex,
+                    answer: try await agentClient.send(text: text, imageURL: imageURL)
+                )
             } catch {
-                answer = "Unable to answer: \(error.localizedDescription)"
+                finishTurn(at: turnIndex, answer: "Unable to answer: \(error.localizedDescription)")
             }
             isSending = false
             requestInputFocus()
@@ -50,27 +67,26 @@ struct ChatView: View {
         VStack(spacing: 18) {
             ScrollView {
                 VStack(spacing: 16) {
-                    if !viewModel.question.isEmpty {
+                    ForEach(viewModel.turns) { turn in
                         HStack {
                             Spacer(minLength: 48)
-                            Text(viewModel.question)
+                            Text(turn.question)
                                 .foregroundStyle(.white)
                                 .padding(.horizontal, 16)
                                 .padding(.vertical, 12)
                                 .background(Color.accentColor.opacity(0.85))
                                 .clipShape(RoundedRectangle(cornerRadius: 18))
                         }
-                    }
-
-                    if !viewModel.answer.isEmpty {
-                        HStack {
-                            Text(viewModel.answer)
-                                .foregroundStyle(.white)
-                                .padding(.horizontal, 16)
-                                .padding(.vertical, 12)
-                                .background(Color.black.opacity(0.38))
-                                .clipShape(RoundedRectangle(cornerRadius: 18))
-                            Spacer(minLength: 48)
+                        if !turn.answer.isEmpty {
+                            HStack {
+                                Text(turn.answer)
+                                    .foregroundStyle(.white)
+                                    .padding(.horizontal, 16)
+                                    .padding(.vertical, 12)
+                                    .background(Color.black.opacity(0.38))
+                                    .clipShape(RoundedRectangle(cornerRadius: 18))
+                                Spacer(minLength: 48)
+                            }
                         }
                     }
                 }
