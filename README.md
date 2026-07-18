@@ -12,6 +12,7 @@ Press `Option + Space` to open a floating panel, ask a question, and OpenScreen 
 - Movable floating panel that stays above other applications.
 - Active-window capture using ScreenCaptureKit.
 - One in-memory multi-turn conversation per app launch.
+- Automatic text-context compaction at 90% of the model context window.
 - Streaming Responses API providers with image input.
 
 ## Requirements
@@ -19,7 +20,7 @@ Press `Option + Space` to open a floating panel, ask a question, and OpenScreen 
 - macOS 15 or later.
 - Swift 6.2 toolchain.
 - Node.js and npm.
-- An API key and reasoning-capable model from a Responses API-compatible provider that supports image input and streaming. OpenAI-compatible models and MiniMax M3 are supported.
+- An API key and reasoning-capable model from a Responses API-compatible provider that supports image input, streaming, and `/responses/input_tokens`. OpenAI-compatible models and MiniMax M3 are supported.
 
 ## Run locally
 
@@ -84,7 +85,7 @@ local agent (Node.js, TypeScript, OpenAI SDK)
 configured Responses API-compatible provider
 ```
 
-The macOS process owns the panel, shortcut, capture, and local screenshot files. The Node.js process owns the in-memory text history and model request. Streaming events are correlated by `requestId`; reasoning summaries and final-answer text are rendered separately, while only the final answer is retained as conversation context.
+The macOS process owns the panel, shortcut, capture, and local screenshot files. The Node.js process owns the in-memory text history, context compaction, and model request. Streaming events are correlated by `requestId`; reasoning summaries and final-answer text are rendered separately, while only the final answer is retained as conversation context. The agent compacts at 244,800 of 272,000 tokens, keeps about 20,000 tokens of recent complete turns, and retains the full raw turn history in memory.
 
 ## Development
 
