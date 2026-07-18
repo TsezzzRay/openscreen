@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "build:agent": "tsc -p agent/tsconfig.json",
-    "test:agent": "npm run build:agent && node --test agent/dist/main.test.js",
+    "test:agent": "npm run build:agent && node --test agent/dist/*.test.js",
     "dev": "npm run build:agent && swift run OpenScreen"
   },
   "dependencies": {
