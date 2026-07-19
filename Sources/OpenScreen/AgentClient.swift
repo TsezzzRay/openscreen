@@ -1,17 +1,70 @@
 import Foundation
 
 struct AgentRequest: Encodable {
+    enum Kind: String, Encodable {
+        case listSessions = "list_sessions"
+        case createSession = "create_session"
+        case loadSession = "load_session"
+        case renameSession = "rename_session"
+        case chat
+    }
+
     struct Input: Encodable {
         let text: String
         let image: String
     }
 
     let requestId: UUID
-    let input: Input
+    let type: Kind
+    let sessionId: UUID?
+    let input: Input?
+    let title: String?
 
-    init(requestID: UUID = UUID(), text: String, imagePath: String) {
-        requestId = requestID
-        input = Input(text: text, image: imagePath)
+    static func listSessions(requestID: UUID = UUID()) -> Self {
+        Self(requestId: requestID, type: .listSessions, sessionId: nil, input: nil, title: nil)
+    }
+
+    static func createSession(requestID: UUID = UUID()) -> Self {
+        Self(requestId: requestID, type: .createSession, sessionId: nil, input: nil, title: nil)
+    }
+
+    static func loadSession(requestID: UUID = UUID(), sessionID: UUID) -> Self {
+        Self(
+            requestId: requestID,
+            type: .loadSession,
+            sessionId: sessionID,
+            input: nil,
+            title: nil
+        )
+    }
+
+    static func renameSession(
+        requestID: UUID = UUID(),
+        sessionID: UUID,
+        title: String
+    ) -> Self {
+        Self(
+            requestId: requestID,
+            type: .renameSession,
+            sessionId: sessionID,
+            input: nil,
+            title: title
+        )
+    }
+
+    static func chat(
+        requestID: UUID = UUID(),
+        sessionID: UUID,
+        text: String,
+        imagePath: String
+    ) -> Self {
+        Self(
+            requestId: requestID,
+            type: .chat,
+            sessionId: sessionID,
+            input: Input(text: text, image: imagePath),
+            title: nil
+        )
     }
 
     func encodedLine() throws -> Data {
@@ -21,11 +74,35 @@ struct AgentRequest: Encodable {
     }
 }
 
+struct ChatSessionSummary: Decodable, Identifiable, Equatable, Sendable {
+    let id: UUID
+    let title: String
+    let createdAt: String
+    let updatedAt: String
+}
+
+struct StoredChatTurn: Decodable, Equatable, Sendable {
+    let id: UUID
+    let user: String
+    let assistant: String
+    let reasoning: String?
+}
+
+struct ChatSessionSnapshot: Decodable, Identifiable, Equatable, Sendable {
+    let id: UUID
+    let title: String
+    let createdAt: String
+    let updatedAt: String
+    let turns: [StoredChatTurn]
+}
+
 struct AgentEvent: Decodable, Equatable, Sendable {
     enum Kind: String, Decodable, Sendable {
         case started
         case reasoningDelta = "reasoning_delta"
         case answerDelta = "answer_delta"
+        case sessions
+        case session
         case completed
         case failed
     }
@@ -34,17 +111,23 @@ struct AgentEvent: Decodable, Equatable, Sendable {
     let type: Kind
     let delta: String?
     let message: String?
+    let sessions: [ChatSessionSummary]?
+    let session: ChatSessionSnapshot?
 
     init(
         requestID: UUID = UUID(),
         type: Kind,
         delta: String? = nil,
-        message: String? = nil
+        message: String? = nil,
+        sessions: [ChatSessionSummary]? = nil,
+        session: ChatSessionSnapshot? = nil
     ) {
         requestId = requestID
         self.type = type
         self.delta = delta
         self.message = message
+        self.sessions = sessions
+        self.session = session
     }
 }
 
@@ -52,12 +135,14 @@ enum AgentClientError: LocalizedError {
     case requestAlreadyRunning
     case processExited
     case requestFailed(String)
+    case invalidResponse
 
     var errorDescription: String? {
         switch self {
         case .requestAlreadyRunning: "A request is already running."
         case .processExited: "The agent process exited."
         case .requestFailed(let message): message
+        case .invalidResponse: "The agent returned an invalid response."
         }
     }
 }
@@ -91,22 +176,53 @@ actor AgentClient {
         try process.run()
     }
 
-    func send(text: String, imageURL: URL) throws -> AsyncThrowingStream<AgentEvent, Error> {
+    func listSessions() async throws -> [ChatSessionSummary] {
+        var sessions: [ChatSessionSummary]?
+        for try await event in try request(.listSessions()) {
+            if event.type == .sessions { sessions = event.sessions }
+        }
+        guard let sessions else { throw AgentClientError.invalidResponse }
+        return sessions
+    }
+
+    func createSession() async throws -> ChatSessionSnapshot {
+        try await sessionResponse(for: .createSession())
+    }
+
+    func loadSession(id: UUID) async throws -> ChatSessionSnapshot {
+        try await sessionResponse(for: .loadSession(sessionID: id))
+    }
+
+    func renameSession(id: UUID, title: String) async throws -> ChatSessionSnapshot {
+        try await sessionResponse(for: .renameSession(sessionID: id, title: title))
+    }
+
+    func send(
+        sessionID: UUID,
+        text: String,
+        imageURL: URL
+    ) throws -> AsyncThrowingStream<AgentEvent, Error> {
+        try request(.chat(sessionID: sessionID, text: text, imagePath: imageURL.path))
+    }
+
+    private func sessionResponse(for request: AgentRequest) async throws -> ChatSessionSnapshot {
+        var session: ChatSessionSnapshot?
+        for try await event in try self.request(request) {
+            if event.type == .session { session = event.session }
+        }
+        guard let session else { throw AgentClientError.invalidResponse }
+        return session
+    }
+
+    private func request(_ request: AgentRequest) throws -> AsyncThrowingStream<AgentEvent, Error> {
         guard pending == nil else {
             throw AgentClientError.requestAlreadyRunning
         }
 
-        let requestID = UUID()
         let (stream, continuation) = AsyncThrowingStream<AgentEvent, Error>.makeStream()
-        pending = Pending(requestID: requestID, continuation: continuation)
+        pending = Pending(requestID: request.requestId, continuation: continuation)
         do {
-            try inputPipe.fileHandleForWriting.write(
-                contentsOf: AgentRequest(
-                    requestID: requestID,
-                    text: text,
-                    imagePath: imageURL.path
-                ).encodedLine()
-            )
+            try inputPipe.fileHandleForWriting.write(contentsOf: request.encodedLine())
         } catch {
             pending = nil
             continuation.finish(throwing: error)
@@ -142,7 +258,7 @@ actor AgentClient {
                 case .completed:
                     pending.continuation.yield(event)
                     finish()
-                case .started, .reasoningDelta, .answerDelta:
+                case .started, .reasoningDelta, .answerDelta, .sessions, .session:
                     pending.continuation.yield(event)
                 }
             } catch {

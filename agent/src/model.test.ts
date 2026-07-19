@@ -265,6 +265,7 @@ test("completes only after a successful stream is exhausted", async () => {
   const events: object[] = [];
   let exhausted = false;
   async function* stream(): AsyncGenerator<import("./model.js").ModelEvent> {
+    yield { type: "response.reasoning_summary_text.delta", delta: "Checked screen" };
     yield { type: "response.output_text.delta", delta: "Final answer" };
     yield {
       type: "response.completed",
@@ -287,6 +288,7 @@ test("completes only after a successful stream is exhausted", async () => {
   assert.equal(exhausted, true);
   assert.deepEqual(output, {
     output: "Final answer",
+    reasoning: "Checked screen",
     outputItems: [{
       id: "message-1",
       type: "message",
@@ -296,7 +298,10 @@ test("completes only after a successful stream is exhausted", async () => {
     }],
     totalTokens: 42,
   });
-  assert.deepEqual(events.at(-1), { requestId: "request-1", type: "completed" });
+  assert.deepEqual(events, [
+    { requestId: "request-1", type: "reasoning_delta", delta: "Checked screen" },
+    { requestId: "request-1", type: "answer_delta", delta: "Final answer" },
+  ]);
 });
 
 test("fails a stream that ends without a terminal event", async () => {

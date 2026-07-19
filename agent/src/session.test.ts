@@ -1,11 +1,79 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import {
   compactIfNeeded,
   compactSession,
+  createSession,
+  listSessions,
+  loadSession,
+  renameSession,
+  saveSession,
   type SessionState,
 } from "./session.js";
+
+test("persists and reloads complete session state", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "openscreen-sessions-"));
+  t.after(() => rm(directory, { force: true, recursive: true }));
+  const session = await createSession(directory);
+  session.turns.push({
+    id: "turn-1",
+    user: "Question",
+    assistant: "Answer",
+    reasoning: "Checked the screen",
+    screenshotPath: "/tmp/screen.png",
+  });
+  session.summary = "Earlier facts";
+  session.firstKeptTurnIndex = 1;
+
+  await saveSession(directory, session);
+
+  assert.deepEqual(await loadSession(directory, session.id), session);
+});
+
+test("lists newest sessions first and ignores corrupt files", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "openscreen-sessions-"));
+  t.after(() => rm(directory, { force: true, recursive: true }));
+  const older = await createSession(directory);
+  const newer = await createSession(directory);
+  older.updatedAt = "2026-07-18T00:00:00.000Z";
+  newer.updatedAt = "2026-07-19T00:00:00.000Z";
+  await saveSession(directory, older);
+  await saveSession(directory, newer);
+  await writeFile(join(directory, "corrupt.json"), "not json");
+  await writeFile(join(directory, "invalid.json"), JSON.stringify({
+    version: 1,
+    id: "00000000-0000-4000-8000-000000000001",
+    title: "Invalid",
+    createdAt: "2026-07-19T00:00:00.000Z",
+    updatedAt: "2026-07-20T00:00:00.000Z",
+    turns: [{}],
+    firstKeptTurnIndex: 2,
+  }));
+
+  assert.deepEqual(
+    (await listSessions(directory)).map(({ id }) => id),
+    [newer.id, older.id],
+  );
+});
+
+test("renames a session after trimming and rejects an empty title", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "openscreen-sessions-"));
+  t.after(() => rm(directory, { force: true, recursive: true }));
+  const session = await createSession(directory);
+
+  const renamed = await renameSession(directory, session.id, "  Project notes  ");
+
+  assert.equal(renamed.title, "Project notes");
+  assert.equal((await loadSession(directory, session.id)).title, "Project notes");
+  await assert.rejects(
+    renameSession(directory, session.id, "   "),
+    /title is required/i,
+  );
+});
 
 test("compacts older turns while retaining 20K recent tokens", async () => {
   const session: SessionState = {

@@ -7,8 +7,10 @@ import XCTest
 final class PanelTests: XCTestCase {
     func testAgentRequestEncoding() throws {
         let requestID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
-        let data = try AgentRequest(
+        let sessionID = UUID(uuidString: "00000000-0000-0000-0000-000000000002")!
+        let data = try AgentRequest.chat(
             requestID: requestID,
+            sessionID: sessionID,
             text: "What is on screen?",
             imagePath: "/tmp/window.png"
         ).encodedLine()
@@ -18,9 +20,28 @@ final class PanelTests: XCTestCase {
         let input = try XCTUnwrap(object["input"] as? [String: String])
 
         XCTAssertEqual(object["requestId"] as? String, requestID.uuidString)
+        XCTAssertEqual(object["type"] as? String, "chat")
+        XCTAssertEqual(object["sessionId"] as? String, sessionID.uuidString)
         XCTAssertEqual(input["text"], "What is on screen?")
         XCTAssertEqual(input["image"], "/tmp/window.png")
         XCTAssertEqual(data.last, Character("\n").asciiValue)
+    }
+
+    func testRenameSessionRequestEncoding() throws {
+        let requestID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
+        let sessionID = UUID(uuidString: "00000000-0000-0000-0000-000000000002")!
+        let data = try AgentRequest.renameSession(
+            requestID: requestID,
+            sessionID: sessionID,
+            title: "Project notes"
+        ).encodedLine()
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: data) as? [String: Any]
+        )
+
+        XCTAssertEqual(object["type"] as? String, "rename_session")
+        XCTAssertEqual(object["sessionId"] as? String, sessionID.uuidString)
+        XCTAssertEqual(object["title"] as? String, "Project notes")
     }
 
     func testAgentEventDecoding() throws {
@@ -32,6 +53,73 @@ final class PanelTests: XCTestCase {
 
         XCTAssertEqual(event.type, .answerDelta)
         XCTAssertEqual(event.delta, "Hello")
+    }
+
+    func testSessionSnapshotEventDecoding() throws {
+        let data = Data(
+            #"{"requestId":"00000000-0000-0000-0000-000000000001","type":"session","session":{"id":"00000000-0000-0000-0000-000000000002","title":"Project notes","createdAt":"2026-07-19T00:00:00.000Z","updatedAt":"2026-07-19T01:00:00.000Z","turns":[{"id":"00000000-0000-0000-0000-000000000003","user":"Question","assistant":"Answer","reasoning":"Checked screen"}]}}"#.utf8
+        )
+
+        let event = try JSONDecoder().decode(AgentEvent.self, from: data)
+
+        XCTAssertEqual(event.type, .session)
+        XCTAssertEqual(event.session?.title, "Project notes")
+        XCTAssertEqual(event.session?.turns.first?.assistant, "Answer")
+    }
+
+    func testChatViewModelRestoresSessionSnapshot() {
+        let viewModel = ChatViewModel(
+            agentClient: AgentClient(),
+            windowCapture: WindowCapture()
+        )
+        let sessionID = UUID(uuidString: "00000000-0000-0000-0000-000000000002")!
+        let turnID = UUID(uuidString: "00000000-0000-0000-0000-000000000003")!
+
+        viewModel.apply(
+            ChatSessionSnapshot(
+                id: sessionID,
+                title: "Project notes",
+                createdAt: "2026-07-19T00:00:00.000Z",
+                updatedAt: "2026-07-19T01:00:00.000Z",
+                turns: [
+                    .init(
+                        id: turnID,
+                        user: "Question",
+                        assistant: "Answer",
+                        reasoning: "Checked screen"
+                    )
+                ]
+            )
+        )
+
+        XCTAssertEqual(viewModel.currentSessionID, sessionID)
+        XCTAssertEqual(viewModel.currentTitle, "Project notes")
+        XCTAssertEqual(viewModel.turns.first?.id, turnID)
+        XCTAssertEqual(viewModel.turns.first?.reasoning, "Checked screen")
+    }
+
+    func testPreferredSessionUsesSavedIDThenFallsBackToNewest() {
+        let first = ChatSessionSummary(
+            id: UUID(uuidString: "00000000-0000-0000-0000-000000000001")!,
+            title: "First",
+            createdAt: "2026-07-18T00:00:00.000Z",
+            updatedAt: "2026-07-18T00:00:00.000Z"
+        )
+        let newest = ChatSessionSummary(
+            id: UUID(uuidString: "00000000-0000-0000-0000-000000000002")!,
+            title: "Newest",
+            createdAt: "2026-07-19T00:00:00.000Z",
+            updatedAt: "2026-07-19T00:00:00.000Z"
+        )
+
+        XCTAssertEqual(
+            ChatViewModel.sessionToRestore(from: [newest, first], preferredID: first.id),
+            first.id
+        )
+        XCTAssertEqual(
+            ChatViewModel.sessionToRestore(from: [newest, first], preferredID: UUID()),
+            newest.id
+        )
     }
 
     func testChatViewModelRetainsCompletedTurns() {

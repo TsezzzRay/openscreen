@@ -148,15 +148,23 @@ export async function relayStream(
   send: (event: OutputEnvelope) => void,
 ): Promise<{
   output: string;
+  reasoning: string;
   outputItems?: ConversationOutputItem[];
   totalTokens?: number;
 } | null> {
   let output = "";
+  let reasoning = "";
   let outputItems: ConversationOutputItem[] | undefined;
   let completed = false;
   let totalTokens: number | undefined;
 
   for await (const modelEvent of stream) {
+    if (
+      modelEvent.type === "response.reasoning_summary_text.delta" ||
+      modelEvent.type === "response.reasoning_text.delta"
+    ) {
+      reasoning += modelEvent.delta ?? "";
+    }
     if (
       modelEvent.type === "response.output_text.delta" ||
       modelEvent.type === "response.refusal.delta"
@@ -187,8 +195,7 @@ export async function relayStream(
     return null;
   }
 
-  send({ requestId, type: "completed" });
-  return { output, outputItems, totalTokens };
+  return { output, reasoning, outputItems, totalTokens };
 }
 
 export async function countTurns(

@@ -96,6 +96,7 @@ test("rebuilds the agent process context after turn-end compaction", async (t) =
   assert(address && typeof address !== "string");
   const directory = await mkdtemp(join(tmpdir(), "openscreen-test-"));
   t.after(() => rm(directory, { force: true, recursive: true }));
+  const sessionsDirectory = join(directory, "sessions");
 
   const agent = spawn(process.execPath, ["agent/dist/main.js"], {
     cwd: process.cwd(),
@@ -109,26 +110,49 @@ test("rebuilds the agent process context after turn-end compaction", async (t) =
       OPENSCREEN_KEEP_RECENT_TOKENS: "20000",
       OPENSCREEN_MAX_OUTPUT_TOKENS: "40000",
       OPENSCREEN_SUMMARY_MAX_OUTPUT_TOKENS: "4096",
+      OPENSCREEN_DATA_DIR: sessionsDirectory,
     },
     stdio: ["pipe", "pipe", "inherit"],
   });
   t.after(() => agent.kill());
 
-  const completions = new Map<string, () => void>();
+  const requests = new Map<string, {
+    events: any[];
+    resolve: (events: any[]) => void;
+    reject: (error: Error) => void;
+  }>();
   createInterface({ input: agent.stdout }).on("line", (line) => {
     const event = JSON.parse(line) as { requestId: string; type: string; message?: string };
-    if (event.type === "failed") throw new Error(event.message);
-    if (event.type === "completed") completions.get(event.requestId)?.();
+    const request = requests.get(event.requestId);
+    if (!request) return;
+    request.events.push(event);
+    if (event.type === "failed") request.reject(new Error(event.message));
+    if (event.type === "completed") request.resolve(request.events);
   });
 
   let requestNumber = 0;
-  async function sendTurn(text: string) {
+  async function request(payload: Record<string, unknown>) {
     const requestId = `request-${++requestNumber}`;
+    const completed = new Promise<any[]>((resolve, reject) => {
+      requests.set(requestId, { events: [], resolve, reject });
+    });
+    agent.stdin.write(`${JSON.stringify({ requestId, ...payload })}\n`);
+    return completed;
+  }
+
+  const created = await request({ type: "create_session" });
+  const sessionId = created.find((event) => event.type === "session").session.id;
+
+  async function sendTurn(text: string, targetSessionId = sessionId) {
+    const turnNumber = requestNumber + 1;
+    const requestId = `turn-${turnNumber}`;
     const image = join(directory, `${requestId}.png`);
-    await writeFile(image, `image-${requestNumber}`);
-    const completed = new Promise<void>((resolve) => completions.set(requestId, resolve));
-    agent.stdin.write(`${JSON.stringify({ requestId, input: { text, image } })}\n`);
-    await completed;
+    await writeFile(image, `image-${turnNumber}`);
+    await request({
+      type: "chat",
+      sessionId: targetSessionId,
+      input: { text, image },
+    });
   }
 
   await sendTurn("old turn one");
@@ -136,6 +160,10 @@ test("rebuilds the agent process context after turn-end compaction", async (t) =
   await sendTurn("kept turn three");
   await sendTurn("kept turn four");
   await sendTurn("next request");
+  const otherCreated = await request({ type: "create_session" });
+  const otherSessionId = otherCreated.find((event) => event.type === "session").session.id;
+  await sendTurn("other session request", otherSessionId);
+  await sendTurn("return to first session");
 
   const finalRequest = modelRequests.at(-1) as { input: unknown[] };
   const context = JSON.stringify(finalRequest.input);
@@ -147,22 +175,80 @@ test("rebuilds the agent process context after turn-end compaction", async (t) =
   assert.doesNotMatch(context, /old turn two/);
   assert.doesNotMatch(
     context,
-    new RegExp(Buffer.from("image-1").toString("base64")),
+    new RegExp(Buffer.from("image-2").toString("base64")),
   );
   assert.doesNotMatch(
     context,
-    new RegExp(Buffer.from("image-2").toString("base64")),
+    new RegExp(Buffer.from("image-3").toString("base64")),
   );
-  assert.match(context, new RegExp(Buffer.from("image-3").toString("base64")));
   assert.match(context, new RegExp(Buffer.from("image-4").toString("base64")));
+  assert.match(context, new RegExp(Buffer.from("image-5").toString("base64")));
+  assert.doesNotMatch(context, /other session request/);
+  assert.doesNotMatch(JSON.stringify(modelRequests.at(-2)), /old turn one/);
   assert.match(
     JSON.stringify(summaryRequests[0]?.input),
-    new RegExp(Buffer.from("image-1").toString("base64")),
+    new RegExp(Buffer.from("image-2").toString("base64")),
   );
   assert.doesNotMatch(JSON.stringify(summaryRequests[0]?.input), /reasoning-1/);
   assert.equal(summaryRequests.length, 1);
-  assert.equal(modelRequests.length, 5);
+  assert.equal(modelRequests.length, 7);
   assert.match(JSON.stringify(modelRequests[1]), /reasoning-1/);
+
+  agent.kill();
+  await once(agent, "exit");
+  const restartedAgent = spawn(process.execPath, ["agent/dist/main.js"], {
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      OPENAI_API_KEY: "test",
+      OPENAI_BASE_URL: `http://127.0.0.1:${address.port}/v1`,
+      OPENAI_MODEL: "MiniMax-M3",
+      OPENSCREEN_DATA_DIR: sessionsDirectory,
+    },
+    stdio: ["pipe", "pipe", "inherit"],
+  });
+  t.after(() => restartedAgent.kill());
+  const restartedRequests = new Map<string, {
+    events: any[];
+    resolve: (events: any[]) => void;
+    reject: (error: Error) => void;
+  }>();
+  createInterface({ input: restartedAgent.stdout }).on("line", (line) => {
+    const event = JSON.parse(line) as { requestId: string; type: string; message?: string };
+    const pendingRequest = restartedRequests.get(event.requestId);
+    if (!pendingRequest) return;
+    pendingRequest.events.push(event);
+    if (event.type === "failed") pendingRequest.reject(new Error(event.message));
+    if (event.type === "completed") pendingRequest.resolve(pendingRequest.events);
+  });
+  let restartedRequestNumber = 0;
+  async function restartedRequest(payload: Record<string, unknown>) {
+    const requestId = `restarted-${++restartedRequestNumber}`;
+    const completed = new Promise<any[]>((resolve, reject) => {
+      restartedRequests.set(requestId, { events: [], resolve, reject });
+    });
+    restartedAgent.stdin.write(`${JSON.stringify({ requestId, ...payload })}\n`);
+    return completed;
+  }
+
+  const beforeRename = await restartedRequest({ type: "load_session", sessionId });
+  assert.equal(
+    beforeRename.find((event) => event.type === "session").session.title,
+    "old turn one",
+  );
+  const renamed = await restartedRequest({
+    type: "rename_session",
+    sessionId,
+    title: "  Work notes  ",
+  });
+  assert.equal(
+    renamed.find((event) => event.type === "session").session.title,
+    "Work notes",
+  );
+  const listed = await restartedRequest({ type: "list_sessions" });
+  assert.equal(listed.find((event) => event.type === "sessions").sessions.length, 2);
+  const loaded = await restartedRequest({ type: "load_session", sessionId });
+  assert.equal(loaded.find((event) => event.type === "session").session.turns.length, 6);
 });
 
 async function readJSON(request: IncomingMessage): Promise<any> {

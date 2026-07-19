@@ -16,6 +16,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     windowCapture: WindowCapture()
                 )
                 panelController = PanelController(viewModel: viewModel)
+                await viewModel.restoreSessions()
             } catch {
                 FileHandle.standardError.write(Data("OpenScreen: \(error)\n".utf8))
             }
