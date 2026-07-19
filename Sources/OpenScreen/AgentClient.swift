@@ -81,11 +81,20 @@ struct ChatSessionSummary: Decodable, Identifiable, Equatable, Sendable {
     let updatedAt: String
 }
 
+enum ChatTurnStatus: String, Decodable, Equatable, Sendable {
+    case completed
+    case failed
+    case interrupted
+    case streaming
+}
+
 struct StoredChatTurn: Decodable, Equatable, Sendable {
     let id: UUID
     let user: String
     let assistant: String
     let reasoning: String?
+    let status: ChatTurnStatus
+    let error: String?
 }
 
 struct ChatSessionSnapshot: Decodable, Identifiable, Equatable, Sendable {
@@ -108,6 +117,7 @@ struct AgentEvent: Decodable, Equatable, Sendable {
     }
 
     let requestId: UUID
+    let sessionId: UUID?
     let type: Kind
     let delta: String?
     let message: String?
@@ -116,6 +126,7 @@ struct AgentEvent: Decodable, Equatable, Sendable {
 
     init(
         requestID: UUID = UUID(),
+        sessionID: UUID? = nil,
         type: Kind,
         delta: String? = nil,
         message: String? = nil,
@@ -123,6 +134,7 @@ struct AgentEvent: Decodable, Equatable, Sendable {
         session: ChatSessionSnapshot? = nil
     ) {
         requestId = requestID
+        sessionId = sessionID
         self.type = type
         self.delta = delta
         self.message = message
@@ -149,7 +161,6 @@ enum AgentClientError: LocalizedError {
 
 actor AgentClient {
     private struct Pending {
-        let requestID: UUID
         let continuation: AsyncThrowingStream<AgentEvent, Error>.Continuation
     }
 
@@ -157,7 +168,7 @@ actor AgentClient {
     private let inputPipe = Pipe()
     private let outputPipe = Pipe()
     private var outputBuffer = Data()
-    private var pending: Pending?
+    private var pending: [UUID: Pending] = [:]
 
     func start() throws {
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
@@ -167,7 +178,7 @@ actor AgentClient {
         process.standardOutput = outputPipe
         process.standardError = FileHandle.standardError
         process.terminationHandler = { [weak self] _ in
-            Task { await self?.finish(throwing: AgentClientError.processExited) }
+            Task { await self?.finishAll(throwing: AgentClientError.processExited) }
         }
         outputPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let data = handle.availableData
@@ -198,11 +209,17 @@ actor AgentClient {
     }
 
     func send(
+        requestID: UUID = UUID(),
         sessionID: UUID,
         text: String,
         imageURL: URL
     ) throws -> AsyncThrowingStream<AgentEvent, Error> {
-        try request(.chat(sessionID: sessionID, text: text, imagePath: imageURL.path))
+        try request(.chat(
+            requestID: requestID,
+            sessionID: sessionID,
+            text: text,
+            imagePath: imageURL.path
+        ))
     }
 
     private func sessionResponse(for request: AgentRequest) async throws -> ChatSessionSnapshot {
@@ -215,16 +232,18 @@ actor AgentClient {
     }
 
     private func request(_ request: AgentRequest) throws -> AsyncThrowingStream<AgentEvent, Error> {
-        guard pending == nil else {
+        guard pending[request.requestId] == nil else {
             throw AgentClientError.requestAlreadyRunning
         }
 
         let (stream, continuation) = AsyncThrowingStream<AgentEvent, Error>.makeStream()
-        pending = Pending(requestID: request.requestId, continuation: continuation)
+        pending[request.requestId] = Pending(
+            continuation: continuation
+        )
         do {
             try inputPipe.fileHandleForWriting.write(contentsOf: request.encodedLine())
         } catch {
-            pending = nil
+            pending.removeValue(forKey: request.requestId)
             continuation.finish(throwing: error)
             throw error
         }
@@ -241,7 +260,7 @@ actor AgentClient {
 
     private func consume(_ data: Data) {
         guard !data.isEmpty else {
-            finish(throwing: AgentClientError.processExited)
+            finishAll(throwing: AgentClientError.processExited)
             return
         }
 
@@ -251,29 +270,41 @@ actor AgentClient {
             outputBuffer.removeSubrange(...newline)
             do {
                 let event = try JSONDecoder().decode(AgentEvent.self, from: line)
-                guard let pending, event.requestId == pending.requestID else { continue }
+                guard let request = pending[event.requestId] else { continue }
                 switch event.type {
                 case .failed:
-                    finish(throwing: AgentClientError.requestFailed(event.message ?? "Model request failed"))
+                    finish(
+                        event.requestId,
+                        throwing: AgentClientError.requestFailed(
+                            event.message ?? "Model request failed"
+                        )
+                    )
                 case .completed:
-                    pending.continuation.yield(event)
-                    finish()
+                    request.continuation.yield(event)
+                    finish(event.requestId)
                 case .started, .reasoningDelta, .answerDelta, .sessions, .session:
-                    pending.continuation.yield(event)
+                    request.continuation.yield(event)
                 }
             } catch {
-                finish(throwing: error)
+                finishAll(throwing: error)
             }
         }
     }
 
-    private func finish(throwing error: Error? = nil) {
-        guard let pending else { return }
-        self.pending = nil
+    private func finish(_ requestID: UUID, throwing error: Error? = nil) {
+        guard let request = pending.removeValue(forKey: requestID) else { return }
         if let error {
-            pending.continuation.finish(throwing: error)
+            request.continuation.finish(throwing: error)
         } else {
-            pending.continuation.finish()
+            request.continuation.finish()
+        }
+    }
+
+    private func finishAll(throwing error: Error) {
+        let requests = Array(pending.values)
+        pending.removeAll()
+        for request in requests {
+            request.continuation.finish(throwing: error)
         }
     }
 }

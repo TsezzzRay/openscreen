@@ -51,7 +51,7 @@ On first launch, macOS will request Screen Recording permission. After granting 
 
 OpenScreen does not capture the screen continuously. It captures the active window only after a question is submitted.
 
-Conversation state is stored locally as JSON under `~/Library/Application Support/OpenScreen/sessions/`. The selected session is restored when the app starts again.
+Conversation state is stored locally as one append-only JSONL file per session under `~/Library/Application Support/OpenScreen/sessions/`. The first line contains session metadata; later lines record turn starts, batched streaming deltas, completed or failed turns, and context compaction. On restart, a complete turn is restored into model context, while a turn interrupted during streaming remains visible but is excluded from future model requests. The selected session is restored when the app starts again.
 
 Each screenshot is:
 
@@ -65,9 +65,8 @@ Screenshots are not deleted automatically in the current version. Review your pr
 ## Current limitations
 
 - Development launch only; there is no signed app bundle or installer.
-- One active request at a time.
 - No session deletion, search, or cloud sync.
-- No request cancellation or parallel requests.
+- No request cancellation. Different sessions can stream concurrently, while requests within one session are serialized.
 - No click, type, scroll, application control, Bash, or tool execution.
 - Limited error recovery and no settings interface.
 
@@ -81,7 +80,7 @@ local agent (Node.js, TypeScript, OpenAI SDK)
 configured Responses API-compatible provider
 ```
 
-The macOS process owns the panel, shortcut, capture, selected-session UI, and local screenshot files. The Node.js process owns durable per-session turn history, screenshot paths, context compaction, runtime configuration, and model requests. Every request carries both `requestId` and `sessionId`; reasoning and final-answer text are rendered separately, while the question, screenshot path, and final answer are retained only in that session's context. The default configuration compacts at 244,800 of 272,000 multimodal tokens, keeps about 20,000 tokens of recent complete turns in model context, and retains the full raw turn history on disk.
+The macOS process owns the panel, shortcut, capture, selected-session UI, per-session streaming cache, and local screenshot files. The Node.js process owns durable per-session turn history, cross-process session locks, screenshot paths, context compaction, runtime configuration, and model requests. Every chat event carries both `requestId` and `sessionId`; reasoning and final-answer text are rendered separately, while only successfully completed turns are retained in that session's model context. The default configuration compacts at 244,800 of 272,000 multimodal tokens, keeps about 20,000 tokens of recent complete turns in model context, and retains the full event history on disk.
 
 ## Development
 

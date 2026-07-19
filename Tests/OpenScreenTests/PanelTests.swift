@@ -46,25 +46,30 @@ final class PanelTests: XCTestCase {
 
     func testAgentEventDecoding() throws {
         let data = Data(
-            #"{"requestId":"00000000-0000-0000-0000-000000000001","type":"answer_delta","delta":"Hello"}"#.utf8
+            #"{"requestId":"00000000-0000-0000-0000-000000000001","sessionId":"00000000-0000-0000-0000-000000000002","type":"answer_delta","delta":"Hello"}"#.utf8
         )
 
         let event = try JSONDecoder().decode(AgentEvent.self, from: data)
 
         XCTAssertEqual(event.type, .answerDelta)
         XCTAssertEqual(event.delta, "Hello")
+        XCTAssertEqual(
+            event.sessionId,
+            UUID(uuidString: "00000000-0000-0000-0000-000000000002")
+        )
     }
 
     func testSessionSnapshotEventDecoding() throws {
         let data = Data(
-            #"{"requestId":"00000000-0000-0000-0000-000000000001","type":"session","session":{"id":"00000000-0000-0000-0000-000000000002","title":"Project notes","createdAt":"2026-07-19T00:00:00.000Z","updatedAt":"2026-07-19T01:00:00.000Z","turns":[{"id":"00000000-0000-0000-0000-000000000003","user":"Question","assistant":"Answer","reasoning":"Checked screen"}]}}"#.utf8
+            #"{"requestId":"00000000-0000-0000-0000-000000000001","type":"session","session":{"id":"00000000-0000-0000-0000-000000000002","title":"Project notes","createdAt":"2026-07-19T00:00:00.000Z","updatedAt":"2026-07-19T01:00:00.000Z","turns":[{"id":"00000000-0000-0000-0000-000000000003","user":"Question","assistant":"Partial answer","reasoning":"Checked screen","status":"interrupted"}]}}"#.utf8
         )
 
         let event = try JSONDecoder().decode(AgentEvent.self, from: data)
 
         XCTAssertEqual(event.type, .session)
         XCTAssertEqual(event.session?.title, "Project notes")
-        XCTAssertEqual(event.session?.turns.first?.assistant, "Answer")
+        XCTAssertEqual(event.session?.turns.first?.assistant, "Partial answer")
+        XCTAssertEqual(event.session?.turns.first?.status, .interrupted)
     }
 
     func testChatViewModelRestoresSessionSnapshot() {
@@ -86,7 +91,9 @@ final class PanelTests: XCTestCase {
                         id: turnID,
                         user: "Question",
                         assistant: "Answer",
-                        reasoning: "Checked screen"
+                        reasoning: "Checked screen",
+                        status: .completed,
+                        error: nil
                     )
                 ]
             )
@@ -96,6 +103,7 @@ final class PanelTests: XCTestCase {
         XCTAssertEqual(viewModel.currentTitle, "Project notes")
         XCTAssertEqual(viewModel.turns.first?.id, turnID)
         XCTAssertEqual(viewModel.turns.first?.reasoning, "Checked screen")
+        XCTAssertEqual(viewModel.turns.first?.status, .completed)
     }
 
     func testPreferredSessionUsesSavedIDThenFallsBackToNewest() {
@@ -150,6 +158,42 @@ final class PanelTests: XCTestCase {
 
         XCTAssertEqual(viewModel.turns[turn].reasoning, "Checking screen")
         XCTAssertEqual(viewModel.turns[turn].answer, "The answer")
+    }
+
+    func testChatViewModelRoutesBackgroundSessionDeltasWithoutSwitchingContext() {
+        let viewModel = ChatViewModel(
+            agentClient: AgentClient(),
+            windowCapture: WindowCapture()
+        )
+        let firstSessionID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
+        let secondSessionID = UUID(uuidString: "00000000-0000-0000-0000-000000000002")!
+        let firstTurnID = UUID(uuidString: "00000000-0000-0000-0000-000000000003")!
+
+        viewModel.apply(.init(
+            id: firstSessionID,
+            title: "First",
+            createdAt: "2026-07-19T00:00:00.000Z",
+            updatedAt: "2026-07-19T00:00:00.000Z",
+            turns: []
+        ))
+        viewModel.startTurn(sessionID: firstSessionID, id: firstTurnID, question: "Question")
+        viewModel.apply(.init(
+            id: secondSessionID,
+            title: "Second",
+            createdAt: "2026-07-19T00:00:00.000Z",
+            updatedAt: "2026-07-19T00:00:00.000Z",
+            turns: []
+        ))
+
+        viewModel.apply(
+            .init(sessionID: firstSessionID, type: .answerDelta, delta: "Background answer"),
+            sessionID: firstSessionID,
+            turnID: firstTurnID
+        )
+
+        XCTAssertEqual(viewModel.currentSessionID, secondSessionID)
+        XCTAssertTrue(viewModel.turns.isEmpty)
+        XCTAssertEqual(viewModel.cachedTurns(for: firstSessionID).first?.answer, "Background answer")
     }
 
     func testWindowSelectionSkipsFullscreenToolbar() {

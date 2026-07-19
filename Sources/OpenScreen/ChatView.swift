@@ -6,12 +6,23 @@ struct ChatTurn: Identifiable {
     let question: String
     var reasoning: String
     var answer: String
+    var status: ChatTurnStatus
+    var error: String?
 
-    init(id: UUID = UUID(), question: String, reasoning: String, answer: String) {
+    init(
+        id: UUID = UUID(),
+        question: String,
+        reasoning: String,
+        answer: String,
+        status: ChatTurnStatus = .completed,
+        error: String? = nil
+    ) {
         self.id = id
         self.question = question
         self.reasoning = reasoning
         self.answer = answer
+        self.status = status
+        self.error = error
     }
 }
 
@@ -22,7 +33,7 @@ final class ChatViewModel: ObservableObject {
     @Published private(set) var sessions: [ChatSessionSummary] = []
     @Published private(set) var currentSessionID: UUID?
     @Published private(set) var currentTitle = "New Chat"
-    @Published private(set) var isSending = false
+    @Published private(set) var activeSessionIDs: Set<UUID> = []
     @Published private(set) var isManagingSession = false
     @Published private(set) var sessionError: String?
     @Published private(set) var focusRequest = 0
@@ -30,9 +41,14 @@ final class ChatViewModel: ObservableObject {
     private let agentClient: AgentClient
     private let windowCapture: WindowCapture
     private let defaults: UserDefaults
+    private var turnCache: [UUID: [ChatTurn]] = [:]
     private static let selectedSessionKey = "OpenScreenSelectedSessionID"
 
-    var isBusy: Bool { isSending || isManagingSession }
+    var isSending: Bool {
+        currentSessionID.map(activeSessionIDs.contains) ?? false
+    }
+
+    var isBusy: Bool { isManagingSession || isSending }
 
     init(
         agentClient: AgentClient,
@@ -49,22 +65,61 @@ final class ChatViewModel: ObservableObject {
     }
 
     func startTurn(question: String) -> Int {
-        turns.append(ChatTurn(question: question, reasoning: "", answer: ""))
+        turns.append(ChatTurn(
+            question: question,
+            reasoning: "",
+            answer: "",
+            status: .streaming
+        ))
+        if let currentSessionID { turnCache[currentSessionID] = turns }
         return turns.index(before: turns.endIndex)
     }
 
+    func startTurn(sessionID: UUID, id: UUID, question: String) {
+        var sessionTurns = turnCache[sessionID] ?? []
+        sessionTurns.append(ChatTurn(
+            id: id,
+            question: question,
+            reasoning: "",
+            answer: "",
+            status: .streaming
+        ))
+        setTurns(sessionTurns, for: sessionID)
+    }
+
     func apply(_ session: ChatSessionSnapshot) {
+        cache(session)
         currentSessionID = session.id
         currentTitle = session.title
-        turns = session.turns.map {
+        turns = turnCache[session.id] ?? []
+        defaults.set(session.id.uuidString, forKey: Self.selectedSessionKey)
+    }
+
+    private func cache(_ session: ChatSessionSnapshot) {
+        let restoredTurns = session.turns.map {
             ChatTurn(
                 id: $0.id,
                 question: $0.user,
                 reasoning: $0.reasoning ?? "",
-                answer: $0.assistant
+                answer: $0.assistant,
+                status: $0.status,
+                error: $0.error
             )
         }
-        defaults.set(session.id.uuidString, forKey: Self.selectedSessionKey)
+        turnCache[session.id] = restoredTurns
+        if currentSessionID == session.id {
+            currentTitle = session.title
+            turns = restoredTurns
+        }
+    }
+
+    func cachedTurns(for sessionID: UUID) -> [ChatTurn] {
+        turnCache[sessionID] ?? []
+    }
+
+    private func setTurns(_ sessionTurns: [ChatTurn], for sessionID: UUID) {
+        turnCache[sessionID] = sessionTurns
+        if currentSessionID == sessionID { turns = sessionTurns }
     }
 
     static func sessionToRestore(
@@ -78,7 +133,7 @@ final class ChatViewModel: ObservableObject {
     }
 
     func restoreSessions() async {
-        guard !isBusy else { return }
+        guard !isManagingSession else { return }
         isManagingSession = true
         defer { isManagingSession = false }
         do {
@@ -97,24 +152,32 @@ final class ChatViewModel: ObservableObject {
     }
 
     func selectSession(_ id: UUID) {
-        guard !isBusy, id != currentSessionID else { return }
+        guard !isManagingSession, id != currentSessionID else { return }
+        if activeSessionIDs.contains(id), let cached = turnCache[id] {
+            currentSessionID = id
+            currentTitle = sessions.first(where: { $0.id == id })?.title ?? "New Chat"
+            turns = cached
+            defaults.set(id.uuidString, forKey: Self.selectedSessionKey)
+            return
+        }
         manageSession {
             self.apply(try await self.agentClient.loadSession(id: id))
         }
     }
 
     func createNewSession() {
-        guard !isBusy else { return }
+        guard !isManagingSession else { return }
         manageSession {
             self.apply(try await self.agentClient.createSession())
         }
     }
 
     func renameSession(id: UUID, title: String) {
-        guard !isBusy else { return }
+        guard !isManagingSession, !activeSessionIDs.contains(id) else { return }
         manageSession {
             let session = try await self.agentClient.renameSession(id: id, title: title)
             if id == self.currentSessionID { self.apply(session) }
+            else { self.cache(session) }
         }
     }
 
@@ -135,6 +198,8 @@ final class ChatViewModel: ObservableObject {
     func finishTurn(at index: Int, answer: String) {
         guard turns.indices.contains(index) else { return }
         turns[index].answer = answer
+        turns[index].status = .completed
+        if let currentSessionID { turnCache[currentSessionID] = turns }
     }
 
     func apply(_ event: AgentEvent, at index: Int) {
@@ -147,34 +212,69 @@ final class ChatViewModel: ObservableObject {
         case .started, .sessions, .session, .completed, .failed:
             break
         }
+        if let currentSessionID { turnCache[currentSessionID] = turns }
+    }
+
+    func apply(_ event: AgentEvent, sessionID: UUID, turnID: UUID) {
+        guard event.sessionId == nil || event.sessionId == sessionID else { return }
+        var sessionTurns = turnCache[sessionID] ?? []
+        guard let index = sessionTurns.firstIndex(where: { $0.id == turnID }) else { return }
+        switch event.type {
+        case .reasoningDelta:
+            sessionTurns[index].reasoning += event.delta ?? ""
+        case .answerDelta:
+            sessionTurns[index].answer += event.delta ?? ""
+        case .completed:
+            sessionTurns[index].status = .completed
+        case .started, .sessions, .session, .failed:
+            break
+        }
+        setTurns(sessionTurns, for: sessionID)
+    }
+
+    private func failTurn(sessionID: UUID, turnID: UUID, message: String) {
+        var sessionTurns = turnCache[sessionID] ?? []
+        guard let index = sessionTurns.firstIndex(where: { $0.id == turnID }) else { return }
+        sessionTurns[index].status = .failed
+        sessionTurns[index].error = message
+        setTurns(sessionTurns, for: sessionID)
     }
 
     func submit() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, !isBusy, let sessionID = currentSessionID else { return }
+        guard !text.isEmpty, !isManagingSession, !isSending,
+              let sessionID = currentSessionID else { return }
 
-        let turnIndex = startTurn(question: text)
+        let turnID = UUID()
+        startTurn(sessionID: sessionID, id: turnID, question: text)
         draft = ""
-        isSending = true
+        activeSessionIDs.insert(sessionID)
 
         Task {
+            defer {
+                activeSessionIDs.remove(sessionID)
+                if currentSessionID == sessionID { requestInputFocus() }
+            }
             do {
                 let imageURL = try await windowCapture.captureActiveWindow()
                 let events = try await agentClient.send(
+                    requestID: turnID,
                     sessionID: sessionID,
                     text: text,
                     imageURL: imageURL
                 )
                 for try await event in events {
-                    apply(event, at: turnIndex)
+                    apply(event, sessionID: sessionID, turnID: turnID)
                 }
-                apply(try await agentClient.loadSession(id: sessionID))
+                cache(try await agentClient.loadSession(id: sessionID))
                 sessions = try await agentClient.listSessions()
             } catch {
-                finishTurn(at: turnIndex, answer: "Unable to answer: \(error.localizedDescription)")
+                failTurn(
+                    sessionID: sessionID,
+                    turnID: turnID,
+                    message: error.localizedDescription
+                )
             }
-            isSending = false
-            requestInputFocus()
         }
     }
 }
@@ -194,7 +294,7 @@ struct ChatView: View {
                     Image(systemName: "clock.arrow.circlepath")
                 }
                 .buttonStyle(.plain)
-                .disabled(viewModel.isBusy)
+                .disabled(viewModel.isManagingSession)
                 .accessibilityLabel("Chat history")
                 .popover(isPresented: $showsHistory) {
                     VStack(alignment: .leading, spacing: 6) {
@@ -228,6 +328,10 @@ struct ChatView: View {
                                     Image(systemName: "pencil")
                                 }
                                 .buttonStyle(.plain)
+                                .disabled(
+                                    viewModel.isManagingSession ||
+                                    viewModel.activeSessionIDs.contains(session.id)
+                                )
                                 .accessibilityLabel("Rename \(session.title)")
                             }
                             .padding(.horizontal, 8)
@@ -252,14 +356,17 @@ struct ChatView: View {
                     Image(systemName: "pencil")
                 }
                 .buttonStyle(.plain)
-                .disabled(viewModel.isBusy || viewModel.currentSessionID == nil)
+                .disabled(
+                    viewModel.isManagingSession || viewModel.isSending ||
+                    viewModel.currentSessionID == nil
+                )
                 .accessibilityLabel("Rename current chat")
 
                 Button(action: viewModel.createNewSession) {
                     Image(systemName: "plus")
                 }
                 .buttonStyle(.plain)
-                .disabled(viewModel.isBusy)
+                .disabled(viewModel.isManagingSession)
                 .accessibilityLabel("New chat")
             }
 
@@ -306,6 +413,18 @@ struct ChatView: View {
                                 Spacer(minLength: 48)
                             }
                         }
+                        if turn.status == .failed || turn.status == .interrupted {
+                            HStack {
+                                Text(
+                                    turn.status == .interrupted
+                                        ? "Interrupted"
+                                        : "Failed: \(turn.error ?? "Unknown error")"
+                                )
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                Spacer()
+                            }
+                        }
                     }
                 }
                 .frame(maxWidth: .infinity)
@@ -315,7 +434,7 @@ struct ChatView: View {
                 ChatTextEditor(
                     text: $viewModel.draft,
                     focusRequest: viewModel.focusRequest,
-                    isEnabled: !viewModel.isBusy,
+                    isEnabled: !viewModel.isManagingSession && !viewModel.isSending,
                     onSubmit: viewModel.submit
                 )
                 .frame(height: 54)
@@ -327,7 +446,10 @@ struct ChatView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .buttonBorderShape(.roundedRectangle(radius: 13))
-                .disabled(viewModel.isBusy || viewModel.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .disabled(
+                    viewModel.isManagingSession || viewModel.isSending ||
+                    viewModel.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                )
                 .accessibilityLabel("Send")
             }
             .padding(10)

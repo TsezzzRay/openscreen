@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -53,7 +53,17 @@ test("rebuilds the agent process context after turn-end compaction", async (t) =
       modelRequests.push(body);
       const currentText = body.input.at(-1)?.content?.[0]?.text;
       const responseNumber = modelRequests.length;
+      if (typeof currentText === "string" && currentText.startsWith("slow concurrent")) {
+        await new Promise((resolve) => setTimeout(resolve, 150));
+      }
       response.writeHead(200, { "content-type": "text/event-stream" });
+      if (currentText === "failed stream") {
+        response.end(`data: ${JSON.stringify({
+          type: "response.output_text.delta",
+          delta: "partial answer",
+        })}\n\n`);
+        return;
+      }
       response.write(`data: ${JSON.stringify({
         type: "response.output_text.delta",
         delta: "answer",
@@ -148,14 +158,17 @@ test("rebuilds the agent process context after turn-end compaction", async (t) =
     const requestId = `turn-${turnNumber}`;
     const image = join(directory, `${requestId}.png`);
     await writeFile(image, `image-${turnNumber}`);
-    await request({
+    return request({
       type: "chat",
       sessionId: targetSessionId,
       input: { text, image },
     });
   }
 
-  await sendTurn("old turn one");
+  const firstTurnEvents = await sendTurn("old turn one");
+  assert.ok(firstTurnEvents.every(
+    (event) => event.type === "failed" || event.sessionId === sessionId,
+  ));
   await sendTurn("old turn two");
   await sendTurn("kept turn three");
   await sendTurn("kept turn four");
@@ -193,6 +206,65 @@ test("rebuilds the agent process context after turn-end compaction", async (t) =
   assert.equal(summaryRequests.length, 1);
   assert.equal(modelRequests.length, 7);
   assert.match(JSON.stringify(modelRequests[1]), /reasoning-1/);
+
+  async function concurrentTurn(text: string, targetSessionId: string) {
+    const image = join(directory, `${text.replaceAll(" ", "-")}.png`);
+    await writeFile(image, text);
+    await request({
+      type: "chat",
+      sessionId: targetSessionId,
+      input: { text, image },
+    });
+    return text;
+  }
+
+  const differentSessionOrder: string[] = [];
+  const slowDifferent = concurrentTurn("slow concurrent different", sessionId)
+    .then((text) => differentSessionOrder.push(text));
+  await new Promise((resolve) => setTimeout(resolve, 25));
+  const fastDifferent = concurrentTurn("fast concurrent different", otherSessionId)
+    .then((text) => differentSessionOrder.push(text));
+  await Promise.all([slowDifferent, fastDifferent]);
+  assert.deepEqual(differentSessionOrder, [
+    "fast concurrent different",
+    "slow concurrent different",
+  ]);
+
+  const sameSessionOrder: string[] = [];
+  const slowSame = concurrentTurn("slow concurrent same", sessionId)
+    .then((text) => sameSessionOrder.push(text));
+  await new Promise((resolve) => setTimeout(resolve, 25));
+  const fastSame = concurrentTurn("fast concurrent same", sessionId)
+    .then((text) => sameSessionOrder.push(text));
+  await Promise.all([slowSame, fastSame]);
+  assert.deepEqual(sameSessionOrder, [
+    "slow concurrent same",
+    "fast concurrent same",
+  ]);
+
+  await assert.rejects(
+    concurrentTurn("failed stream", sessionId),
+    /stream ended before completion/i,
+  );
+  await concurrentTurn("after failed stream", sessionId);
+  assert.doesNotMatch(JSON.stringify(modelRequests.at(-1)), /"text":"failed stream"/);
+  const afterFailure = await request({ type: "load_session", sessionId });
+  const failedTurn = afterFailure.find(
+    (event) => event.type === "session",
+  ).session.turns.find((turn: any) => turn.user === "failed stream");
+  assert.equal(failedTurn.status, "failed");
+  assert.equal(failedTurn.assistant, "partial answer");
+
+  const persistedLines = (
+    await readFile(join(sessionsDirectory, `${sessionId}.jsonl`), "utf8")
+  ).trim().split("\n").map((line) => JSON.parse(line));
+  assert.deepEqual(
+    Object.keys(persistedLines[0]).sort(),
+    ["createdAt", "id", "title", "type"],
+  );
+  assert.ok(persistedLines.some((event) => event.type === "answer_delta"));
+  assert.ok(persistedLines.some((event) => event.type === "turn_completed"));
+  assert.ok(persistedLines.some((event) => event.type === "context_compacted"));
 
   agent.kill();
   await once(agent, "exit");
@@ -248,7 +320,7 @@ test("rebuilds the agent process context after turn-end compaction", async (t) =
   const listed = await restartedRequest({ type: "list_sessions" });
   assert.equal(listed.find((event) => event.type === "sessions").sessions.length, 2);
   const loaded = await restartedRequest({ type: "load_session", sessionId });
-  assert.equal(loaded.find((event) => event.type === "session").session.turns.length, 6);
+  assert.equal(loaded.find((event) => event.type === "session").session.turns.length, 11);
 });
 
 async function readJSON(request: IncomingMessage): Promise<any> {
