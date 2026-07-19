@@ -13,6 +13,7 @@ Press `Option + Space` to open a floating panel, ask a question, and OpenScreen 
 - Active-window capture using ScreenCaptureKit.
 - Persistent multi-session chat history with create, switch, and rename controls.
 - Per-turn capture, request, generation, and completion status with cancellation and editable retries.
+- Markdown messages with smart follow-to-latest scrolling during streaming.
 - Automatic text-and-screenshot context compaction at 90% of the model context window.
 - Streaming Responses API providers with image input.
 

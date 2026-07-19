@@ -409,11 +409,66 @@ private extension ChatTurnStatus {
     }
 }
 
+struct ChatScrollTrigger: Equatable {
+    let sessionID: UUID?
+    let turnID: UUID?
+    let turnCount: Int
+    let reasoningLength: Int
+    let answerLength: Int
+    let status: ChatTurnStatus?
+    let turnError: String?
+    let sessionError: String?
+}
+
+enum ChatScrollPosition {
+    static func isAtBottom(
+        contentHeight: CGFloat,
+        visibleMaxY: CGFloat,
+        threshold: CGFloat = 24
+    ) -> Bool {
+        contentHeight - visibleMaxY <= threshold
+    }
+
+    static func followsLatest(
+        current: Bool,
+        oldPhase: ScrollPhase,
+        newPhase: ScrollPhase,
+        contentHeight: CGFloat,
+        visibleMaxY: CGFloat
+    ) -> Bool {
+        switch newPhase {
+        case .tracking, .interacting:
+            false
+        case .idle where oldPhase != .animating:
+            isAtBottom(contentHeight: contentHeight, visibleMaxY: visibleMaxY)
+        default:
+            current
+        }
+    }
+}
+
 struct ChatView: View {
     @ObservedObject var viewModel: ChatViewModel
     @State private var showsHistory = false
     @State private var renamedSessionID: UUID?
     @State private var renameTitle = ""
+    @State private var followsLatest = true
+
+    private static let bottomID = "chat-bottom"
+
+    private var scrollTrigger: ChatScrollTrigger {
+        let turn = viewModel.turns.last
+        return ChatScrollTrigger(
+            sessionID: viewModel.currentSessionID,
+            turnID: turn?.id,
+            turnCount: viewModel.turns.count,
+            reasoningLength: turn?.reasoning.utf8.count ?? 0,
+            answerLength: turn?.answer.utf8.count ?? 0,
+            status: turn?.status,
+            turnError: turn?.error,
+            sessionError: viewModel.sessionError
+        )
+    }
 
     var body: some View {
         VStack(spacing: 18) {
@@ -507,46 +562,90 @@ struct ChatView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
 
-            ScrollView {
-                VStack(spacing: 16) {
-                    ForEach(viewModel.turns) { turn in
-                        HStack {
-                            Spacer(minLength: 48)
-                            Text(turn.question)
-                                .foregroundStyle(.white)
-                                .padding(.horizontal, 16)
-                                .padding(.vertical, 12)
-                                .background(Color.accentColor.opacity(0.85))
-                                .clipShape(RoundedRectangle(cornerRadius: 18))
-                        }
-                        if !turn.reasoning.isEmpty {
-                            HStack {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text("Reasoning summary")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                    Text(turn.reasoning)
-                                        .font(.callout)
-                                        .foregroundStyle(.secondary)
+            ScrollViewReader { proxy in
+                ZStack(alignment: .bottomTrailing) {
+                    ScrollView {
+                        LazyVStack(spacing: 16) {
+                            ForEach(viewModel.turns) { turn in
+                                HStack {
+                                    Spacer(minLength: 48)
+                                    MarkdownMessageView(turn.question)
+                                        .foregroundStyle(.white)
+                                        .padding(.horizontal, 16)
+                                        .padding(.vertical, 12)
+                                        .background(Color.accentColor.opacity(0.85))
+                                        .clipShape(RoundedRectangle(cornerRadius: 18))
                                 }
-                                Spacer(minLength: 48)
+                                if !turn.reasoning.isEmpty {
+                                    HStack {
+                                        VStack(alignment: .leading, spacing: 4) {
+                                            Text("Reasoning summary")
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                            MarkdownMessageView(turn.reasoning)
+                                                .font(.callout)
+                                                .foregroundStyle(.secondary)
+                                        }
+                                        Spacer(minLength: 48)
+                                    }
+                                }
+                                if !turn.answer.isEmpty {
+                                    HStack {
+                                        MarkdownMessageView(turn.answer)
+                                            .foregroundStyle(.white)
+                                            .padding(.horizontal, 16)
+                                            .padding(.vertical, 12)
+                                            .background(Color.black.opacity(0.38))
+                                            .clipShape(RoundedRectangle(cornerRadius: 18))
+                                        Spacer(minLength: 48)
+                                    }
+                                }
+                                turnStatus(turn)
                             }
+                            Color.clear
+                                .frame(height: 1)
+                                .id(Self.bottomID)
                         }
-                        if !turn.answer.isEmpty {
-                            HStack {
-                                Text(turn.answer)
-                                    .foregroundStyle(.white)
-                                    .padding(.horizontal, 16)
-                                    .padding(.vertical, 12)
-                                    .background(Color.black.opacity(0.38))
-                                    .clipShape(RoundedRectangle(cornerRadius: 18))
-                                Spacer(minLength: 48)
-                            }
+                        .frame(maxWidth: .infinity)
+                    }
+                    .onScrollPhaseChange { oldPhase, newPhase, context in
+                        followsLatest = ChatScrollPosition.followsLatest(
+                            current: followsLatest,
+                            oldPhase: oldPhase,
+                            newPhase: newPhase,
+                            contentHeight: context.geometry.contentSize.height,
+                            visibleMaxY: context.geometry.visibleRect.maxY
+                        )
+                    }
+                    .onScrollGeometryChange(for: CGFloat.self) { geometry in
+                        geometry.contentSize.height
+                    } action: { _, _ in
+                        if followsLatest {
+                            proxy.scrollTo(Self.bottomID, anchor: .bottom)
                         }
-                        turnStatus(turn)
+                    }
+
+                    if !followsLatest {
+                        Button {
+                            followsLatest = true
+                            withAnimation { proxy.scrollTo(Self.bottomID, anchor: .bottom) }
+                        } label: {
+                            Image(systemName: "arrow.down")
+                        }
+                        .buttonStyle(.bordered)
+                        .accessibilityLabel("Jump to latest message")
+                        .padding(8)
                     }
                 }
-                .frame(maxWidth: .infinity)
+                .onChange(of: scrollTrigger) { oldValue, newValue in
+                    let startsNewContext = oldValue.sessionID != newValue.sessionID ||
+                        oldValue.turnID != newValue.turnID ||
+                        oldValue.turnCount != newValue.turnCount
+                    if startsNewContext { followsLatest = true }
+                    if followsLatest || startsNewContext {
+                        proxy.scrollTo(Self.bottomID, anchor: .bottom)
+                    }
+                }
             }
 
             HStack(spacing: 12) {
