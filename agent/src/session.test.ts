@@ -2,16 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  COMPACT_AT_TOKENS,
-  KEEP_RECENT_TOKENS,
-  MAX_OUTPUT_TOKENS,
   compactIfNeeded,
   compactSession,
   type SessionState,
 } from "./session.js";
 
 test("compacts older turns while retaining 20K recent tokens", async () => {
-  assert.equal(KEEP_RECENT_TOKENS, 20_000);
   const session: SessionState = {
     turns: Array.from({ length: 5 }, (_, index) => ({
       user: `Question ${index + 1}`,
@@ -24,6 +20,7 @@ test("compacts older turns while retaining 20K recent tokens", async () => {
 
   await compactSession(
     session,
+    20_000,
     async (turns) => turns.length * 10_000,
     async (_previousSummary, turns) => {
       summarizedTurns = turns.length;
@@ -50,6 +47,7 @@ test("finds the 20K recent-turn boundary without scanning every turn", async () 
 
   await compactSession(
     session,
+    20_000,
     async (turns) => {
       countCalls += 1;
       return turns.length * 1_000;
@@ -75,6 +73,7 @@ test("rolls the previous summary forward without re-summarizing raw history", as
 
   await compactSession(
     session,
+    20_000,
     async (turns) => turns.length * 10_000,
     async (previousSummary, turns) => {
       assert.equal(previousSummary, "Previous summary");
@@ -89,12 +88,11 @@ test("rolls the previous summary forward without re-summarizing raw history", as
 });
 
 test("compacts before a request and verifies the rebuilt context", async () => {
-  assert.equal(COMPACT_AT_TOKENS, 244_800);
-  assert.equal(MAX_OUTPUT_TOKENS, 21_760);
   const counts = [244_800, 30_000];
   let compactions = 0;
 
   const tokens = await compactIfNeeded(
+    244_800,
     async () => counts.shift()!,
     async () => { compactions += 1; },
   );

@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 
 import OpenAI from "openai";
 
-import { MAX_OUTPUT_TOKENS, type SessionState, type Turn } from "./session.js";
+import type { SessionState, Turn } from "./session.js";
 
 const instructions = `You are OpenScreen, a screen-aware assistant.
 
@@ -39,12 +39,6 @@ export type OutputEnvelope = {
   delta?: string;
   message?: string;
 };
-
-export function getModel(env: NodeJS.ProcessEnv = process.env) {
-  const model = env.OPENAI_MODEL?.trim();
-  if (!model) throw new Error("OPENAI_MODEL is required");
-  return model;
-}
 
 function imagePart(
   model: string,
@@ -96,6 +90,7 @@ export async function makeRequest(
   model: string,
   text: string,
   screenshotPath: string,
+  maxOutputTokens: number,
   session: SessionState = { turns: [], firstKeptTurnIndex: 0 },
   readScreenshot: LoadScreenshot = loadScreenshot,
 ): Promise<OpenAI.Responses.ResponseCreateParamsStreaming> {
@@ -117,7 +112,7 @@ export async function makeRequest(
       await userInput(model, text, screenshotPath, readScreenshot),
     ],
     reasoning: isMiniMaxM3 ? { effort: "minimal" } : { summary: "auto" },
-    max_output_tokens: MAX_OUTPUT_TOKENS,
+    max_output_tokens: maxOutputTokens,
     stream: true,
   };
 }
@@ -229,6 +224,7 @@ export async function summarizeTurns(
   model: string,
   previousSummary: string | undefined,
   turns: Turn[],
+  maxOutputTokens: number,
   readScreenshot: LoadScreenshot = loadScreenshot,
 ): Promise<string> {
   const response = await client.responses.create({
@@ -240,7 +236,7 @@ export async function summarizeTurns(
         : []),
       ...await turnsInput(model, turns, readScreenshot, false),
     ],
-    max_output_tokens: 4_096,
+    max_output_tokens: maxOutputTokens,
   });
   const summary = response.output_text.trim();
   if (!summary) throw new Error("Model returned an empty conversation summary");

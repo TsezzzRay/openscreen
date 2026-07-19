@@ -19,7 +19,7 @@ Press `Option + Space` to open a floating panel, ask a question, and OpenScreen 
 
 - macOS 15 or later.
 - Swift 6.2 toolchain.
-- Node.js and npm.
+- Node.js 20.12 or later and npm.
 - An API key and reasoning-capable model from a Responses API-compatible provider that supports image input, streaming, and `/responses/input_tokens`. OpenAI-compatible models and MiniMax M3 are supported.
 
 ## Run locally
@@ -33,24 +33,17 @@ npm ci
 Start OpenScreen from the repository root:
 
 ```bash
-OPENAI_API_KEY="your-api-key" \
-OPENAI_BASE_URL="https://provider.example/v1" \
-OPENAI_MODEL="responses-vision-model" \
+cp .env.example .env
 npm run dev
 ```
 
-`OPENAI_BASE_URL` can be omitted when using the OpenAI API directly. The configured provider and model must support the Responses API, image input, and streaming.
+Set `OPENAI_API_KEY` in `.env`, then replace the `model` and `baseURL` placeholders in `config.json`. The configured provider and model must support the Responses API, image input, streaming, and `/responses/input_tokens`.
 
-For MiniMax M3, use:
-
-```bash
-OPENAI_API_KEY="your-minimax-api-key" \
-OPENAI_BASE_URL="https://api.minimax.io/v1" \
-OPENAI_MODEL="MiniMax-M3" \
-npm run dev
-```
+For MiniMax M3, set `model` to `MiniMax-M3` and `baseURL` to `https://api.minimax.io/v1` in `config.json`.
 
 OpenScreen sends `reasoning.summary: "auto"` to other Responses API providers and `reasoning.effort: "minimal"` to MiniMax M3.
+
+The JSON values can be overridden with `OPENAI_MODEL`, `OPENAI_BASE_URL`, `OPENSCREEN_CONTEXT_WINDOW_TOKENS`, `OPENSCREEN_COMPACT_AT_TOKENS`, `OPENSCREEN_KEEP_RECENT_TOKENS`, `OPENSCREEN_MAX_OUTPUT_TOKENS`, and `OPENSCREEN_SUMMARY_MAX_OUTPUT_TOKENS`. Existing process environment variables override `.env`, and `.env` overrides `config.json`. The API key is never read from JSON.
 
 On first launch, macOS will request Screen Recording permission. After granting permission, press `Option + Space`, enter a question, and press `Enter`. Use `Shift + Enter` to insert a newline. Stop OpenScreen with `Control + C` in the launching terminal.
 
@@ -86,7 +79,7 @@ local agent (Node.js, TypeScript, OpenAI SDK)
 configured Responses API-compatible provider
 ```
 
-The macOS process owns the panel, shortcut, capture, and local screenshot files. The Node.js process owns the in-memory turn history, screenshot paths, context compaction, and model request. Streaming events are correlated by `requestId`; reasoning and final-answer text are rendered separately, while the question, screenshot path, and final answer are retained as conversation context. The agent compacts at 244,800 of 272,000 multimodal tokens, keeps about 20,000 tokens of recent complete turns, and retains the full raw turn history in memory.
+The macOS process owns the panel, shortcut, capture, and local screenshot files. The Node.js process owns the in-memory turn history, screenshot paths, context compaction, runtime configuration, and model request. Streaming events are correlated by `requestId`; reasoning and final-answer text are rendered separately, while the question, screenshot path, and final answer are retained as conversation context. The default configuration compacts at 244,800 of 272,000 multimodal tokens, keeps about 20,000 tokens of recent complete turns, and retains the full raw turn history in memory.
 
 ## Development
 

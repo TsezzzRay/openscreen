@@ -5,7 +5,6 @@ import OpenAI from "openai";
 
 import {
   countTurns,
-  getModel,
   makeRequest,
   mapEvent,
   relayStream,
@@ -14,16 +13,12 @@ import {
 
 const loadScreenshot = async (path: string) => Buffer.from(path).toString("base64");
 
-test("requires an OpenAI-compatible model", () => {
-  assert.equal(getModel({ OPENAI_MODEL: "vision-model" }), "vision-model");
-  assert.throws(() => getModel({}), /OPENAI_MODEL is required/);
-});
-
 test("builds a streaming Responses API screenshot request", async () => {
   const request = await makeRequest(
     "vision-model",
     "What is on screen?",
     "current.png",
+    21_760,
     undefined,
     loadScreenshot,
   );
@@ -49,6 +44,7 @@ test("builds a MiniMax M3 streaming screenshot request", async () => {
     "MiniMax-M3",
     "What is on screen?",
     "current.png",
+    21_760,
     undefined,
     loadScreenshot,
   );
@@ -71,7 +67,7 @@ test("builds a MiniMax M3 streaming screenshot request", async () => {
 });
 
 test("includes every retained screenshot before the current request", async () => {
-  const request = await makeRequest("vision-model", "Current question", "current.png", {
+  const request = await makeRequest("vision-model", "Current question", "current.png", 21_760, {
     turns: [
       { user: "First question", assistant: "First answer", screenshotPath: "first.png" },
       { user: "Second question", assistant: "Second answer", screenshotPath: "second.png" },
@@ -138,7 +134,7 @@ test("preserves prior response output items for the next model turn", async () =
       content: [{ type: "output_text" as const, text: "First answer", annotations: [] }],
     },
   ];
-  const request = await makeRequest("MiniMax-M3", "Follow up", "current.png", {
+  const request = await makeRequest("MiniMax-M3", "Follow up", "current.png", 21_760, {
     turns: [{
       user: "First question",
       assistant: "First answer",
@@ -197,6 +193,7 @@ test("summarizes old screenshots as plain facts without internal references", as
       assistant: "The form reports an authentication error.",
       screenshotPath: "error-screen.png",
     }],
+    4_096,
     loadScreenshot,
   );
 

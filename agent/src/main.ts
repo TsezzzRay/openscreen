@@ -3,17 +3,16 @@ import { createInterface } from "node:readline";
 
 import OpenAI from "openai";
 
+import { loadRuntimeConfig } from "./config.js";
 import {
   countRequestTokens,
   countTurns,
-  getModel,
   makeRequest,
   relayStream,
   summarizeTurns,
   type OutputEnvelope,
 } from "./model.js";
 import {
-  COMPACT_AT_TOKENS,
   compactIfNeeded,
   compactSession,
   type SessionState,
@@ -32,18 +31,21 @@ function emit(event: OutputEnvelope) {
 }
 
 async function run() {
-  const client = new OpenAI();
-  const model = getModel();
+  const config = loadRuntimeConfig();
+  const client = new OpenAI({ apiKey: config.apiKey, baseURL: config.baseURL });
+  const { model, context } = config;
   const session: SessionState = { turns: [], firstKeptTurnIndex: 0 };
   const lines = createInterface({ input: process.stdin, crlfDelay: Infinity });
   const compact = () => compactSession(
     session,
+    context.keepRecentTokens,
     (turns) => countTurns(client, model, turns),
     (previousSummary, turns) => summarizeTurns(
       client,
       model,
       previousSummary,
       turns,
+      context.summaryMaxOutputTokens,
     ),
   );
 
@@ -51,9 +53,16 @@ async function run() {
     const { requestId, input } = JSON.parse(line) as InputEnvelope;
     emit({ requestId, type: "started" });
     try {
-      const buildRequest = () => makeRequest(model, input.text, input.image, session);
+      const buildRequest = () => makeRequest(
+        model,
+        input.text,
+        input.image,
+        context.maxOutputTokens,
+        session,
+      );
       let request = await buildRequest();
       await compactIfNeeded(
+        context.compactAtTokens,
         () => countRequestTokens(client, request),
         async () => {
           const compacted = await compact();
@@ -70,7 +79,7 @@ async function run() {
           screenshotPath: input.image,
           outputItems: result.outputItems,
         });
-        if ((result.totalTokens ?? 0) >= COMPACT_AT_TOKENS) {
+        if ((result.totalTokens ?? 0) >= context.compactAtTokens) {
           try {
             await compact();
           } catch (error) {

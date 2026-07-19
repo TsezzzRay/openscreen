@@ -8,9 +8,8 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import test from "node:test";
 
-import { COMPACT_AT_TOKENS } from "./session.js";
-
 test("rebuilds the agent process context after turn-end compaction", async (t) => {
+  const compactAtTokens = 50_000;
   const modelRequests: unknown[] = [];
   const summaryRequests: any[] = [];
   const server = createServer(async (request, response) => {
@@ -79,7 +78,7 @@ test("rebuilds the agent process context after turn-end compaction", async (t) =
             },
           ],
           usage: {
-            total_tokens: currentText === "kept turn four" ? COMPACT_AT_TOKENS : 1_000,
+            total_tokens: currentText === "kept turn four" ? compactAtTokens : 1_000,
           },
         },
       })}\n\n`);
@@ -105,6 +104,11 @@ test("rebuilds the agent process context after turn-end compaction", async (t) =
       OPENAI_API_KEY: "test",
       OPENAI_BASE_URL: `http://127.0.0.1:${address.port}/v1`,
       OPENAI_MODEL: "MiniMax-M3",
+      OPENSCREEN_CONTEXT_WINDOW_TOKENS: "100000",
+      OPENSCREEN_COMPACT_AT_TOKENS: String(compactAtTokens),
+      OPENSCREEN_KEEP_RECENT_TOKENS: "20000",
+      OPENSCREEN_MAX_OUTPUT_TOKENS: "40000",
+      OPENSCREEN_SUMMARY_MAX_OUTPUT_TOKENS: "4096",
     },
     stdio: ["pipe", "pipe", "inherit"],
   });

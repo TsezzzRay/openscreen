@@ -1,0 +1,11 @@
+{
+  "model": "<model-name>",
+  "baseURL": "<https://provider.example/v1>",
+  "context": {
+    "windowTokens": 272000,
+    "compactAtTokens": 244800,
+    "keepRecentTokens": 20000,
+    "maxOutputTokens": 21760,
+    "summaryMaxOutputTokens": 4096
+  }
+}
