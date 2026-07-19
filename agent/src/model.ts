@@ -14,6 +14,10 @@ Do not claim that you clicked, typed, changed, or executed anything.`;
 
 type LoadScreenshot = (path: string) => Promise<string>;
 
+type ConversationOutputItem =
+  | OpenAI.Responses.ResponseReasoningItem
+  | OpenAI.Responses.ResponseOutputMessage;
+
 const loadScreenshot: LoadScreenshot = async (path) => (
   await readFile(path)
 ).toString("base64");
@@ -24,6 +28,7 @@ export type ModelEvent = {
   message?: string;
   response?: {
     error?: { message?: string } | null;
+    output?: OpenAI.Responses.ResponseOutputItem[];
     usage?: { total_tokens?: number } | null;
   };
 };
@@ -77,10 +82,13 @@ async function turnsInput(
   model: string,
   turns: Turn[],
   readScreenshot: LoadScreenshot,
+  preserveOutputItems = true,
 ): Promise<OpenAI.Responses.ResponseInput> {
   return (await Promise.all(turns.map(async (turn) => [
     await userInput(model, turn.user, turn.screenshotPath, readScreenshot),
-    { role: "assistant" as const, content: turn.assistant },
+    ...(preserveOutputItems && turn.outputItems?.length
+      ? turn.outputItems
+      : [{ role: "assistant" as const, content: turn.assistant }]),
   ]))).flat();
 }
 
@@ -143,8 +151,13 @@ export async function relayStream(
   requestId: string,
   stream: AsyncIterable<ModelEvent>,
   send: (event: OutputEnvelope) => void,
-): Promise<{ output: string; totalTokens?: number } | null> {
+): Promise<{
+  output: string;
+  outputItems?: ConversationOutputItem[];
+  totalTokens?: number;
+} | null> {
   let output = "";
+  let outputItems: ConversationOutputItem[] | undefined;
   let completed = false;
   let totalTokens: number | undefined;
 
@@ -157,6 +170,10 @@ export async function relayStream(
     }
     if (modelEvent.type === "response.completed") {
       completed = true;
+      outputItems = modelEvent.response?.output?.filter(
+        (item): item is ConversationOutputItem =>
+          item.type === "reasoning" || item.type === "message",
+      );
       totalTokens = modelEvent.response?.usage?.total_tokens;
       continue;
     }
@@ -176,7 +193,7 @@ export async function relayStream(
   }
 
   send({ requestId, type: "completed" });
-  return { output, totalTokens };
+  return { output, outputItems, totalTokens };
 }
 
 export async function countTurns(
@@ -221,7 +238,7 @@ export async function summarizeTurns(
       ...(previousSummary
         ? [{ role: "developer" as const, content: `Previous summary:\n${previousSummary}` }]
         : []),
-      ...await turnsInput(model, turns, readScreenshot),
+      ...await turnsInput(model, turns, readScreenshot, false),
     ],
     max_output_tokens: 4_096,
   });

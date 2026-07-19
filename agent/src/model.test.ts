@@ -121,6 +121,38 @@ test("includes every retained screenshot before the current request", async () =
   });
 });
 
+test("preserves prior response output items for the next model turn", async () => {
+  const outputItems = [
+    {
+      id: "reasoning-1",
+      type: "reasoning" as const,
+      status: "completed" as const,
+      summary: [],
+      content: [{ type: "reasoning_text" as const, text: "Inspecting the screen" }],
+    },
+    {
+      id: "message-1",
+      type: "message" as const,
+      status: "completed" as const,
+      role: "assistant" as const,
+      content: [{ type: "output_text" as const, text: "First answer", annotations: [] }],
+    },
+  ];
+  const request = await makeRequest("MiniMax-M3", "Follow up", "current.png", {
+    turns: [{
+      user: "First question",
+      assistant: "First answer",
+      screenshotPath: "first.png",
+      outputItems,
+    }],
+    firstKeptTurnIndex: 0,
+  }, loadScreenshot);
+
+  assert.deepEqual(request.input?.slice(1, 3), outputItems);
+  assert(Array.isArray(request.input));
+  assert.equal(request.input.filter((item: any) => item.role === "assistant").length, 1);
+});
+
 test("counts retained turn text and screenshots together", async () => {
   let countedInput: unknown;
   const client = {
@@ -235,11 +267,20 @@ test("maps Responses API deltas to request-scoped JSONL events", () => {
 test("completes only after a successful stream is exhausted", async () => {
   const events: object[] = [];
   let exhausted = false;
-  async function* stream() {
+  async function* stream(): AsyncGenerator<import("./model.js").ModelEvent> {
     yield { type: "response.output_text.delta", delta: "Final answer" };
     yield {
       type: "response.completed",
-      response: { usage: { total_tokens: 42 } },
+      response: {
+        output: [{
+          id: "message-1",
+          type: "message",
+          status: "completed",
+          role: "assistant",
+          content: [{ type: "output_text", text: "Final answer", annotations: [] }],
+        }],
+        usage: { total_tokens: 42 },
+      },
     };
     exhausted = true;
   }
@@ -247,7 +288,17 @@ test("completes only after a successful stream is exhausted", async () => {
   const output = await relayStream("request-1", stream(), (event) => events.push(event));
 
   assert.equal(exhausted, true);
-  assert.deepEqual(output, { output: "Final answer", totalTokens: 42 });
+  assert.deepEqual(output, {
+    output: "Final answer",
+    outputItems: [{
+      id: "message-1",
+      type: "message",
+      status: "completed",
+      role: "assistant",
+      content: [{ type: "output_text", text: "Final answer", annotations: [] }],
+    }],
+    totalTokens: 42,
+  });
   assert.deepEqual(events.at(-1), { requestId: "request-1", type: "completed" });
 });
 

@@ -68,6 +68,7 @@ async function run() {
           user: input.text,
           assistant: result.output,
           screenshotPath: input.image,
+          outputItems: result.outputItems,
         });
         if ((result.totalTokens ?? 0) >= COMPACT_AT_TOKENS) {
           try {

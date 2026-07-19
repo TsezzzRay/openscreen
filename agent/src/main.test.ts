@@ -53,6 +53,7 @@ test("rebuilds the agent process context after turn-end compaction", async (t) =
     if (request.url === "/v1/responses" && body.stream) {
       modelRequests.push(body);
       const currentText = body.input.at(-1)?.content?.[0]?.text;
+      const responseNumber = modelRequests.length;
       response.writeHead(200, { "content-type": "text/event-stream" });
       response.write(`data: ${JSON.stringify({
         type: "response.output_text.delta",
@@ -61,6 +62,22 @@ test("rebuilds the agent process context after turn-end compaction", async (t) =
       response.end(`data: ${JSON.stringify({
         type: "response.completed",
         response: {
+          output: [
+            {
+              id: `reasoning-${responseNumber}`,
+              type: "reasoning",
+              status: "completed",
+              summary: [],
+              content: [{ type: "reasoning_text", text: `reasoning-${responseNumber}` }],
+            },
+            {
+              id: `message-${responseNumber}`,
+              type: "message",
+              status: "completed",
+              role: "assistant",
+              content: [{ type: "output_text", text: "answer", annotations: [] }],
+            },
+          ],
           usage: {
             total_tokens: currentText === "kept turn four" ? COMPACT_AT_TOKENS : 1_000,
           },
@@ -138,8 +155,10 @@ test("rebuilds the agent process context after turn-end compaction", async (t) =
     JSON.stringify(summaryRequests[0]?.input),
     new RegExp(Buffer.from("image-1").toString("base64")),
   );
+  assert.doesNotMatch(JSON.stringify(summaryRequests[0]?.input), /reasoning-1/);
   assert.equal(summaryRequests.length, 1);
   assert.equal(modelRequests.length, 5);
+  assert.match(JSON.stringify(modelRequests[1]), /reasoning-1/);
 });
 
 async function readJSON(request: IncomingMessage): Promise<any> {

@@ -1,7 +1,12 @@
+import type OpenAI from "openai";
+
 export type Turn = {
   user: string;
   assistant: string;
   screenshotPath: string;
+  outputItems?: Array<
+    OpenAI.Responses.ResponseReasoningItem | OpenAI.Responses.ResponseOutputMessage
+  >;
 };
 
 export type SessionState = {
