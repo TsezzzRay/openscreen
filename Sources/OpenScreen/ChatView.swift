@@ -42,6 +42,8 @@ final class ChatViewModel: ObservableObject {
     private let windowCapture: WindowCapture
     private let defaults: UserDefaults
     private var turnCache: [UUID: [ChatTurn]] = [:]
+    private var activeTurnIDs: [UUID: UUID] = [:]
+    private var requestTasks: [UUID: Task<Void, Never>] = [:]
     private static let selectedSessionKey = "OpenScreenSelectedSessionID"
 
     var isSending: Bool {
@@ -69,7 +71,7 @@ final class ChatViewModel: ObservableObject {
             question: question,
             reasoning: "",
             answer: "",
-            status: .streaming
+            status: .capturing
         ))
         if let currentSessionID { turnCache[currentSessionID] = turns }
         return turns.index(before: turns.endIndex)
@@ -82,7 +84,7 @@ final class ChatViewModel: ObservableObject {
             question: question,
             reasoning: "",
             answer: "",
-            status: .streaming
+            status: .capturing
         ))
         setTurns(sessionTurns, for: sessionID)
     }
@@ -147,7 +149,7 @@ final class ChatViewModel: ObservableObject {
             }
             sessionError = nil
         } catch {
-            sessionError = error.localizedDescription
+            sessionError = "Couldn't load chats. Please try again."
         }
     }
 
@@ -190,7 +192,7 @@ final class ChatViewModel: ObservableObject {
                 sessions = try await agentClient.listSessions()
                 sessionError = nil
             } catch {
-                sessionError = error.localizedDescription
+                sessionError = "Couldn't update chats. Please try again."
             }
         }
     }
@@ -203,13 +205,19 @@ final class ChatViewModel: ObservableObject {
     }
 
     func apply(_ event: AgentEvent, at index: Int) {
-        guard turns.indices.contains(index), let delta = event.delta else { return }
+        guard turns.indices.contains(index) else { return }
         switch event.type {
         case .reasoningDelta:
-            turns[index].reasoning += delta
+            turns[index].status = .generating
+            turns[index].reasoning += event.delta ?? ""
         case .answerDelta:
-            turns[index].answer += delta
-        case .started, .sessions, .session, .completed, .failed:
+            turns[index].status = .generating
+            turns[index].answer += event.delta ?? ""
+        case .completed:
+            turns[index].status = .completed
+        case .cancelled:
+            turns[index].status = .cancelled
+        case .started, .sessions, .session, .failed:
             break
         }
         if let currentSessionID { turnCache[currentSessionID] = turns }
@@ -221,14 +229,40 @@ final class ChatViewModel: ObservableObject {
         guard let index = sessionTurns.firstIndex(where: { $0.id == turnID }) else { return }
         switch event.type {
         case .reasoningDelta:
+            sessionTurns[index].status = .generating
             sessionTurns[index].reasoning += event.delta ?? ""
         case .answerDelta:
+            sessionTurns[index].status = .generating
             sessionTurns[index].answer += event.delta ?? ""
         case .completed:
             sessionTurns[index].status = .completed
+        case .cancelled:
+            sessionTurns[index].status = .cancelled
         case .started, .sessions, .session, .failed:
             break
         }
+        setTurns(sessionTurns, for: sessionID)
+    }
+
+    func markRequesting(sessionID: UUID, turnID: UUID) {
+        updateTurn(sessionID: sessionID, turnID: turnID) { $0.status = .requesting }
+    }
+
+    func retry(turnID: UUID) {
+        guard let turn = turns.first(where: { $0.id == turnID }),
+              turn.status == .failed || turn.status == .cancelled else { return }
+        draft = turn.question
+        requestInputFocus()
+    }
+
+    private func updateTurn(
+        sessionID: UUID,
+        turnID: UUID,
+        update: (inout ChatTurn) -> Void
+    ) {
+        var sessionTurns = turnCache[sessionID] ?? []
+        guard let index = sessionTurns.firstIndex(where: { $0.id == turnID }) else { return }
+        update(&sessionTurns[index])
         setTurns(sessionTurns, for: sessionID)
     }
 
@@ -240,6 +274,30 @@ final class ChatViewModel: ObservableObject {
         setTurns(sessionTurns, for: sessionID)
     }
 
+    private func cancelTurn(sessionID: UUID, turnID: UUID) {
+        updateTurn(sessionID: sessionID, turnID: turnID) {
+            $0.status = .cancelled
+            $0.error = nil
+        }
+    }
+
+    func cancelCurrentRequest() {
+        guard let sessionID = currentSessionID,
+              let turnID = activeTurnIDs[sessionID],
+              let turn = turnCache[sessionID]?.first(where: { $0.id == turnID }) else { return }
+        if turn.status == .capturing {
+            requestTasks[sessionID]?.cancel()
+            return
+        }
+        Task {
+            do {
+                try await agentClient.cancel(requestID: turnID, sessionID: sessionID)
+            } catch {
+                sessionError = error.localizedDescription
+            }
+        }
+    }
+
     func submit() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !isManagingSession, !isSending,
@@ -249,32 +307,104 @@ final class ChatViewModel: ObservableObject {
         startTurn(sessionID: sessionID, id: turnID, question: text)
         draft = ""
         activeSessionIDs.insert(sessionID)
+        activeTurnIDs[sessionID] = turnID
 
-        Task {
+        let task = Task {
             defer {
-                activeSessionIDs.remove(sessionID)
+                if activeTurnIDs[sessionID] == turnID {
+                    activeTurnIDs.removeValue(forKey: sessionID)
+                    activeSessionIDs.remove(sessionID)
+                    requestTasks.removeValue(forKey: sessionID)
+                }
                 if currentSessionID == sessionID { requestInputFocus() }
             }
+            var sentToAgent = false
             do {
                 let imageURL = try await windowCapture.captureActiveWindow()
+                try Task.checkCancellation()
                 let events = try await agentClient.send(
                     requestID: turnID,
                     sessionID: sessionID,
                     text: text,
                     imageURL: imageURL
                 )
+                sentToAgent = true
+                markRequesting(sessionID: sessionID, turnID: turnID)
+                try Task.checkCancellation()
                 for try await event in events {
                     apply(event, sessionID: sessionID, turnID: turnID)
                 }
                 cache(try await agentClient.loadSession(id: sessionID))
                 sessions = try await agentClient.listSessions()
+            } catch is CancellationError {
+                if sentToAgent {
+                    let cancel = Task {
+                        try await agentClient.cancel(requestID: turnID, sessionID: sessionID)
+                    }
+                    try? await cancel.value
+                } else {
+                    await recordLocalAttempt(
+                        sessionID: sessionID,
+                        turnID: turnID,
+                        text: text,
+                        status: .cancelled
+                    )
+                }
+                cancelTurn(sessionID: sessionID, turnID: turnID)
             } catch {
+                if !sentToAgent {
+                    await recordLocalAttempt(
+                        sessionID: sessionID,
+                        turnID: turnID,
+                        text: text,
+                        status: .failed
+                    )
+                }
                 failTurn(
                     sessionID: sessionID,
                     turnID: turnID,
-                    message: error.localizedDescription
+                    message: sentToAgent
+                        ? error.localizedDescription
+                        : "Couldn't capture the active window. Check Screen Recording permission and retry."
                 )
             }
+        }
+        requestTasks[sessionID] = task
+    }
+
+    private func recordLocalAttempt(
+        sessionID: UUID,
+        turnID: UUID,
+        text: String,
+        status: AgentRequest.AttemptStatus
+    ) async {
+        let record = Task {
+            try await agentClient.recordAttempt(
+                requestID: turnID,
+                sessionID: sessionID,
+                text: text,
+                status: status
+            )
+            return try await agentClient.listSessions()
+        }
+        do {
+            sessions = try await record.value
+        } catch {
+            sessionError = "Couldn't save the request. Please try again."
+        }
+    }
+}
+
+private extension ChatTurnStatus {
+    var label: String {
+        switch self {
+        case .capturing: "Capturing screenshot…"
+        case .requesting: "Requesting…"
+        case .generating: "Generating…"
+        case .completed: "Completed"
+        case .failed: "Failed"
+        case .cancelled: "Cancelled"
+        case .interrupted: "Interrupted"
         }
     }
 }
@@ -413,18 +543,7 @@ struct ChatView: View {
                                 Spacer(minLength: 48)
                             }
                         }
-                        if turn.status == .failed || turn.status == .interrupted {
-                            HStack {
-                                Text(
-                                    turn.status == .interrupted
-                                        ? "Interrupted"
-                                        : "Failed: \(turn.error ?? "Unknown error")"
-                                )
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                Spacer()
-                            }
-                        }
+                        turnStatus(turn)
                     }
                 }
                 .frame(maxWidth: .infinity)
@@ -439,18 +558,7 @@ struct ChatView: View {
                 )
                 .frame(height: 54)
 
-                Button(action: viewModel.submit) {
-                    Image(systemName: "arrow.up")
-                        .font(.system(size: 18, weight: .semibold))
-                        .frame(width: 42, height: 42)
-                }
-                .buttonStyle(.borderedProminent)
-                .buttonBorderShape(.roundedRectangle(radius: 13))
-                .disabled(
-                    viewModel.isManagingSession || viewModel.isSending ||
-                    viewModel.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                )
-                .accessibilityLabel("Send")
+                requestButton
             }
             .padding(10)
             .background(Color.black.opacity(0.28))
@@ -477,6 +585,48 @@ struct ChatView: View {
             }
             .disabled(renameTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
+    }
+
+    private func turnStatus(_ turn: ChatTurn) -> some View {
+        HStack(spacing: 8) {
+            Text(
+                turn.status == .failed
+                    ? "Failed: \(turn.error ?? "Request failed. Please retry.")"
+                    : turn.status.label
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            Spacer()
+            if turn.status == .failed || turn.status == .cancelled {
+                Button("Retry") {
+                    viewModel.retry(turnID: turn.id)
+                }
+                .buttonStyle(.plain)
+                .disabled(viewModel.isManagingSession || viewModel.isSending)
+            }
+        }
+    }
+
+    private var requestButton: some View {
+        Button {
+            if viewModel.isSending {
+                viewModel.cancelCurrentRequest()
+            } else {
+                viewModel.submit()
+            }
+        } label: {
+            Image(systemName: viewModel.isSending ? "xmark" : "arrow.up")
+                .font(.system(size: 18, weight: .semibold))
+                .frame(width: 42, height: 42)
+        }
+        .buttonStyle(.borderedProminent)
+        .buttonBorderShape(.roundedRectangle(radius: 13))
+        .disabled(
+            viewModel.isManagingSession ||
+            (!viewModel.isSending &&
+                viewModel.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        )
+        .accessibilityLabel(viewModel.isSending ? "Cancel request" : "Send")
     }
 }
 

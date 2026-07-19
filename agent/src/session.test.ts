@@ -99,6 +99,81 @@ test("restores an unfinished turn as interrupted without adding it to model cont
   }]);
 });
 
+test("restores failed and cancelled turns into model context with their status", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "openscreen-sessions-"));
+  t.after(() => rm(directory, { force: true, recursive: true }));
+  const session = await createSession(directory);
+  await appendSessionEvents(directory, session.id, [
+    {
+      type: "turn_started",
+      turn: {
+        id: "failed-turn",
+        user: "Why did this fail?",
+        screenshotPath: "/tmp/failure.png",
+        startedAt: "2026-07-19T00:00:01.000Z",
+      },
+    },
+    { type: "answer_delta", turnId: "failed-turn", delta: "Partial answer" },
+    {
+      type: "turn_failed",
+      turnId: "failed-turn",
+      message: "Provider failed",
+      includeInContext: true,
+    },
+    {
+      type: "turn_started",
+      turn: {
+        id: "cancelled-turn",
+        user: "Stop before capture",
+        startedAt: "2026-07-19T00:00:02.000Z",
+      },
+    },
+    { type: "turn_cancelled", turnId: "cancelled-turn" },
+  ]);
+
+  const loaded = await loadSession(directory, session.id);
+  assert.deepEqual(loaded.turns, [
+    {
+      id: "failed-turn",
+      user: "Why did this fail?",
+      assistant: "Partial answer",
+      reasoning: "",
+      screenshotPath: "/tmp/failure.png",
+      status: "failed",
+    },
+    {
+      id: "cancelled-turn",
+      user: "Stop before capture",
+      assistant: "",
+      reasoning: "",
+      status: "cancelled",
+    },
+  ]);
+  assert.deepEqual(loaded.visibleTurns.map(({ status }) => status), ["failed", "cancelled"]);
+});
+
+test("keeps legacy failed turns visible without shifting model context", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "openscreen-sessions-"));
+  t.after(() => rm(directory, { force: true, recursive: true }));
+  const session = await createSession(directory);
+  await appendSessionEvents(directory, session.id, [
+    {
+      type: "turn_started",
+      turn: {
+        id: "legacy-failure",
+        user: "Old failure",
+        screenshotPath: "/tmp/old.png",
+        startedAt: "2026-07-18T00:00:00.000Z",
+      },
+    },
+    { type: "turn_failed", turnId: "legacy-failure", message: "Old error" },
+  ]);
+
+  const loaded = await loadSession(directory, session.id);
+  assert.equal(loaded.visibleTurns[0]?.status, "failed");
+  assert.deepEqual(loaded.turns, []);
+});
+
 test("ignores an unterminated final fragment but rejects a corrupt complete line", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "openscreen-sessions-"));
   t.after(() => rm(directory, { force: true, recursive: true }));
@@ -284,6 +359,30 @@ test("rolls the previous summary forward without re-summarizing raw history", as
   assert.deepEqual(summarizedQuestions, ["Question 4", "Question 5", "Question 6"]);
   assert.equal(session.summary, "Updated summary");
   assert.equal(session.firstKeptTurnIndex, 6);
+});
+
+test("leaves context unchanged when compaction fails", async () => {
+  const session: SessionState = {
+    turns: [
+      { user: "One", assistant: "1", screenshotPath: "1.png" },
+      { user: "Two", assistant: "2", screenshotPath: "2.png" },
+      { user: "Three", assistant: "3", screenshotPath: "3.png" },
+    ],
+    summary: "Existing summary",
+    firstKeptTurnIndex: 0,
+  };
+
+  await assert.rejects(
+    compactSession(
+      session,
+      0,
+      async (turns) => turns.length,
+      async () => { throw new Error("Summary failed"); },
+    ),
+    /Summary failed/,
+  );
+  assert.equal(session.summary, "Existing summary");
+  assert.equal(session.firstKeptTurnIndex, 0);
 });
 
 test("compacts before a request and verifies the rebuilt context", async () => {

@@ -35,7 +35,7 @@ export type ModelEvent = {
 
 export type OutputEnvelope = {
   requestId: string;
-  type: "started" | "reasoning_delta" | "answer_delta" | "completed" | "failed";
+  type: "started" | "reasoning_delta" | "answer_delta" | "completed" | "failed" | "cancelled";
   delta?: string;
   message?: string;
 };
@@ -60,14 +60,16 @@ function imagePart(
 async function userInput(
   model: string,
   text: string,
-  screenshotPath: string,
+  screenshotPath: string | undefined,
   readScreenshot: LoadScreenshot,
 ): Promise<OpenAI.Responses.ResponseInputItem> {
   return {
     role: "user",
     content: [
       { type: "input_text", text },
-      imagePart(model, await readScreenshot(screenshotPath)),
+      ...(screenshotPath
+        ? [imagePart(model, await readScreenshot(screenshotPath))]
+        : []),
     ],
   };
 }
@@ -80,10 +82,24 @@ async function turnsInput(
 ): Promise<OpenAI.Responses.ResponseInput> {
   return (await Promise.all(turns.map(async (turn) => [
     await userInput(model, turn.user, turn.screenshotPath, readScreenshot),
-    ...(preserveOutputItems && turn.outputItems?.length
+    ...(preserveOutputItems && (turn.status ?? "completed") === "completed" &&
+        turn.outputItems?.length
       ? turn.outputItems
-      : [{ role: "assistant" as const, content: turn.assistant }]),
+      : [{ role: "assistant" as const, content: turnOutput(turn) }]),
   ]))).flat();
+}
+
+function turnOutput(turn: Turn) {
+  if (turn.status === "failed" || turn.status === "cancelled") {
+    return [
+      turn.status === "failed"
+        ? "[Request failed; response may be incomplete]"
+        : "[Request cancelled by user; response is incomplete]",
+      turn.reasoning ? `Partial reasoning:\n${turn.reasoning}` : "",
+      turn.assistant ? `Partial answer:\n${turn.assistant}` : "",
+    ].filter(Boolean).join("\n\n");
+  }
+  return turn.assistant;
 }
 
 export async function makeRequest(
@@ -203,18 +219,20 @@ export async function countTurns(
   model: string,
   turns: Turn[],
   readScreenshot: LoadScreenshot = loadScreenshot,
+  signal?: AbortSignal,
 ) {
   return (
     await client.responses.inputTokens.count({
       model,
       input: await turnsInput(model, turns, readScreenshot),
-    })
+    }, { signal })
   ).input_tokens;
 }
 
 export async function countRequestTokens(
   client: OpenAI,
   request: OpenAI.Responses.ResponseCreateParamsStreaming,
+  signal?: AbortSignal,
 ) {
   return (
     await client.responses.inputTokens.count({
@@ -222,7 +240,7 @@ export async function countRequestTokens(
       instructions: request.instructions,
       input: request.input,
       reasoning: request.reasoning,
-    })
+    }, { signal })
   ).input_tokens;
 }
 
@@ -233,10 +251,11 @@ export async function summarizeTurns(
   turns: Turn[],
   maxOutputTokens: number,
   readScreenshot: LoadScreenshot = loadScreenshot,
+  signal?: AbortSignal,
 ): Promise<string> {
   const response = await client.responses.create({
     model,
-    instructions: `Summarize the earlier conversation concisely. Preserve user intent, confirmed facts, decisions, unfinished requests, and important visual information such as errors, interface state, visible data, and the user's current work. Integrate visual information as plain facts. Do not output screenshot paths, filenames, turn IDs, internal reference markers such as screen:*, or phrases that refer to a screenshot or image. Do not describe the summarization process.`,
+    instructions: `Summarize the earlier conversation concisely. Preserve user intent, confirmed facts, decisions, failed or cancelled request status, unfinished requests, and important visual information such as errors, interface state, visible data, and the user's current work. Integrate visual information as plain facts. Do not output screenshot paths, filenames, turn IDs, internal reference markers such as screen:*, or phrases that refer to a screenshot or image. Do not describe the summarization process.`,
     input: [
       ...(previousSummary
         ? [{ role: "developer" as const, content: `Previous summary:\n${previousSummary}` }]
@@ -244,7 +263,7 @@ export async function summarizeTurns(
       ...await turnsInput(model, turns, readScreenshot, false),
     ],
     max_output_tokens: maxOutputTokens,
-  });
+  }, { signal });
   const summary = response.output_text.trim();
   if (!summary) throw new Error("Model returned an empty conversation summary");
   return summary;

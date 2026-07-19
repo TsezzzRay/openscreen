@@ -12,6 +12,7 @@ Press `Option + Space` to open a floating panel, ask a question, and OpenScreen 
 - Movable floating panel that stays above other applications.
 - Active-window capture using ScreenCaptureKit.
 - Persistent multi-session chat history with create, switch, and rename controls.
+- Per-turn capture, request, generation, and completion status with cancellation and editable retries.
 - Automatic text-and-screenshot context compaction at 90% of the model context window.
 - Streaming Responses API providers with image input.
 
@@ -51,7 +52,7 @@ On first launch, macOS will request Screen Recording permission. After granting 
 
 OpenScreen does not capture the screen continuously. It captures the active window only after a question is submitted.
 
-Conversation state is stored locally as one append-only JSONL file per session under `~/Library/Application Support/OpenScreen/sessions/`. The first line contains session metadata; later lines record turn starts, batched streaming deltas, completed or failed turns, and context compaction. On restart, a complete turn is restored into model context, while a turn interrupted during streaming remains visible but is excluded from future model requests. The selected session is restored when the app starts again.
+Conversation state is stored locally as one append-only JSONL file per session under `~/Library/Application Support/OpenScreen/sessions/`. The first line contains session metadata; later lines record turn starts, batched streaming deltas, completed, failed, or cancelled turns, and context compaction. Completed, failed, and cancelled turns are restored into model context; failed and cancelled responses are explicitly marked as incomplete. A turn interrupted by process exit remains visible but is excluded from future model requests. The selected session is restored when the app starts again.
 
 Each screenshot is:
 
@@ -66,9 +67,9 @@ Screenshots are not deleted automatically in the current version. Review your pr
 
 - Development launch only; there is no signed app bundle or installer.
 - No session deletion, search, or cloud sync.
-- No request cancellation. Different sessions can stream concurrently, while requests within one session are serialized.
+- Only one request per session can run at a time; different sessions can stream concurrently.
 - No click, type, scroll, application control, Bash, or tool execution.
-- Limited error recovery and no settings interface.
+- No automatic retries or settings interface; Retry opens the previous prompt for editing and captures a new screenshot when resubmitted.
 
 ## Architecture
 
@@ -80,7 +81,7 @@ local agent (Node.js, TypeScript, OpenAI SDK)
 configured Responses API-compatible provider
 ```
 
-The macOS process owns the panel, shortcut, capture, selected-session UI, per-session streaming cache, and local screenshot files. The Node.js process owns durable per-session turn history, cross-process session locks, screenshot paths, context compaction, runtime configuration, and model requests. Every chat event carries both `requestId` and `sessionId`; reasoning and final-answer text are rendered separately, while only successfully completed turns are retained in that session's model context. The default configuration compacts at 244,800 of 272,000 multimodal tokens, keeps about 20,000 tokens of recent complete turns in model context, and retains the full event history on disk.
+The macOS process owns the panel, shortcut, capture, selected-session UI, per-session streaming cache, and local screenshot files. The Node.js process owns durable per-session turn history, cross-process session locks, screenshot paths, context compaction, runtime configuration, and model requests. Every chat event carries both `requestId` and `sessionId`; reasoning and final-answer text are rendered separately. Completed, failed, and cancelled turns are retained in model context, with unsuccessful responses marked as incomplete so they are not mistaken for finished answers. The default configuration compacts at 244,800 of 272,000 multimodal tokens, keeps about 20,000 tokens of recent turns in model context, and retains the full event history on disk.
 
 ## Development
 

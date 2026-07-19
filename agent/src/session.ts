@@ -18,7 +18,8 @@ export type Turn = {
   user: string;
   assistant: string;
   reasoning?: string;
-  screenshotPath: string;
+  screenshotPath?: string;
+  status?: "completed" | "failed" | "cancelled";
   outputItems?: Array<
     OpenAI.Responses.ResponseReasoningItem | OpenAI.Responses.ResponseOutputMessage
   >;
@@ -26,7 +27,7 @@ export type Turn = {
 
 export type VisibleTurn = Pick<Turn, "id" | "user" | "assistant" | "reasoning"> & {
   id: string;
-  status: "completed" | "failed" | "interrupted";
+  status: "completed" | "failed" | "cancelled" | "interrupted";
   error?: string;
 };
 
@@ -61,7 +62,7 @@ type SessionHeader = {
 type StartedTurn = {
   id: string;
   user: string;
-  screenshotPath: string;
+  screenshotPath?: string;
   startedAt: string;
 };
 
@@ -79,6 +80,10 @@ export type SessionEvent = {
   type: "turn_failed";
   turnId: string;
   message: string;
+  includeInContext?: boolean;
+} | {
+  type: "turn_cancelled";
+  turnId: string;
 } | {
   type: "context_compacted";
   summary: string;
@@ -106,7 +111,10 @@ function isTurn(value: unknown): value is Turn & { id: string } {
     "id" in value && typeof value.id === "string" && value.id.length > 0 &&
     "user" in value && typeof value.user === "string" &&
     "assistant" in value && typeof value.assistant === "string" &&
-    "screenshotPath" in value && typeof value.screenshotPath === "string" &&
+    (!("screenshotPath" in value) || value.screenshotPath === undefined ||
+      typeof value.screenshotPath === "string") &&
+    (!("status" in value) || value.status === undefined || value.status === "completed" ||
+      value.status === "failed" || value.status === "cancelled") &&
     (!("reasoning" in value) || value.reasoning === undefined ||
       typeof value.reasoning === "string") &&
     (!("outputItems" in value) || value.outputItems === undefined ||
@@ -142,7 +150,9 @@ function parseEvent(line: string, lineNumber: number): SessionEvent {
     case "turn_started": {
       const turn = value.turn;
       if (!isRecord(turn) || typeof turn.id !== "string" || !turn.id ||
-          typeof turn.user !== "string" || typeof turn.screenshotPath !== "string" ||
+          typeof turn.user !== "string" ||
+          ("screenshotPath" in turn && turn.screenshotPath !== undefined &&
+            typeof turn.screenshotPath !== "string") ||
           typeof turn.startedAt !== "string") break;
       return value as SessionEvent;
     }
@@ -156,9 +166,15 @@ function parseEvent(line: string, lineNumber: number): SessionEvent {
       if (isTurn(value.turn)) return value as SessionEvent;
       break;
     case "turn_failed":
-      if (typeof value.turnId === "string" && value.turnId && typeof value.message === "string") {
+      if (typeof value.turnId === "string" && value.turnId &&
+          typeof value.message === "string" &&
+          (!("includeInContext" in value) || value.includeInContext === undefined ||
+            typeof value.includeInContext === "boolean")) {
         return value as SessionEvent;
       }
+      break;
+    case "turn_cancelled":
+      if (typeof value.turnId === "string" && value.turnId) return value as SessionEvent;
       break;
     case "context_compacted":
       if (typeof value.summary === "string" && Number.isInteger(value.firstKeptTurnIndex) &&
@@ -261,6 +277,7 @@ export async function loadSession(directory: string, id: string): Promise<Stored
   const visibleTurns: VisibleTurn[] = [];
   const visibleIndexes = new Map<string, number>();
   const pending = new Map<string, VisibleTurn>();
+  const pendingTurns = new Map<string, StartedTurn>();
   let summary: string | undefined;
   let firstKeptTurnIndex = 0;
 
@@ -281,6 +298,7 @@ export async function loadSession(directory: string, id: string): Promise<Stored
         visibleIndexes.set(event.turn.id, visibleTurns.length);
         visibleTurns.push(visible);
         pending.set(event.turn.id, visible);
+        pendingTurns.set(event.turn.id, event.turn);
         break;
       }
       case "reasoning_delta":
@@ -305,14 +323,44 @@ export async function loadSession(directory: string, id: string): Promise<Stored
           status: "completed",
         };
         pending.delete(event.turn.id);
+        pendingTurns.delete(event.turn.id);
         break;
       }
       case "turn_failed": {
         const visible = pending.get(event.turnId);
-        if (!visible) throw new Error(`Unknown turn at line ${index + 1}`);
+        const started = pendingTurns.get(event.turnId);
+        if (!visible || !started) throw new Error(`Unknown turn at line ${index + 1}`);
         visible.status = "failed";
         visible.error = event.message;
+        if (event.includeInContext) {
+          turns.push({
+            id: started.id,
+            user: started.user,
+            assistant: visible.assistant,
+            reasoning: visible.reasoning,
+            ...(started.screenshotPath ? { screenshotPath: started.screenshotPath } : {}),
+            status: "failed",
+          });
+        }
         pending.delete(event.turnId);
+        pendingTurns.delete(event.turnId);
+        break;
+      }
+      case "turn_cancelled": {
+        const visible = pending.get(event.turnId);
+        const started = pendingTurns.get(event.turnId);
+        if (!visible || !started) throw new Error(`Unknown turn at line ${index + 1}`);
+        visible.status = "cancelled";
+        turns.push({
+          id: started.id,
+          user: started.user,
+          assistant: visible.assistant,
+          reasoning: visible.reasoning,
+          ...(started.screenshotPath ? { screenshotPath: started.screenshotPath } : {}),
+          status: "cancelled",
+        });
+        pending.delete(event.turnId);
+        pendingTurns.delete(event.turnId);
         break;
       }
       case "context_compacted":

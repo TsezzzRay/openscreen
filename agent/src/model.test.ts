@@ -4,6 +4,7 @@ import test from "node:test";
 import OpenAI from "openai";
 
 import {
+  countRequestTokens,
   countTurns,
   makeRequest,
   mapEvent,
@@ -117,6 +118,52 @@ test("includes every retained screenshot before the current request", async () =
   });
 });
 
+test("marks failed and cancelled turns in model context", async () => {
+  const request = await makeRequest("vision-model", "Try again", "current.png", 21_760, {
+    turns: [
+      {
+        user: "Failed question",
+        assistant: "Partial answer",
+        reasoning: "Partial reasoning",
+        screenshotPath: "failed.png",
+        status: "failed",
+      },
+      {
+        user: "Cancelled before capture",
+        assistant: "",
+        status: "cancelled",
+      },
+    ],
+    firstKeptTurnIndex: 0,
+  }, loadScreenshot);
+
+  assert.deepEqual(request.input?.slice(0, -1), [
+    {
+      role: "user",
+      content: [
+        { type: "input_text", text: "Failed question" },
+        {
+          type: "input_image",
+          detail: "auto",
+          image_url: `data:image/png;base64,${Buffer.from("failed.png").toString("base64")}`,
+        },
+      ],
+    },
+    {
+      role: "assistant",
+      content: "[Request failed; response may be incomplete]\n\nPartial reasoning:\nPartial reasoning\n\nPartial answer:\nPartial answer",
+    },
+    {
+      role: "user",
+      content: [{ type: "input_text", text: "Cancelled before capture" }],
+    },
+    {
+      role: "assistant",
+      content: "[Request cancelled by user; response is incomplete]",
+    },
+  ]);
+});
+
 test("preserves prior response output items for the next model turn", async () => {
   const outputItems = [
     {
@@ -171,6 +218,43 @@ test("counts retained turn text and screenshots together", async () => {
   const input = JSON.stringify(countedInput);
   assert.match(input, new RegExp(Buffer.from("first.png").toString("base64")));
   assert.match(input, new RegExp(Buffer.from("second.png").toString("base64")));
+});
+
+test("passes cancellation to token counting and summarization requests", async () => {
+  const controller = new AbortController();
+  const signals: unknown[] = [];
+  const client = {
+    responses: {
+      inputTokens: {
+        count: async (_request: unknown, options: { signal?: AbortSignal }) => {
+          signals.push(options.signal);
+          return { input_tokens: 1 };
+        },
+      },
+      create: async (_request: unknown, options: { signal?: AbortSignal }) => {
+        signals.push(options.signal);
+        return { output_text: "Summary" };
+      },
+    },
+  } as unknown as OpenAI;
+
+  await countRequestTokens(client, {
+    model: "vision-model",
+    input: [],
+    stream: true,
+  }, controller.signal);
+  await countTurns(client, "vision-model", [], loadScreenshot, controller.signal);
+  await summarizeTurns(
+    client,
+    "vision-model",
+    undefined,
+    [],
+    100,
+    loadScreenshot,
+    controller.signal,
+  );
+
+  assert.deepEqual(signals, [controller.signal, controller.signal, controller.signal]);
 });
 
 test("summarizes old screenshots as plain facts without internal references", async () => {

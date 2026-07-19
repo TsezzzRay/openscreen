@@ -12,6 +12,9 @@ test("rebuilds the agent process context after turn-end compaction", async (t) =
   const compactAtTokens = 50_000;
   const modelRequests: unknown[] = [];
   const summaryRequests: any[] = [];
+  let cancelDeltaObserved!: () => void;
+  const cancelDeltaReady = new Promise<void>((resolve) => { cancelDeltaObserved = resolve; });
+  let providerStreamCancelled = false;
   const server = createServer(async (request, response) => {
     const body = await readJSON(request);
 
@@ -62,6 +65,15 @@ test("rebuilds the agent process context after turn-end compaction", async (t) =
           type: "response.output_text.delta",
           delta: "partial answer",
         })}\n\n`);
+        return;
+      }
+      if (currentText === "cancel me") {
+        response.write(`data: ${JSON.stringify({
+          type: "response.output_text.delta",
+          delta: "partial cancellation answer",
+        })}\n\n`);
+        await once(response, "close");
+        providerStreamCancelled = true;
         return;
       }
       response.write(`data: ${JSON.stringify({
@@ -132,22 +144,34 @@ test("rebuilds the agent process context after turn-end compaction", async (t) =
     reject: (error: Error) => void;
   }>();
   createInterface({ input: agent.stdout }).on("line", (line) => {
-    const event = JSON.parse(line) as { requestId: string; type: string; message?: string };
+    const event = JSON.parse(line) as {
+      requestId: string;
+      type: string;
+      message?: string;
+      delta?: string;
+    };
+    if (event.delta === "partial cancellation answer") cancelDeltaObserved();
     const request = requests.get(event.requestId);
     if (!request) return;
     request.events.push(event);
     if (event.type === "failed") request.reject(new Error(event.message));
-    if (event.type === "completed") request.resolve(request.events);
+    if (event.type === "completed" || event.type === "cancelled") {
+      request.resolve(request.events);
+    }
   });
 
   let requestNumber = 0;
-  async function request(payload: Record<string, unknown>) {
+  function startRequest(payload: Record<string, unknown>) {
     const requestId = `request-${++requestNumber}`;
     const completed = new Promise<any[]>((resolve, reject) => {
       requests.set(requestId, { events: [], resolve, reject });
     });
     agent.stdin.write(`${JSON.stringify({ requestId, ...payload })}\n`);
-    return completed;
+    return { requestId, completed };
+  }
+
+  async function request(payload: Record<string, unknown>) {
+    return startRequest(payload).completed;
   }
 
   const created = await request({ type: "create_session" });
@@ -244,16 +268,69 @@ test("rebuilds the agent process context after turn-end compaction", async (t) =
 
   await assert.rejects(
     concurrentTurn("failed stream", sessionId),
-    /stream ended before completion/i,
+    /Request failed\. Please retry\./,
   );
   await concurrentTurn("after failed stream", sessionId);
-  assert.doesNotMatch(JSON.stringify(modelRequests.at(-1)), /"text":"failed stream"/);
+  assert.match(JSON.stringify(modelRequests.at(-1)), /"text":"failed stream"/);
+  assert.match(JSON.stringify(modelRequests.at(-1)), /Request failed/);
   const afterFailure = await request({ type: "load_session", sessionId });
   const failedTurn = afterFailure.find(
     (event) => event.type === "session",
   ).session.turns.find((turn: any) => turn.user === "failed stream");
   assert.equal(failedTurn.status, "failed");
   assert.equal(failedTurn.assistant, "partial answer");
+  assert.equal(failedTurn.error, "Request failed. Please retry.");
+
+  const cancelImage = join(directory, "cancel.png");
+  await writeFile(cancelImage, "cancel image");
+  const cancelled = startRequest({
+    type: "chat",
+    sessionId,
+    input: { text: "cancel me", image: cancelImage },
+  });
+  await cancelDeltaReady;
+  const unaffected = concurrentTurn("other survives cancellation", otherSessionId);
+  await request({
+    type: "cancel",
+    sessionId,
+    targetRequestId: cancelled.requestId,
+  });
+  const cancelledEvents = await cancelled.completed;
+  await unaffected;
+  assert.equal(cancelledEvents.at(-1)?.type, "cancelled");
+  assert.equal(providerStreamCancelled, true);
+
+  await concurrentTurn("after cancellation", sessionId);
+  assert.match(JSON.stringify(modelRequests.at(-1)), /"text":"cancel me"/);
+  assert.match(JSON.stringify(modelRequests.at(-1)), /Request cancelled by user/);
+  const afterCancellation = await request({ type: "load_session", sessionId });
+  const cancelledTurn = afterCancellation.find(
+    (event) => event.type === "session",
+  ).session.turns.find((turn: any) => turn.user === "cancel me");
+  assert.equal(cancelledTurn.status, "cancelled");
+  assert.equal(cancelledTurn.assistant, "partial cancellation answer");
+
+  await request({
+    type: "record_attempt",
+    sessionId,
+    input: { text: "cancelled during capture" },
+    status: "cancelled",
+  });
+  await concurrentTurn("after capture cancellation", sessionId);
+  const afterRecordedAttempt = JSON.stringify(modelRequests.at(-1));
+  assert.match(afterRecordedAttempt, /cancelled during capture/);
+  assert.match(afterRecordedAttempt, /Request cancelled by user/);
+
+  await request({
+    type: "record_attempt",
+    sessionId,
+    input: { text: "capture failed" },
+    status: "failed",
+  });
+  await concurrentTurn("after capture failure", sessionId);
+  const afterRecordedFailure = JSON.stringify(modelRequests.at(-1));
+  assert.match(afterRecordedFailure, /capture failed/);
+  assert.match(afterRecordedFailure, /Request failed/);
 
   const persistedLines = (
     await readFile(join(sessionsDirectory, `${sessionId}.jsonl`), "utf8")
@@ -320,7 +397,7 @@ test("rebuilds the agent process context after turn-end compaction", async (t) =
   const listed = await restartedRequest({ type: "list_sessions" });
   assert.equal(listed.find((event) => event.type === "sessions").sessions.length, 2);
   const loaded = await restartedRequest({ type: "load_session", sessionId });
-  assert.equal(loaded.find((event) => event.type === "session").session.turns.length, 11);
+  assert.equal(loaded.find((event) => event.type === "session").session.turns.length, 17);
 });
 
 async function readJSON(request: IncomingMessage): Promise<any> {

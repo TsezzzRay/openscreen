@@ -51,6 +51,17 @@ type InputEnvelope = {
   type: "rename_session";
   sessionId: string;
   title: string;
+} | {
+  requestId: string;
+  type: "cancel";
+  sessionId: string;
+  targetRequestId: string;
+} | {
+  requestId: string;
+  type: "record_attempt";
+  sessionId: string;
+  input: { text: string };
+  status: "failed" | "cancelled";
 };
 
 type SessionSnapshot = SessionSummary & {
@@ -59,7 +70,7 @@ type SessionSnapshot = SessionSummary & {
     user: string;
     assistant: string;
     reasoning?: string;
-    status: "completed" | "failed" | "interrupted";
+    status: "completed" | "failed" | "cancelled" | "interrupted";
     error?: string;
   }>;
 };
@@ -73,6 +84,8 @@ type AgentOutput = (OutputEnvelope & { sessionId?: string }) | {
   type: "session";
   session: SessionSnapshot;
 };
+
+const REQUEST_FAILED_MESSAGE = "Request failed. Please retry.";
 
 function emit(event: AgentOutput) {
   process.stdout.write(`${JSON.stringify(event)}\n`);
@@ -148,16 +161,29 @@ async function runChat(
   client: OpenAI,
   model: string,
   context: ReturnType<typeof loadRuntimeConfig>["context"],
+  signal: AbortSignal,
 ) {
   const { requestId, sessionId, input } = envelope;
   let turnStarted = false;
   let terminalStarted = false;
   let failureEmitted = false;
-  let failureMessage = "Model request failed";
+  let failureMessage = REQUEST_FAILED_MESSAGE;
   const fail = (message: string) => {
     failureEmitted = true;
     failureMessage = message;
     emit({ requestId, sessionId, type: "failed", message });
+  };
+  const finishCancelled = async () => {
+    if (!signal.aborted) return false;
+    if (turnStarted && !terminalStarted) {
+      await appendSessionEvents(sessionsDirectory, sessionId, [{
+        type: "turn_cancelled",
+        turnId: requestId,
+      }]);
+      terminalStarted = true;
+    }
+    emit({ requestId, sessionId, type: "cancelled" });
+    return true;
   };
 
   try {
@@ -173,18 +199,21 @@ async function runChat(
     }]);
     turnStarted = true;
     emit({ requestId, sessionId, type: "started" });
+    if (await finishCancelled()) return;
 
     const compact = async () => {
       const compacted = await compactSession(
         session,
         context.keepRecentTokens,
-        (turns) => countTurns(client, model, turns),
+        (turns) => countTurns(client, model, turns, undefined, signal),
         (previousSummary, turns) => summarizeTurns(
           client,
           model,
           previousSummary,
           turns,
           context.summaryMaxOutputTokens,
+          undefined,
+          signal,
         ),
       );
       if (compacted) {
@@ -204,27 +233,34 @@ async function runChat(
       session,
     );
     let request = await buildRequest();
+    if (await finishCancelled()) return;
     await compactIfNeeded(
       context.compactAtTokens,
-      () => countRequestTokens(client, request),
+      () => countRequestTokens(client, request, signal),
       async () => {
         const compacted = await compact();
         request = await buildRequest();
         return compacted;
       },
     );
+    if (await finishCancelled()) return;
 
-    const stream = await client.responses.create(request);
+    const stream = await client.responses.create(request, { signal });
     const batcher = new EventBatcher(sessionsDirectory, sessionId);
     let result: Awaited<ReturnType<typeof relayStream>>;
     try {
       result = await relayStream(requestId, stream, (event) => {
+        if (event.type === "failed") {
+          if (signal.aborted) return;
+          process.stderr.write(`Model request failed: ${event.message ?? "unknown error"}\n`);
+          failureEmitted = true;
+          failureMessage = REQUEST_FAILED_MESSAGE;
+          emit({ requestId, sessionId, type: "failed", message: failureMessage });
+          return;
+        }
         emit({ ...event, sessionId });
         if (event.type === "reasoning_delta" || event.type === "answer_delta") {
           batcher.add({ type: event.type, turnId: requestId, delta: event.delta ?? "" });
-        } else if (event.type === "failed") {
-          failureEmitted = true;
-          failureMessage = event.message ?? failureMessage;
         }
       });
     } finally {
@@ -232,11 +268,13 @@ async function runChat(
     }
 
     if (result === null) {
+      if (await finishCancelled()) return;
       terminalStarted = true;
       await appendSessionEvents(sessionsDirectory, sessionId, [{
         type: "turn_failed",
         turnId: requestId,
         message: failureMessage,
+        includeInContext: true,
       }]);
       return;
     }
@@ -249,6 +287,7 @@ async function runChat(
       reasoning: result.reasoning,
       screenshotPath: input.image,
       outputItems: result.outputItems,
+      status: "completed" as const,
     };
     terminalStarted = true;
     await appendSessionEvents(sessionsDirectory, sessionId, [{ type: "turn_completed", turn }]);
@@ -273,13 +312,18 @@ async function runChat(
     }
     emit({ requestId, sessionId, type: "completed" });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Model request failed";
+    if (await finishCancelled()) return;
+    process.stderr.write(
+      `Model request failed: ${error instanceof Error ? error.message : "unknown error"}\n`,
+    );
+    const message = REQUEST_FAILED_MESSAGE;
     if (turnStarted && !terminalStarted) {
       try {
         await appendSessionEvents(sessionsDirectory, sessionId, [{
           type: "turn_failed",
           turnId: requestId,
           message,
+          includeInContext: true,
         }]);
       } catch (persistenceError) {
         process.stderr.write(
@@ -305,9 +349,10 @@ async function run() {
   const lines = createInterface({ input: process.stdin, crlfDelay: Infinity });
 
   const sessionQueues = new Map<string, Promise<void>>();
+  const activeRequests = new Map<string, { sessionId: string; controller: AbortController }>();
   const active = new Set<Promise<void>>();
 
-  const handle = async (envelope: InputEnvelope) => {
+  const handle = async (envelope: InputEnvelope, signal?: AbortSignal) => {
     const { requestId } = envelope;
     try {
       if (envelope.type === "list_sessions") {
@@ -334,7 +379,35 @@ async function run() {
         emit({ requestId, type: "completed" });
         return;
       }
-      await runChat(envelope, sessionsDirectory, client, model, context);
+      if (envelope.type === "cancel") {
+        const target = activeRequests.get(envelope.targetRequestId);
+        if (target?.sessionId === envelope.sessionId) target.controller.abort();
+        emit({ requestId, sessionId: envelope.sessionId, type: "completed" });
+        return;
+      }
+      if (envelope.type === "record_attempt") {
+        await appendSessionEvents(sessionsDirectory, envelope.sessionId, [
+          {
+            type: "turn_started",
+            turn: {
+              id: envelope.requestId,
+              user: envelope.input.text,
+              startedAt: new Date().toISOString(),
+            },
+          },
+          envelope.status === "cancelled"
+            ? { type: "turn_cancelled", turnId: envelope.requestId }
+            : {
+                type: "turn_failed",
+                turnId: envelope.requestId,
+                message: "Request failed. Please retry.",
+                includeInContext: true,
+              },
+        ]);
+        emit({ requestId, sessionId: envelope.sessionId, type: "completed" });
+        return;
+      }
+      await runChat(envelope, sessionsDirectory, client, model, context, signal!);
     } catch (error) {
       emit({
         requestId,
@@ -346,7 +419,31 @@ async function run() {
 
   const dispatch = (envelope: InputEnvelope) => {
     let task: Promise<void>;
-    if (envelope.type === "chat" || envelope.type === "rename_session") {
+    if (envelope.type === "chat") {
+      const sessionId = envelope.sessionId;
+      const controller = new AbortController();
+      activeRequests.set(envelope.requestId, { sessionId, controller });
+      const previous = sessionQueues.get(sessionId) ?? Promise.resolve();
+      task = previous.catch(() => {}).then(() => withSessionLock(
+        sessionsDirectory,
+        sessionId,
+        () => handle(envelope, controller.signal),
+      )).catch((error) => {
+        emit({
+          requestId: envelope.requestId,
+          sessionId,
+          type: "failed",
+          message: error instanceof Error ? error.message : "Session lock failed",
+        });
+      });
+      sessionQueues.set(sessionId, task);
+      void task.finally(() => {
+        if (activeRequests.get(envelope.requestId)?.controller === controller) {
+          activeRequests.delete(envelope.requestId);
+        }
+        if (sessionQueues.get(sessionId) === task) sessionQueues.delete(sessionId);
+      });
+    } else if (envelope.type === "rename_session" || envelope.type === "record_attempt") {
       const sessionId = envelope.sessionId;
       const previous = sessionQueues.get(sessionId) ?? Promise.resolve();
       task = previous.catch(() => {}).then(() => withSessionLock(

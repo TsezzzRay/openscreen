@@ -44,6 +44,42 @@ final class PanelTests: XCTestCase {
         XCTAssertEqual(object["title"] as? String, "Project notes")
     }
 
+    func testCancelRequestEncoding() throws {
+        let requestID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
+        let sessionID = UUID(uuidString: "00000000-0000-0000-0000-000000000002")!
+        let targetID = UUID(uuidString: "00000000-0000-0000-0000-000000000003")!
+        let data = try AgentRequest.cancel(
+            requestID: requestID,
+            sessionID: sessionID,
+            targetRequestID: targetID
+        ).encodedLine()
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: data) as? [String: Any]
+        )
+
+        XCTAssertEqual(object["type"] as? String, "cancel")
+        XCTAssertEqual(object["sessionId"] as? String, sessionID.uuidString)
+        XCTAssertEqual(object["targetRequestId"] as? String, targetID.uuidString)
+    }
+
+    func testRecordCancelledAttemptEncoding() throws {
+        let sessionID = UUID(uuidString: "00000000-0000-0000-0000-000000000002")!
+        let data = try AgentRequest.recordAttempt(
+            requestID: UUID(),
+            sessionID: sessionID,
+            text: "Stop before capture",
+            status: .cancelled
+        ).encodedLine()
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: data) as? [String: Any]
+        )
+        let input = try XCTUnwrap(object["input"] as? [String: String])
+
+        XCTAssertEqual(object["type"] as? String, "record_attempt")
+        XCTAssertEqual(object["status"] as? String, "cancelled")
+        XCTAssertEqual(input["text"], "Stop before capture")
+    }
+
     func testAgentEventDecoding() throws {
         let data = Data(
             #"{"requestId":"00000000-0000-0000-0000-000000000001","sessionId":"00000000-0000-0000-0000-000000000002","type":"answer_delta","delta":"Hello"}"#.utf8
@@ -56,6 +92,21 @@ final class PanelTests: XCTestCase {
         XCTAssertEqual(
             event.sessionId,
             UUID(uuidString: "00000000-0000-0000-0000-000000000002")
+        )
+    }
+
+    func testAgentErrorsUseStableUserMessages() {
+        XCTAssertEqual(
+            AgentClientError.requestFailed("provider secret").errorDescription,
+            "Request failed. Please retry."
+        )
+        XCTAssertEqual(
+            AgentClientError.processExited.errorDescription,
+            "The agent stopped. Restart OpenScreen and try again."
+        )
+        XCTAssertEqual(
+            AgentClientError.invalidResponse.errorDescription,
+            "Request failed. Please retry."
         )
     }
 
@@ -190,10 +241,57 @@ final class PanelTests: XCTestCase {
             sessionID: firstSessionID,
             turnID: firstTurnID
         )
+        viewModel.apply(
+            .init(sessionID: firstSessionID, type: .cancelled),
+            sessionID: firstSessionID,
+            turnID: firstTurnID
+        )
 
         XCTAssertEqual(viewModel.currentSessionID, secondSessionID)
         XCTAssertTrue(viewModel.turns.isEmpty)
         XCTAssertEqual(viewModel.cachedTurns(for: firstSessionID).first?.answer, "Background answer")
+        XCTAssertEqual(viewModel.cachedTurns(for: firstSessionID).first?.status, .cancelled)
+    }
+
+    func testChatViewModelTracksLifecycleAndPreparesEditableRetry() {
+        let viewModel = ChatViewModel(
+            agentClient: AgentClient(),
+            windowCapture: WindowCapture()
+        )
+        let sessionID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
+        let turnID = UUID(uuidString: "00000000-0000-0000-0000-000000000002")!
+        viewModel.apply(.init(
+            id: sessionID,
+            title: "Lifecycle",
+            createdAt: "2026-07-19T00:00:00.000Z",
+            updatedAt: "2026-07-19T00:00:00.000Z",
+            turns: []
+        ))
+
+        viewModel.startTurn(sessionID: sessionID, id: turnID, question: "Original prompt")
+        XCTAssertEqual(viewModel.turns[0].status, .capturing)
+
+        viewModel.markRequesting(sessionID: sessionID, turnID: turnID)
+        XCTAssertEqual(viewModel.turns[0].status, .requesting)
+
+        viewModel.apply(
+            .init(sessionID: sessionID, type: .answerDelta, delta: "Partial"),
+            sessionID: sessionID,
+            turnID: turnID
+        )
+        XCTAssertEqual(viewModel.turns[0].status, .generating)
+
+        viewModel.apply(
+            .init(sessionID: sessionID, type: .cancelled),
+            sessionID: sessionID,
+            turnID: turnID
+        )
+        XCTAssertEqual(viewModel.turns[0].status, .cancelled)
+
+        let previousFocusRequest = viewModel.focusRequest
+        viewModel.retry(turnID: turnID)
+        XCTAssertEqual(viewModel.draft, "Original prompt")
+        XCTAssertEqual(viewModel.focusRequest, previousFocusRequest + 1)
     }
 
     func testWindowSelectionSkipsFullscreenToolbar() {

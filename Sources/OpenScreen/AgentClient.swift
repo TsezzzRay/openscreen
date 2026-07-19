@@ -6,12 +6,19 @@ struct AgentRequest: Encodable {
         case createSession = "create_session"
         case loadSession = "load_session"
         case renameSession = "rename_session"
+        case recordAttempt = "record_attempt"
+        case cancel
         case chat
+    }
+
+    enum AttemptStatus: String, Encodable {
+        case failed
+        case cancelled
     }
 
     struct Input: Encodable {
         let text: String
-        let image: String
+        let image: String?
     }
 
     let requestId: UUID
@@ -19,22 +26,40 @@ struct AgentRequest: Encodable {
     let sessionId: UUID?
     let input: Input?
     let title: String?
+    let targetRequestId: UUID?
+    let status: AttemptStatus?
+
+    private init(
+        requestId: UUID,
+        type: Kind,
+        sessionId: UUID? = nil,
+        input: Input? = nil,
+        title: String? = nil,
+        targetRequestId: UUID? = nil,
+        status: AttemptStatus? = nil
+    ) {
+        self.requestId = requestId
+        self.type = type
+        self.sessionId = sessionId
+        self.input = input
+        self.title = title
+        self.targetRequestId = targetRequestId
+        self.status = status
+    }
 
     static func listSessions(requestID: UUID = UUID()) -> Self {
-        Self(requestId: requestID, type: .listSessions, sessionId: nil, input: nil, title: nil)
+        Self(requestId: requestID, type: .listSessions)
     }
 
     static func createSession(requestID: UUID = UUID()) -> Self {
-        Self(requestId: requestID, type: .createSession, sessionId: nil, input: nil, title: nil)
+        Self(requestId: requestID, type: .createSession)
     }
 
     static func loadSession(requestID: UUID = UUID(), sessionID: UUID) -> Self {
         Self(
             requestId: requestID,
             type: .loadSession,
-            sessionId: sessionID,
-            input: nil,
-            title: nil
+            sessionId: sessionID
         )
     }
 
@@ -47,7 +72,6 @@ struct AgentRequest: Encodable {
             requestId: requestID,
             type: .renameSession,
             sessionId: sessionID,
-            input: nil,
             title: title
         )
     }
@@ -62,8 +86,35 @@ struct AgentRequest: Encodable {
             requestId: requestID,
             type: .chat,
             sessionId: sessionID,
-            input: Input(text: text, image: imagePath),
-            title: nil
+            input: Input(text: text, image: imagePath)
+        )
+    }
+
+    static func cancel(
+        requestID: UUID = UUID(),
+        sessionID: UUID,
+        targetRequestID: UUID
+    ) -> Self {
+        Self(
+            requestId: requestID,
+            type: .cancel,
+            sessionId: sessionID,
+            targetRequestId: targetRequestID
+        )
+    }
+
+    static func recordAttempt(
+        requestID: UUID,
+        sessionID: UUID,
+        text: String,
+        status: AttemptStatus
+    ) -> Self {
+        Self(
+            requestId: requestID,
+            type: .recordAttempt,
+            sessionId: sessionID,
+            input: Input(text: text, image: nil),
+            status: status
         )
     }
 
@@ -81,11 +132,14 @@ struct ChatSessionSummary: Decodable, Identifiable, Equatable, Sendable {
     let updatedAt: String
 }
 
-enum ChatTurnStatus: String, Decodable, Equatable, Sendable {
+enum ChatTurnStatus: String, Codable, Equatable, Sendable {
+    case capturing
+    case requesting
+    case generating
     case completed
     case failed
+    case cancelled
     case interrupted
-    case streaming
 }
 
 struct StoredChatTurn: Decodable, Equatable, Sendable {
@@ -114,6 +168,7 @@ struct AgentEvent: Decodable, Equatable, Sendable {
         case session
         case completed
         case failed
+        case cancelled
     }
 
     let requestId: UUID
@@ -152,9 +207,9 @@ enum AgentClientError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .requestAlreadyRunning: "A request is already running."
-        case .processExited: "The agent process exited."
-        case .requestFailed(let message): message
-        case .invalidResponse: "The agent returned an invalid response."
+        case .processExited: "The agent stopped. Restart OpenScreen and try again."
+        case .requestFailed: "Request failed. Please retry."
+        case .invalidResponse: "Request failed. Please retry."
         }
     }
 }
@@ -222,6 +277,27 @@ actor AgentClient {
         ))
     }
 
+    func cancel(requestID: UUID, sessionID: UUID) async throws {
+        for try await _ in try request(.cancel(
+            sessionID: sessionID,
+            targetRequestID: requestID
+        )) {}
+    }
+
+    func recordAttempt(
+        requestID: UUID,
+        sessionID: UUID,
+        text: String,
+        status: AgentRequest.AttemptStatus
+    ) async throws {
+        for try await _ in try request(.recordAttempt(
+            requestID: requestID,
+            sessionID: sessionID,
+            text: text,
+            status: status
+        )) {}
+    }
+
     private func sessionResponse(for request: AgentRequest) async throws -> ChatSessionSnapshot {
         var session: ChatSessionSnapshot?
         for try await event in try self.request(request) {
@@ -280,6 +356,9 @@ actor AgentClient {
                         )
                     )
                 case .completed:
+                    request.continuation.yield(event)
+                    finish(event.requestId)
+                case .cancelled:
                     request.continuation.yield(event)
                     finish(event.requestId)
                 case .started, .reasoningDelta, .answerDelta, .sessions, .session:
