@@ -1,15 +1,32 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { getModel, makeRequest, mapEvent, relayStream } from "./model.js";
+import OpenAI from "openai";
+
+import {
+  countTurns,
+  getModel,
+  makeRequest,
+  mapEvent,
+  relayStream,
+  summarizeTurns,
+} from "./model.js";
+
+const loadScreenshot = async (path: string) => Buffer.from(path).toString("base64");
 
 test("requires an OpenAI-compatible model", () => {
   assert.equal(getModel({ OPENAI_MODEL: "vision-model" }), "vision-model");
   assert.throws(() => getModel({}), /OPENAI_MODEL is required/);
 });
 
-test("builds a streaming Responses API screenshot request", () => {
-  const request = makeRequest("vision-model", "What is on screen?", "cG5n");
+test("builds a streaming Responses API screenshot request", async () => {
+  const request = await makeRequest(
+    "vision-model",
+    "What is on screen?",
+    "current.png",
+    undefined,
+    loadScreenshot,
+  );
 
   assert.equal(request.model, "vision-model");
   assert.equal(request.stream, true);
@@ -21,14 +38,20 @@ test("builds a streaming Responses API screenshot request", () => {
       {
         type: "input_image",
         detail: "auto",
-        image_url: "data:image/png;base64,cG5n",
+        image_url: `data:image/png;base64,${Buffer.from("current.png").toString("base64")}`,
       },
     ],
   });
 });
 
-test("builds a MiniMax M3 streaming screenshot request", () => {
-  const request = makeRequest("MiniMax-M3", "What is on screen?", "cG5n");
+test("builds a MiniMax M3 streaming screenshot request", async () => {
+  const request = await makeRequest(
+    "MiniMax-M3",
+    "What is on screen?",
+    "current.png",
+    undefined,
+    loadScreenshot,
+  );
 
   assert.deepEqual(request.reasoning, { effort: "minimal" });
   assert.equal(request.max_output_tokens, 21_760);
@@ -39,7 +62,7 @@ test("builds a MiniMax M3 streaming screenshot request", () => {
       {
         type: "input_image",
         image_url: {
-          url: "data:image/png;base64,cG5n",
+          url: `data:image/png;base64,${Buffer.from("current.png").toString("base64")}`,
           detail: "default",
         },
       },
@@ -47,20 +70,43 @@ test("builds a MiniMax M3 streaming screenshot request", () => {
   });
 });
 
-test("includes summary and retained turns before the current request", () => {
-  const request = makeRequest("vision-model", "Current question", "cG5n", {
+test("includes every retained screenshot before the current request", async () => {
+  const request = await makeRequest("vision-model", "Current question", "current.png", {
     turns: [
-      { user: "First question", assistant: "First answer" },
-      { user: "Second question", assistant: "Second answer" },
+      { user: "First question", assistant: "First answer", screenshotPath: "first.png" },
+      { user: "Second question", assistant: "Second answer", screenshotPath: "second.png" },
+      { user: "Third question", assistant: "Third answer", screenshotPath: "third.png" },
     ],
     summary: "Earlier context",
     firstKeptTurnIndex: 1,
-  });
+  }, loadScreenshot);
 
   assert.deepEqual(request.input?.slice(0, -1), [
     { role: "developer", content: "Conversation summary:\nEarlier context" },
-    { role: "user", content: "Second question" },
+    {
+      role: "user",
+      content: [
+        { type: "input_text", text: "Second question" },
+        {
+          type: "input_image",
+          detail: "auto",
+          image_url: `data:image/png;base64,${Buffer.from("second.png").toString("base64")}`,
+        },
+      ],
+    },
     { role: "assistant", content: "Second answer" },
+    {
+      role: "user",
+      content: [
+        { type: "input_text", text: "Third question" },
+        {
+          type: "input_image",
+          detail: "auto",
+          image_url: `data:image/png;base64,${Buffer.from("third.png").toString("base64")}`,
+        },
+      ],
+    },
+    { role: "assistant", content: "Third answer" },
   ]);
   assert.deepEqual(request.input?.at(-1), {
     role: "user",
@@ -69,10 +115,65 @@ test("includes summary and retained turns before the current request", () => {
       {
         type: "input_image",
         detail: "auto",
-        image_url: "data:image/png;base64,cG5n",
+        image_url: `data:image/png;base64,${Buffer.from("current.png").toString("base64")}`,
       },
     ],
   });
+});
+
+test("counts retained turn text and screenshots together", async () => {
+  let countedInput: unknown;
+  const client = {
+    responses: {
+      inputTokens: {
+        count: async ({ input }: { input: unknown }) => {
+          countedInput = input;
+          return { input_tokens: 123 };
+        },
+      },
+    },
+  } as unknown as OpenAI;
+
+  const tokens = await countTurns(client, "vision-model", [
+    { user: "Question 1", assistant: "Answer 1", screenshotPath: "first.png" },
+    { user: "Question 2", assistant: "Answer 2", screenshotPath: "second.png" },
+  ], loadScreenshot);
+
+  assert.equal(tokens, 123);
+  const input = JSON.stringify(countedInput);
+  assert.match(input, new RegExp(Buffer.from("first.png").toString("base64")));
+  assert.match(input, new RegExp(Buffer.from("second.png").toString("base64")));
+});
+
+test("summarizes old screenshots as plain facts without internal references", async () => {
+  let summaryRequest: any;
+  const client = {
+    responses: {
+      create: async (request: unknown) => {
+        summaryRequest = request;
+        return { output_text: "The settings page shows an authentication error." };
+      },
+    },
+  } as unknown as OpenAI;
+
+  await summarizeTurns(
+    client,
+    "vision-model",
+    "The user is configuring an account.",
+    [{
+      user: "Why did this fail?",
+      assistant: "The form reports an authentication error.",
+      screenshotPath: "error-screen.png",
+    }],
+    loadScreenshot,
+  );
+
+  const input = JSON.stringify(summaryRequest.input);
+  assert.match(input, new RegExp(Buffer.from("error-screen.png").toString("base64")));
+  assert.match(summaryRequest.instructions, /plain facts/i);
+  assert.match(summaryRequest.instructions, /screenshot paths/i);
+  assert.match(summaryRequest.instructions, /turn IDs/i);
+  assert.match(summaryRequest.instructions, /reference markers/i);
 });
 
 test("maps Responses API deltas to request-scoped JSONL events", () => {

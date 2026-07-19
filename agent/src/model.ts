@@ -1,3 +1,5 @@
+import { readFile } from "node:fs/promises";
+
 import OpenAI from "openai";
 
 import { MAX_OUTPUT_TOKENS, type SessionState, type Turn } from "./session.js";
@@ -9,6 +11,12 @@ Reply in the same language as the user.
 Be direct and concise.
 If the answer cannot be determined from the screenshot, say so.
 Do not claim that you clicked, typed, changed, or executed anything.`;
+
+type LoadScreenshot = (path: string) => Promise<string>;
+
+const loadScreenshot: LoadScreenshot = async (path) => (
+  await readFile(path)
+).toString("base64");
 
 export type ModelEvent = {
   type: string;
@@ -33,15 +41,12 @@ export function getModel(env: NodeJS.ProcessEnv = process.env) {
   return model;
 }
 
-export function makeRequest(
+function imagePart(
   model: string,
-  text: string,
   imageBase64: string,
-  session: SessionState = { turns: [], firstKeptTurnIndex: 0 },
-): OpenAI.Responses.ResponseCreateParamsStreaming {
+): OpenAI.Responses.ResponseInputImage {
   const imageURL = `data:image/png;base64,${imageBase64}`;
-  const isMiniMaxM3 = model.toLowerCase() === "minimax-m3";
-  const image = (isMiniMaxM3
+  return (model.toLowerCase() === "minimax-m3"
     ? {
         type: "input_image",
         image_url: { url: imageURL, detail: "default" },
@@ -51,6 +56,47 @@ export function makeRequest(
         detail: "auto",
         image_url: imageURL,
       }) as unknown as OpenAI.Responses.ResponseInputImage;
+}
+
+async function userInput(
+  model: string,
+  text: string,
+  screenshotPath: string,
+  readScreenshot: LoadScreenshot,
+): Promise<OpenAI.Responses.ResponseInputItem> {
+  return {
+    role: "user",
+    content: [
+      { type: "input_text", text },
+      imagePart(model, await readScreenshot(screenshotPath)),
+    ],
+  };
+}
+
+async function turnsInput(
+  model: string,
+  turns: Turn[],
+  readScreenshot: LoadScreenshot,
+): Promise<OpenAI.Responses.ResponseInput> {
+  return (await Promise.all(turns.map(async (turn) => [
+    await userInput(model, turn.user, turn.screenshotPath, readScreenshot),
+    { role: "assistant" as const, content: turn.assistant },
+  ]))).flat();
+}
+
+export async function makeRequest(
+  model: string,
+  text: string,
+  screenshotPath: string,
+  session: SessionState = { turns: [], firstKeptTurnIndex: 0 },
+  readScreenshot: LoadScreenshot = loadScreenshot,
+): Promise<OpenAI.Responses.ResponseCreateParamsStreaming> {
+  const isMiniMaxM3 = model.toLowerCase() === "minimax-m3";
+  const retainedInput = await turnsInput(
+    model,
+    session.turns.slice(session.firstKeptTurnIndex),
+    readScreenshot,
+  );
 
   return {
     model,
@@ -59,17 +105,8 @@ export function makeRequest(
       ...(session.summary
         ? [{ role: "developer" as const, content: `Conversation summary:\n${session.summary}` }]
         : []),
-      ...session.turns.slice(session.firstKeptTurnIndex).flatMap((turn) => [
-        { role: "user" as const, content: turn.user },
-        { role: "assistant" as const, content: turn.assistant },
-      ]),
-      {
-        role: "user",
-        content: [
-          { type: "input_text", text },
-          image,
-        ],
-      },
+      ...retainedInput,
+      await userInput(model, text, screenshotPath, readScreenshot),
     ],
     reasoning: isMiniMaxM3 ? { effort: "minimal" } : { summary: "auto" },
     max_output_tokens: MAX_OUTPUT_TOKENS,
@@ -142,16 +179,17 @@ export async function relayStream(
   return { output, totalTokens };
 }
 
-function textInput(turns: Turn[]): OpenAI.Responses.ResponseInput {
-  return turns.flatMap((turn) => [
-    { role: "user" as const, content: turn.user },
-    { role: "assistant" as const, content: turn.assistant },
-  ]);
-}
-
-export async function countTurns(client: OpenAI, model: string, turns: Turn[]) {
+export async function countTurns(
+  client: OpenAI,
+  model: string,
+  turns: Turn[],
+  readScreenshot: LoadScreenshot = loadScreenshot,
+) {
   return (
-    await client.responses.inputTokens.count({ model, input: textInput(turns) })
+    await client.responses.inputTokens.count({
+      model,
+      input: await turnsInput(model, turns, readScreenshot),
+    })
   ).input_tokens;
 }
 
@@ -174,20 +212,16 @@ export async function summarizeTurns(
   model: string,
   previousSummary: string | undefined,
   turns: Turn[],
+  readScreenshot: LoadScreenshot = loadScreenshot,
 ): Promise<string> {
   const response = await client.responses.create({
     model,
-    instructions: `Summarize the earlier conversation concisely. Preserve only information needed for future turns: user intent, confirmed facts, decisions, and unfinished requests. Do not describe the summarization process.`,
+    instructions: `Summarize the earlier conversation concisely. Preserve user intent, confirmed facts, decisions, unfinished requests, and important visual information such as errors, interface state, visible data, and the user's current work. Integrate visual information as plain facts. Do not output screenshot paths, filenames, turn IDs, internal reference markers such as screen:*, or phrases that refer to a screenshot or image. Do not describe the summarization process.`,
     input: [
       ...(previousSummary
         ? [{ role: "developer" as const, content: `Previous summary:\n${previousSummary}` }]
         : []),
-      {
-        role: "user",
-        content: turns
-          .map((turn) => `User: ${turn.user}\nAssistant: ${turn.assistant}`)
-          .join("\n\n"),
-      },
+      ...await turnsInput(model, turns, readScreenshot),
     ],
     max_output_tokens: 4_096,
   });

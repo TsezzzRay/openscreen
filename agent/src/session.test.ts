@@ -16,6 +16,7 @@ test("compacts older turns while retaining 20K recent tokens", async () => {
     turns: Array.from({ length: 5 }, (_, index) => ({
       user: `Question ${index + 1}`,
       assistant: `Answer ${index + 1}`,
+      screenshotPath: `screen-${index + 1}.png`,
     })),
     firstKeptTurnIndex: 0,
   };
@@ -41,6 +42,7 @@ test("finds the 20K recent-turn boundary without scanning every turn", async () 
     turns: Array.from({ length: 100 }, (_, index) => ({
       user: `Question ${index + 1}`,
       assistant: `Answer ${index + 1}`,
+      screenshotPath: `screen-${index + 1}.png`,
     })),
     firstKeptTurnIndex: 0,
   };
@@ -64,6 +66,7 @@ test("rolls the previous summary forward without re-summarizing raw history", as
     turns: Array.from({ length: 8 }, (_, index) => ({
       user: `Question ${index + 1}`,
       assistant: `Answer ${index + 1}`,
+      screenshotPath: `screen-${index + 1}.png`,
     })),
     summary: "Previous summary",
     firstKeptTurnIndex: 3,

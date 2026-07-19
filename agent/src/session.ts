@@ -1,6 +1,7 @@
 export type Turn = {
   user: string;
   assistant: string;
+  screenshotPath: string;
 };
 
 export type SessionState = {

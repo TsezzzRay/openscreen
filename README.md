@@ -12,7 +12,7 @@ Press `Option + Space` to open a floating panel, ask a question, and OpenScreen 
 - Movable floating panel that stays above other applications.
 - Active-window capture using ScreenCaptureKit.
 - One in-memory multi-turn conversation per app launch.
-- Automatic text-context compaction at 90% of the model context window.
+- Automatic text-and-screenshot context compaction at 90% of the model context window.
 - Streaming Responses API providers with image input.
 
 ## Requirements
@@ -62,7 +62,8 @@ Each screenshot is:
 
 1. saved locally under `~/Library/Application Support/OpenScreen/screenshots/`;
 2. encoded as a Base64 PNG;
-3. sent with the question to the configured model provider.
+3. sent with its turn to the configured model provider until that turn is compacted;
+4. sent during compaction when the model summarizes older turns as plain text facts.
 
 Screenshots are not deleted automatically in the current version. Review your provider's data policy before sending sensitive content.
 
@@ -81,11 +82,11 @@ Screenshots are not deleted automatically in the current version. Review your pr
 macOS app (Swift, AppKit, SwiftUI, ScreenCaptureKit)
     -> JSON Lines over stdin/stdout
 local agent (Node.js, TypeScript, OpenAI SDK)
-    -> streaming Responses API with text and a Base64 PNG
+    -> streaming Responses API with retained text and Base64 PNG screenshots
 configured Responses API-compatible provider
 ```
 
-The macOS process owns the panel, shortcut, capture, and local screenshot files. The Node.js process owns the in-memory text history, context compaction, and model request. Streaming events are correlated by `requestId`; reasoning summaries and final-answer text are rendered separately, while only the final answer is retained as conversation context. The agent compacts at 244,800 of 272,000 tokens, keeps about 20,000 tokens of recent complete turns, and retains the full raw turn history in memory.
+The macOS process owns the panel, shortcut, capture, and local screenshot files. The Node.js process owns the in-memory turn history, screenshot paths, context compaction, and model request. Streaming events are correlated by `requestId`; reasoning and final-answer text are rendered separately, while the question, screenshot path, and final answer are retained as conversation context. The agent compacts at 244,800 of 272,000 multimodal tokens, keeps about 20,000 tokens of recent complete turns, and retains the full raw turn history in memory.
 
 ## Development
 

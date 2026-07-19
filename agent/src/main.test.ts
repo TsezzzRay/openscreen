@@ -12,7 +12,7 @@ import { COMPACT_AT_TOKENS } from "./session.js";
 
 test("rebuilds the agent process context after turn-end compaction", async (t) => {
   const modelRequests: unknown[] = [];
-  let summaryRequests = 0;
+  const summaryRequests: any[] = [];
   const server = createServer(async (request, response) => {
     const body = await readJSON(request);
 
@@ -31,7 +31,7 @@ test("rebuilds the agent process context after turn-end compaction", async (t) =
     }
 
     if (request.url === "/v1/responses" && !body.stream) {
-      summaryRequests += 1;
+      summaryRequests.push(body);
       response.setHeader("content-type", "application/json");
       response.end(JSON.stringify({
         id: "summary",
@@ -79,8 +79,6 @@ test("rebuilds the agent process context after turn-end compaction", async (t) =
   const address = server.address();
   assert(address && typeof address !== "string");
   const directory = await mkdtemp(join(tmpdir(), "openscreen-test-"));
-  const image = join(directory, "screen.png");
-  await writeFile(image, "png");
   t.after(() => rm(directory, { force: true, recursive: true }));
 
   const agent = spawn(process.execPath, ["agent/dist/main.js"], {
@@ -105,6 +103,8 @@ test("rebuilds the agent process context after turn-end compaction", async (t) =
   let requestNumber = 0;
   async function sendTurn(text: string) {
     const requestId = `request-${++requestNumber}`;
+    const image = join(directory, `${requestId}.png`);
+    await writeFile(image, `image-${requestNumber}`);
     const completed = new Promise<void>((resolve) => completions.set(requestId, resolve));
     agent.stdin.write(`${JSON.stringify({ requestId, input: { text, image } })}\n`);
     await completed;
@@ -124,7 +124,21 @@ test("rebuilds the agent process context after turn-end compaction", async (t) =
   assert.match(context, /next request/);
   assert.doesNotMatch(context, /old turn one/);
   assert.doesNotMatch(context, /old turn two/);
-  assert.equal(summaryRequests, 1);
+  assert.doesNotMatch(
+    context,
+    new RegExp(Buffer.from("image-1").toString("base64")),
+  );
+  assert.doesNotMatch(
+    context,
+    new RegExp(Buffer.from("image-2").toString("base64")),
+  );
+  assert.match(context, new RegExp(Buffer.from("image-3").toString("base64")));
+  assert.match(context, new RegExp(Buffer.from("image-4").toString("base64")));
+  assert.match(
+    JSON.stringify(summaryRequests[0]?.input),
+    new RegExp(Buffer.from("image-1").toString("base64")),
+  );
+  assert.equal(summaryRequests.length, 1);
   assert.equal(modelRequests.length, 5);
 });
 

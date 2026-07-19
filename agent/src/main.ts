@@ -1,4 +1,3 @@
-import { readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { createInterface } from "node:readline";
 
@@ -52,16 +51,24 @@ async function run() {
     const { requestId, input } = JSON.parse(line) as InputEnvelope;
     emit({ requestId, type: "started" });
     try {
-      const imageBase64 = (await readFile(input.image)).toString("base64");
-      const buildRequest = () => makeRequest(model, input.text, imageBase64, session);
+      const buildRequest = () => makeRequest(model, input.text, input.image, session);
+      let request = await buildRequest();
       await compactIfNeeded(
-        () => countRequestTokens(client, buildRequest()),
-        compact,
+        () => countRequestTokens(client, request),
+        async () => {
+          const compacted = await compact();
+          request = await buildRequest();
+          return compacted;
+        },
       );
-      const stream = await client.responses.create(buildRequest());
+      const stream = await client.responses.create(request);
       const result = await relayStream(requestId, stream, emit);
       if (result !== null) {
-        session.turns.push({ user: input.text, assistant: result.output });
+        session.turns.push({
+          user: input.text,
+          assistant: result.output,
+          screenshotPath: input.image,
+        });
         if ((result.totalTokens ?? 0) >= COMPACT_AT_TOKENS) {
           try {
             await compact();
