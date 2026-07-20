@@ -10,7 +10,7 @@ import {
   mapEvent,
   relayStream,
   summarizeTurns,
-} from "./model.js";
+} from "../../src/chat/model.js";
 
 const loadScreenshot = async (path: string) => Buffer.from(path).toString("base64");
 
@@ -348,7 +348,7 @@ test("maps Responses API deltas to request-scoped JSONL events", () => {
 test("completes only after a successful stream is exhausted", async () => {
   const events: object[] = [];
   let exhausted = false;
-  async function* stream(): AsyncGenerator<import("./model.js").ModelEvent> {
+  async function* stream(): AsyncGenerator<import("../../src/chat/model.js").ModelEvent> {
     yield { type: "response.reasoning_summary_text.delta", delta: "Checked screen" };
     yield { type: "response.output_text.delta", delta: "Final answer" };
     yield {

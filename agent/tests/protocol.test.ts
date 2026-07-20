@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { parseInputEnvelope } from "./protocol.js";
+import { parseInputEnvelope } from "../src/protocol.js";
 
 test("parses and normalizes session-scoped requests", () => {
   assert.deepEqual(

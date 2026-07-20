@@ -4,6 +4,7 @@
 .superpowers/
 node_modules/
 agent/dist/
+agent/dist-test/
 .env
 .vscode/
 .worktrees/

@@ -6,7 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 
-import { createSession } from "./store.js";
+import { createSession } from "../../src/session/store.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -15,7 +15,7 @@ test("serializes the same session across processes", async (t) => {
   t.after(() => rm(directory, { force: true, recursive: true }));
   const session = await createSession(directory);
   const marker = join(directory, "marker.txt");
-  const moduleURL = new URL("./lock.js", import.meta.url).href;
+  const moduleURL = new URL("../../src/session/lock.js", import.meta.url).href;
   const script = `
     import { appendFile } from "node:fs/promises";
     import { withSessionLock } from ${JSON.stringify(moduleURL)};

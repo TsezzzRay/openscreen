@@ -7,7 +7,8 @@
   },
   "scripts": {
     "build:agent": "node -e \"require('node:fs').rmSync('agent/dist', { recursive: true, force: true })\" && tsc -p agent/tsconfig.json",
-    "test:agent": "npm run build:agent && node --test agent/dist/*.test.js agent/dist/*/*.test.js",
+    "build:agent-tests": "node -e \"require('node:fs').rmSync('agent/dist-test', { recursive: true, force: true })\" && tsc -p agent/tsconfig.test.json",
+    "test:agent": "npm run build:agent && npm run build:agent-tests && node --test agent/dist-test/tests/*.test.js agent/dist-test/tests/*/*.test.js",
     "dev": "npm run build:agent && swift run OpenScreen"
   },
   "dependencies": {
