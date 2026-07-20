@@ -380,7 +380,10 @@ test("rebuilds the agent process context after turn-end compaction", async (t) =
     return completed;
   }
 
-  const beforeRename = await restartedRequest({ type: "load_session", sessionId });
+  const beforeRename = await restartedRequest({
+    type: "load_session",
+    sessionId: sessionId.toUpperCase(),
+  });
   assert.equal(
     beforeRename.find((event) => event.type === "session").session.title,
     "old turn one",

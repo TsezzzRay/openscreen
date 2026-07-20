@@ -418,6 +418,7 @@ async function run() {
   };
 
   const dispatch = (envelope: InputEnvelope) => {
+    if ("sessionId" in envelope) envelope.sessionId = envelope.sessionId.toLowerCase();
     let task: Promise<void>;
     if (envelope.type === "chat") {
       const sessionId = envelope.sessionId;
