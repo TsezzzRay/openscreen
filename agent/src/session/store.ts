@@ -49,7 +49,6 @@ export type SessionSummary = Pick<
   StoredSession,
   "id" | "title" | "createdAt" | "updatedAt"
 >;
-const MIN_RECENT_TURNS = 2;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 type SessionHeader = {
@@ -90,16 +89,11 @@ export type SessionEvent = {
   firstKeptTurnIndex: number;
 };
 
-function sessionPath(directory: string, id: string) {
+export function sessionPath(directory: string, id: string) {
   if (!UUID_PATTERN.test(id)) {
     throw new Error("Invalid session ID");
   }
   return join(directory, `${id}.jsonl`);
-}
-
-function lockPath(directory: string, id: string) {
-  sessionPath(directory, id);
-  return join(directory, `${id}.lock`);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -445,127 +439,4 @@ export async function renameSession(
   if (trimmedTitle.length > 100) throw new Error("Session title is too long");
   await rewriteHeader(directory, id, trimmedTitle);
   return loadSession(directory, id);
-}
-
-function processExists(pid: number) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "EPERM";
-  }
-}
-
-export async function withSessionLock<T>(
-  directory: string,
-  id: string,
-  operation: () => Promise<T>,
-): Promise<T> {
-  await mkdir(directory, { recursive: true });
-  const path = lockPath(directory, id);
-  const token = randomUUID();
-  while (true) {
-    try {
-      const lock = await open(path, "wx", 0o600);
-      try {
-        await lock.writeFile(JSON.stringify({ pid: process.pid, token }));
-        await lock.sync();
-      } finally {
-        await lock.close();
-      }
-      break;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      try {
-        const owner = JSON.parse(await readFile(path, "utf8")) as { pid?: unknown };
-        if (typeof owner.pid !== "number" || !processExists(owner.pid)) {
-          await rm(path, { force: true });
-          continue;
-        }
-      } catch (readError) {
-        if ((readError as NodeJS.ErrnoException).code === "ENOENT") continue;
-        let age: number;
-        try {
-          age = Date.now() - (await stat(path)).mtimeMs;
-        } catch (statError) {
-          if ((statError as NodeJS.ErrnoException).code === "ENOENT") continue;
-          throw statError;
-        }
-        if (age >= 5_000) {
-          await rm(path, { force: true });
-          continue;
-        }
-      }
-      await new Promise((resolve) => setTimeout(resolve, 25));
-    }
-  }
-
-  try {
-    return await operation();
-  } finally {
-    try {
-      const owner = JSON.parse(await readFile(path, "utf8")) as { token?: unknown };
-      if (owner.token === token) await rm(path, { force: true });
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    }
-  }
-}
-
-export async function compactSession(
-  session: SessionState,
-  keepRecentTokens: number,
-  countTurns: (turns: Turn[]) => Promise<number>,
-  summarize: (previousSummary: string | undefined, turns: Turn[]) => Promise<string>,
-): Promise<boolean> {
-  const latestFirstKeptTurnIndex = Math.max(
-    session.firstKeptTurnIndex,
-    session.turns.length - MIN_RECENT_TURNS,
-  );
-  let firstKeptTurnIndex = latestFirstKeptTurnIndex;
-
-  if (
-    latestFirstKeptTurnIndex > session.firstKeptTurnIndex &&
-    await countTurns(session.turns.slice(latestFirstKeptTurnIndex)) <= keepRecentTokens
-  ) {
-    let low = session.firstKeptTurnIndex;
-    let high = latestFirstKeptTurnIndex;
-    while (low < high) {
-      const candidate = Math.floor((low + high) / 2);
-      if (await countTurns(session.turns.slice(candidate)) <= keepRecentTokens) {
-        high = candidate;
-      } else {
-        low = candidate + 1;
-      }
-    }
-    firstKeptTurnIndex = low;
-  }
-
-  if (firstKeptTurnIndex <= session.firstKeptTurnIndex) return false;
-
-  const summary = await summarize(
-    session.summary,
-    session.turns.slice(session.firstKeptTurnIndex, firstKeptTurnIndex),
-  );
-  session.summary = summary;
-  session.firstKeptTurnIndex = firstKeptTurnIndex;
-  return true;
-}
-
-export async function compactIfNeeded(
-  compactAtTokens: number,
-  countInputTokens: () => Promise<number>,
-  compact: () => Promise<boolean | void>,
-): Promise<number> {
-  let inputTokens = await countInputTokens();
-  if (inputTokens < compactAtTokens) return inputTokens;
-
-  if (await compact() === false) {
-    throw new Error("Current request exceeds the model context budget");
-  }
-  inputTokens = await countInputTokens();
-  if (inputTokens >= compactAtTokens) {
-    throw new Error("Compacted request still exceeds the model context budget");
-  }
-  return inputTokens;
 }

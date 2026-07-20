@@ -6,8 +6,8 @@
     "node": ">=20.12.0"
   },
   "scripts": {
-    "build:agent": "tsc -p agent/tsconfig.json",
-    "test:agent": "npm run build:agent && node --test agent/dist/*.test.js",
+    "build:agent": "node -e \"require('node:fs').rmSync('agent/dist', { recursive: true, force: true })\" && tsc -p agent/tsconfig.json",
+    "test:agent": "npm run build:agent && node --test agent/dist/*.test.js agent/dist/*/*.test.js",
     "dev": "npm run build:agent && swift run OpenScreen"
   },
   "dependencies": {

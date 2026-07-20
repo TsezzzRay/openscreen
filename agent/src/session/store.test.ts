@@ -1,23 +1,16 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
 import { appendFile, mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { promisify } from "node:util";
 
 import {
-  compactIfNeeded,
-  compactSession,
   createSession,
   appendSessionEvents,
   listSessions,
   loadSession,
   renameSession,
-  type SessionState,
-} from "./session.js";
-
-const execFileAsync = promisify(execFile);
+} from "./store.js";
 
 test("stores metadata on the first line and replays completed turns and compaction", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "openscreen-sessions-"));
@@ -249,152 +242,4 @@ test("renames a session after trimming and rejects an empty title", async (t) =>
     renameSession(directory, session.id, "   "),
     /title is required/i,
   );
-});
-
-test("serializes the same session across processes", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "openscreen-sessions-"));
-  t.after(() => rm(directory, { force: true, recursive: true }));
-  const session = await createSession(directory);
-  const marker = join(directory, "marker.txt");
-  const moduleURL = new URL("./session.js", import.meta.url).href;
-  const script = `
-    import { appendFile } from "node:fs/promises";
-    import { withSessionLock } from ${JSON.stringify(moduleURL)};
-    const [directory, sessionId, marker, label] = process.argv.slice(1);
-    await withSessionLock(directory, sessionId, async () => {
-      await appendFile(marker, label + "-start\\n");
-      await new Promise((resolve) => setTimeout(resolve, 100));
-      await appendFile(marker, label + "-end\\n");
-    });
-  `;
-
-  await Promise.all([
-    execFileAsync(process.execPath, ["--input-type=module", "--eval", script, directory, session.id, marker, "A"]),
-    execFileAsync(process.execPath, ["--input-type=module", "--eval", script, directory, session.id, marker, "B"]),
-  ]);
-
-  const lines = (await readFile(marker, "utf8")).trim().split("\n");
-  assert.ok(
-    JSON.stringify(lines) === JSON.stringify(["A-start", "A-end", "B-start", "B-end"]) ||
-    JSON.stringify(lines) === JSON.stringify(["B-start", "B-end", "A-start", "A-end"]),
-    `lock events overlapped: ${lines.join(", ")}`,
-  );
-});
-
-test("compacts older turns while retaining 20K recent tokens", async () => {
-  const session: SessionState = {
-    turns: Array.from({ length: 5 }, (_, index) => ({
-      user: `Question ${index + 1}`,
-      assistant: `Answer ${index + 1}`,
-      screenshotPath: `screen-${index + 1}.png`,
-    })),
-    firstKeptTurnIndex: 0,
-  };
-  let summarizedTurns = 0;
-
-  await compactSession(
-    session,
-    20_000,
-    async (turns) => turns.length * 10_000,
-    async (_previousSummary, turns) => {
-      summarizedTurns = turns.length;
-      return "Compact summary";
-    },
-  );
-
-  assert.equal(summarizedTurns, 3);
-  assert.equal(session.summary, "Compact summary");
-  assert.equal(session.firstKeptTurnIndex, 3);
-  assert.equal(session.turns.length, 5);
-});
-
-test("finds the 20K recent-turn boundary without scanning every turn", async () => {
-  const session: SessionState = {
-    turns: Array.from({ length: 100 }, (_, index) => ({
-      user: `Question ${index + 1}`,
-      assistant: `Answer ${index + 1}`,
-      screenshotPath: `screen-${index + 1}.png`,
-    })),
-    firstKeptTurnIndex: 0,
-  };
-  let countCalls = 0;
-
-  await compactSession(
-    session,
-    20_000,
-    async (turns) => {
-      countCalls += 1;
-      return turns.length * 1_000;
-    },
-    async () => "Compact summary",
-  );
-
-  assert.equal(session.firstKeptTurnIndex, 80);
-  assert.ok(countCalls <= 8);
-});
-
-test("rolls the previous summary forward without re-summarizing raw history", async () => {
-  const session: SessionState = {
-    turns: Array.from({ length: 8 }, (_, index) => ({
-      user: `Question ${index + 1}`,
-      assistant: `Answer ${index + 1}`,
-      screenshotPath: `screen-${index + 1}.png`,
-    })),
-    summary: "Previous summary",
-    firstKeptTurnIndex: 3,
-  };
-  let summarizedQuestions: string[] = [];
-
-  await compactSession(
-    session,
-    20_000,
-    async (turns) => turns.length * 10_000,
-    async (previousSummary, turns) => {
-      assert.equal(previousSummary, "Previous summary");
-      summarizedQuestions = turns.map((turn) => turn.user);
-      return "Updated summary";
-    },
-  );
-
-  assert.deepEqual(summarizedQuestions, ["Question 4", "Question 5", "Question 6"]);
-  assert.equal(session.summary, "Updated summary");
-  assert.equal(session.firstKeptTurnIndex, 6);
-});
-
-test("leaves context unchanged when compaction fails", async () => {
-  const session: SessionState = {
-    turns: [
-      { user: "One", assistant: "1", screenshotPath: "1.png" },
-      { user: "Two", assistant: "2", screenshotPath: "2.png" },
-      { user: "Three", assistant: "3", screenshotPath: "3.png" },
-    ],
-    summary: "Existing summary",
-    firstKeptTurnIndex: 0,
-  };
-
-  await assert.rejects(
-    compactSession(
-      session,
-      0,
-      async (turns) => turns.length,
-      async () => { throw new Error("Summary failed"); },
-    ),
-    /Summary failed/,
-  );
-  assert.equal(session.summary, "Existing summary");
-  assert.equal(session.firstKeptTurnIndex, 0);
-});
-
-test("compacts before a request and verifies the rebuilt context", async () => {
-  const counts = [244_800, 30_000];
-  let compactions = 0;
-
-  const tokens = await compactIfNeeded(
-    244_800,
-    async () => counts.shift()!,
-    async () => { compactions += 1; },
-  );
-
-  assert.equal(compactions, 1);
-  assert.equal(tokens, 30_000);
 });

@@ -2,7 +2,8 @@ import { readFile } from "node:fs/promises";
 
 import OpenAI from "openai";
 
-import type { SessionState, Turn } from "./session.js";
+import type { OutputEnvelope } from "../protocol.js";
+import type { SessionState, Turn } from "../session/store.js";
 
 const instructions = `You are OpenScreen, a screen-aware assistant.
 
@@ -31,13 +32,6 @@ export type ModelEvent = {
     output?: OpenAI.Responses.ResponseOutputItem[];
     usage?: { total_tokens?: number } | null;
   };
-};
-
-export type OutputEnvelope = {
-  requestId: string;
-  type: "started" | "reasoning_delta" | "answer_delta" | "completed" | "failed" | "cancelled";
-  delta?: string;
-  message?: string;
 };
 
 function imagePart(
