@@ -6,6 +6,23 @@ import SwiftUI
 final class OpenScreenPanel: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let action: Selector? = switch event.charactersIgnoringModifiers?.lowercased() {
+        case "c": #selector(NSText.copy(_:))
+        case "v": #selector(NSText.paste(_:))
+        default: nil
+        }
+        guard event.type == .keyDown,
+              modifiers == .command,
+              let action,
+              firstResponder?.tryToPerform(action, with: nil) == true
+        else {
+            return super.performKeyEquivalent(with: event)
+        }
+        return true
+    }
 }
 
 @MainActor
