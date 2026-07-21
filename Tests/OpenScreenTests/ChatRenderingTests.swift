@@ -233,16 +233,67 @@ final class ChatRenderingTests: XCTestCase {
         try await waitUntilAtBottom(scrollView, layoutRoot: hostingView)
     }
 
-    func testChatViewDoesNotEmbedVisualEffectView() {
+    func testChatViewUsesNativeMaterial() {
         let viewModel = ChatViewModel(
             agentClient: AgentClient(),
             windowCapture: WindowCapture()
         )
         let hostingView = NSHostingView(rootView: ChatView(viewModel: viewModel))
         hostingView.frame = NSRect(x: 0, y: 0, width: 420, height: 720)
+        let window = NSWindow(
+            contentRect: hostingView.frame,
+            styleMask: .borderless,
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = hostingView
+        window.orderFront(nil)
+        defer { window.orderOut(nil) }
         hostingView.layoutSubtreeIfNeeded()
+        let materialView = firstDescendant(of: NSVisualEffectView.self, in: hostingView)
+        XCTAssertNotNil(materialView)
+        XCTAssertEqual(materialView?.alphaValue ?? 0, 0.68, accuracy: 0.01)
+    }
 
-        XCTAssertNil(firstDescendant(of: NSVisualEffectView.self, in: hostingView))
+    func testChatViewUsesTracklessNativeScroller() async throws {
+        let viewModel = ChatViewModel(
+            agentClient: AgentClient(),
+            windowCapture: WindowCapture()
+        )
+        let hostingView = NSHostingView(rootView: ChatView(viewModel: viewModel))
+        hostingView.frame = NSRect(x: 0, y: 0, width: 420, height: 720)
+        let window = NSWindow(
+            contentRect: hostingView.frame,
+            styleMask: .borderless,
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = hostingView
+        window.orderFront(nil)
+        defer { window.orderOut(nil) }
+
+        let scrollView = try await waitForChatScrollView(in: hostingView)
+        for _ in 0..<50 where !(scrollView.verticalScroller is ChatScroller) {
+            hostingView.layoutSubtreeIfNeeded()
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(scrollView.hasVerticalScroller)
+        XCTAssertFalse(scrollView.autohidesScrollers)
+        XCTAssertTrue(scrollView.verticalScroller is ChatScroller)
+        XCTAssertEqual(scrollView.verticalScroller?.alphaValue, 0)
+
+        NotificationCenter.default.post(
+            name: NSScrollView.willStartLiveScrollNotification,
+            object: scrollView
+        )
+        XCTAssertEqual(scrollView.verticalScroller?.alphaValue, 1)
+
+        NotificationCenter.default.post(
+            name: NSScrollView.didEndLiveScrollNotification,
+            object: scrollView
+        )
+        try await Task.sleep(for: .milliseconds(250))
+        XCTAssertEqual(scrollView.verticalScroller?.alphaValue ?? 1, 0, accuracy: 0.01)
     }
 
     private func firstDescendant<T: NSView>(of type: T.Type, in view: NSView) -> T? {

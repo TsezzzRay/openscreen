@@ -37,6 +37,130 @@ struct ChatScrollTrigger: Equatable {
     let sessionError: String?
 }
 
+private struct ChatPanelMaterial: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let view = NSVisualEffectView()
+        view.material = .underWindowBackground
+        view.blendingMode = .behindWindow
+        view.state = .active
+        view.alphaValue = 0.68
+        return view
+    }
+
+    func updateNSView(_ view: NSVisualEffectView, context: Context) {}
+}
+
+final class ChatScroller: NSScroller {
+    override func drawKnobSlot(in slotRect: NSRect, highlight flag: Bool) {}
+
+    override func drawKnob() {
+        let knob = rect(for: .knob)
+        guard knob.height > 0 else { return }
+        let thumb = NSRect(x: knob.midX - 2.5, y: knob.minY, width: 5, height: knob.height)
+        NSColor.secondaryLabelColor.withAlphaComponent(0.36).setFill()
+        NSBezierPath(roundedRect: thumb, xRadius: 2.5, yRadius: 2.5).fill()
+    }
+
+    func show() {
+        layer?.removeAllAnimations()
+        alphaValue = 1
+    }
+
+    func hide() {
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.18
+            animator().alphaValue = 0
+        }
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        show()
+        super.mouseDown(with: event)
+        hide()
+    }
+}
+
+private final class ChatScrollerStyleView: NSView {
+    private var didInstallScroller = false
+    private weak var observedScrollView: NSScrollView?
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window == nil {
+            didInstallScroller = false
+            removeScrollObservers()
+            return
+        }
+        scheduleInstallation()
+    }
+
+    func scheduleInstallation() {
+        guard !didInstallScroller, window != nil else { return }
+        didInstallScroller = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+            self?.installScroller()
+        }
+    }
+
+    private func installScroller() {
+        guard let scrollView = enclosingScrollView else { return }
+        scrollView.hasVerticalScroller = true
+        scrollView.autohidesScrollers = false
+        let scroller = ChatScroller()
+        scroller.alphaValue = 0
+        scrollView.verticalScroller = scroller
+        observeScrolling(in: scrollView)
+    }
+
+    private func observeScrolling(in scrollView: NSScrollView) {
+        removeScrollObservers()
+        let center = NotificationCenter.default
+        observedScrollView = scrollView
+        center.addObserver(
+            self,
+            selector: #selector(scrollingDidStart(_:)),
+            name: NSScrollView.willStartLiveScrollNotification,
+            object: scrollView
+        )
+        center.addObserver(
+            self,
+            selector: #selector(scrollingDidEnd(_:)),
+            name: NSScrollView.didEndLiveScrollNotification,
+            object: scrollView
+        )
+    }
+
+    @objc private func scrollingDidStart(_ notification: Notification) {
+        let scrollView = notification.object as? NSScrollView
+        (scrollView?.verticalScroller as? ChatScroller)?.show()
+    }
+
+    @objc private func scrollingDidEnd(_ notification: Notification) {
+        let scrollView = notification.object as? NSScrollView
+        (scrollView?.verticalScroller as? ChatScroller)?.hide()
+    }
+
+    private func removeScrollObservers() {
+        guard let observedScrollView else { return }
+        NotificationCenter.default.removeObserver(
+            self,
+            name: nil,
+            object: observedScrollView
+        )
+        self.observedScrollView = nil
+    }
+}
+
+private struct ChatScrollerStyle: NSViewRepresentable {
+    func makeNSView(context: Context) -> ChatScrollerStyleView {
+        ChatScrollerStyleView()
+    }
+
+    func updateNSView(_ view: ChatScrollerStyleView, context: Context) {
+        view.scheduleInstallation()
+    }
+}
+
 enum ChatScrollPosition {
     static func isAtBottom(
         contentHeight: CGFloat,
@@ -70,6 +194,7 @@ struct ChatView: View {
     @State private var renamedSessionID: UUID?
     @State private var renameTitle = ""
     @State private var followsLatest = true
+    @FocusState private var isRenameFocused: Bool
 
     private static let bottomID = "chat-bottom"
 
@@ -87,16 +212,34 @@ struct ChatView: View {
         )
     }
 
-    private var subtitle: String {
+    private var subtitle: String? {
         if let status = viewModel.turns.last?.status, status.isInProgress {
             return status.label
         }
-        let count = viewModel.turns.count
-        if count == 0 { return "New chat" }
-        return "\(count) \(count == 1 ? "turn" : "turns")"
+        return nil
     }
 
     var body: some View {
+        transcript
+            .overlay(alignment: .top) { topControls }
+            .overlay(alignment: .bottom) { composer }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background { ChatPanelMaterial() }
+            .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 28, style: .continuous)
+                    .stroke(Color.white.opacity(0.12), lineWidth: 0.5)
+            }
+            .overlay {
+                if let id = renamedSessionID {
+                    renameOverlay(sessionID: id)
+                        .transition(.opacity.combined(with: .scale(scale: 0.96)))
+                }
+            }
+            .animation(.easeOut(duration: 0.14), value: renamedSessionID)
+    }
+
+    private var topControls: some View {
         VStack(spacing: 0) {
             header
 
@@ -105,42 +248,6 @@ struct ChatView: View {
                     .padding(.horizontal, 16)
                     .padding(.bottom, 6)
             }
-
-            transcript
-            composer
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background {
-            LinearGradient(
-                colors: [
-                    Color(nsColor: .windowBackgroundColor).opacity(0.98),
-                    Color(nsColor: .controlBackgroundColor).opacity(0.92),
-                ],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-        }
-        .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 28, style: .continuous)
-                .stroke(Color.white.opacity(0.16), lineWidth: 0.5)
-        }
-        .alert(
-            "Rename Chat",
-            isPresented: Binding(
-                get: { renamedSessionID != nil },
-                set: { if !$0 { renamedSessionID = nil } }
-            )
-        ) {
-            TextField("Name", text: $renameTitle)
-            Button("Cancel", role: .cancel) { renamedSessionID = nil }
-            Button("Rename") {
-                if let id = renamedSessionID {
-                    viewModel.renameSession(id: id, title: renameTitle)
-                }
-                renamedSessionID = nil
-            }
-            .disabled(renameTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
     }
 
@@ -151,6 +258,8 @@ struct ChatView: View {
             } label: {
                 Image(systemName: "clock.arrow.circlepath")
                     .frame(width: 30, height: 30)
+                    .background(Color(nsColor: .controlBackgroundColor))
+                    .clipShape(Circle())
             }
             .buttonStyle(.plain)
             .disabled(viewModel.isManagingSession)
@@ -161,9 +270,11 @@ struct ChatView: View {
                 Text(viewModel.currentTitle)
                     .font(.headline)
                     .lineLimit(1)
-                Text(subtitle)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                if let subtitle {
+                    Text(subtitle)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -181,6 +292,8 @@ struct ChatView: View {
             } label: {
                 Image(systemName: "ellipsis")
                     .frame(width: 30, height: 30)
+                    .background(Color(nsColor: .controlBackgroundColor))
+                    .clipShape(Circle())
             }
             .menuStyle(.borderlessButton)
             .fixedSize()
@@ -189,6 +302,8 @@ struct ChatView: View {
             Button(action: viewModel.createNewSession) {
                 Image(systemName: "plus")
                     .frame(width: 30, height: 30)
+                    .background(Color(nsColor: .controlBackgroundColor))
+                    .clipShape(Circle())
             }
             .buttonStyle(.plain)
             .disabled(viewModel.isManagingSession)
@@ -284,7 +399,7 @@ struct ChatView: View {
 
     private var transcript: some View {
         ScrollViewReader { proxy in
-            ZStack(alignment: .bottomTrailing) {
+            ZStack {
                 ScrollView {
                     LazyVStack(spacing: 24) {
                         if viewModel.turns.isEmpty {
@@ -303,8 +418,22 @@ struct ChatView: View {
                             .id(Self.bottomID)
                     }
                     .padding(.horizontal, 18)
-                    .padding(.vertical, 16)
+                    .padding(.top, 76)
+                    .padding(.bottom, 94)
                     .frame(maxWidth: .infinity)
+                    .background { ChatScrollerStyle() }
+                }
+                .mask {
+                    LinearGradient(
+                        stops: [
+                            .init(color: .clear, location: 0),
+                            .init(color: .black, location: 0.11),
+                            .init(color: .black, location: 0.82),
+                            .init(color: .clear, location: 1),
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
                 }
                 .onScrollPhaseChange { oldPhase, newPhase, context in
                     followsLatest = ChatScrollPosition.followsLatest(
@@ -321,22 +450,6 @@ struct ChatView: View {
                     if followsLatest {
                         proxy.scrollTo(Self.bottomID, anchor: .bottom)
                     }
-                }
-
-                if !followsLatest {
-                    Button {
-                        followsLatest = true
-                        withAnimation(.easeOut(duration: 0.16)) {
-                            proxy.scrollTo(Self.bottomID, anchor: .bottom)
-                        }
-                    } label: {
-                        Image(systemName: "arrow.down")
-                            .frame(width: 28, height: 28)
-                    }
-                    .buttonStyle(.bordered)
-                    .buttonBorderShape(.circle)
-                    .accessibilityLabel("Jump to latest message")
-                    .padding(8)
                 }
             }
             .onChange(of: scrollTrigger) { oldValue, newValue in
@@ -371,12 +484,6 @@ struct ChatView: View {
 
     private var composer: some View {
         HStack(spacing: 7) {
-            Image(systemName: "macwindow")
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(.secondary)
-                .frame(width: 27, height: 27)
-                .help("The current window is captured when you send")
-
             ChatTextEditor(
                 text: $viewModel.draft,
                 focusRequest: viewModel.focusRequest,
@@ -387,12 +494,12 @@ struct ChatView: View {
 
             requestButton
         }
-        .padding(.leading, 7)
+        .padding(.leading, 12)
         .padding(.trailing, 6)
         .padding(.vertical, 6)
         .background {
             RoundedRectangle(cornerRadius: 15, style: .continuous)
-                .fill(Color(nsColor: .textBackgroundColor).opacity(0.78))
+                .fill(Color(nsColor: .textBackgroundColor))
         }
         .overlay {
             RoundedRectangle(cornerRadius: 15, style: .continuous)
@@ -441,10 +548,63 @@ struct ChatView: View {
             .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
     }
 
+    private func renameOverlay(sessionID: UUID) -> some View {
+        ZStack {
+            Color.black.opacity(0.12)
+                .contentShape(Rectangle())
+                .onTapGesture { renamedSessionID = nil }
+
+            VStack(alignment: .leading, spacing: 14) {
+                Text("Rename chat")
+                    .font(.headline)
+
+                TextField("Chat name", text: $renameTitle)
+                    .textFieldStyle(.plain)
+                    .focused($isRenameFocused)
+                    .onSubmit { commitRename(sessionID) }
+                    .padding(.horizontal, 11)
+                    .frame(height: 34)
+                    .background(Color.primary.opacity(0.06))
+                    .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 9, style: .continuous)
+                            .stroke(Color.primary.opacity(0.10), lineWidth: 0.5)
+                    }
+
+                HStack(spacing: 8) {
+                    Spacer()
+                    Button("Cancel") { renamedSessionID = nil }
+                        .keyboardShortcut(.cancelAction)
+                    Button("Save") { commitRename(sessionID) }
+                        .keyboardShortcut(.defaultAction)
+                        .disabled(renameTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+                .buttonStyle(.bordered)
+            }
+            .padding(18)
+            .frame(width: 292)
+            .background(.regularMaterial)
+            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .stroke(Color.white.opacity(0.20), lineWidth: 0.5)
+            }
+            .shadow(color: .black.opacity(0.18), radius: 22, y: 10)
+        }
+    }
+
+    private func commitRename(_ sessionID: UUID) {
+        let title = renameTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty else { return }
+        viewModel.renameSession(id: sessionID, title: title)
+        renamedSessionID = nil
+    }
+
     private func beginRename(id: UUID?, title: String) {
         guard let id else { return }
         renamedSessionID = id
         renameTitle = title
+        Task { @MainActor in isRenameFocused = true }
     }
 
     private func formattedTimestamp(_ value: String) -> String {
@@ -460,15 +620,9 @@ private struct ChatTurnView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 13) {
-            VStack(alignment: .trailing, spacing: 4) {
-                Text("YOU")
-                    .font(.caption2.weight(.semibold))
-                    .tracking(0.6)
-                    .foregroundStyle(.secondary)
-                MarkdownMessageView(turn.question, alignment: .trailing)
-                    .foregroundStyle(Color.accentColor)
-                    .frame(maxWidth: 310, alignment: .trailing)
-            }
+            MarkdownMessageView(turn.question, alignment: .trailing)
+                .foregroundStyle(Color.accentColor)
+                .frame(maxWidth: 310, alignment: .trailing)
             .frame(maxWidth: .infinity, alignment: .trailing)
 
             if !turn.reasoning.isEmpty {
