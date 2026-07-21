@@ -1,6 +1,14 @@
+import AppKit
 import Combine
 import Foundation
 import SwiftUI
+
+enum MarkdownCodeActions {
+    static func copy(_ text: String, to pasteboard: NSPasteboard = .general) {
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+    }
+}
 
 struct MarkdownBlock: Sendable {
     enum Kind: Equatable, Sendable {
@@ -165,17 +173,28 @@ private final class MarkdownRenderer: ObservableObject {
 }
 
 struct MarkdownMessageView: View {
+    enum Alignment {
+        case leading
+        case trailing
+
+        var horizontal: HorizontalAlignment { self == .leading ? .leading : .trailing }
+        var frame: SwiftUI.Alignment { self == .leading ? .leading : .trailing }
+        var text: TextAlignment { self == .leading ? .leading : .trailing }
+    }
+
     private let source: String
+    private let alignment: Alignment
     @StateObject private var renderer = MarkdownRenderer()
 
-    init(_ source: String) {
+    init(_ source: String, alignment: Alignment = .leading) {
         self.source = source
+        self.alignment = alignment
     }
 
     var body: some View {
         Group {
             if let document = renderer.document {
-                VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: alignment.horizontal, spacing: 8) {
                     ForEach(Array(document.blocks.enumerated()), id: \.offset) { _, block in
                         blockView(block)
                     }
@@ -184,7 +203,8 @@ struct MarkdownMessageView: View {
                 Text(source)
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: alignment.frame)
+        .multilineTextAlignment(alignment.text)
         .textSelection(.enabled)
         .task(id: source) { renderer.render(source) }
     }
@@ -207,10 +227,20 @@ struct MarkdownMessageView: View {
             .padding(.leading, CGFloat(depth) * 16)
         case let .codeBlock(language):
             VStack(alignment: .leading, spacing: 6) {
-                if let language, !language.isEmpty {
-                    Text(language)
+                HStack {
+                    Text(language.flatMap { $0.isEmpty ? nil : $0 } ?? "Code")
                         .font(.caption2.monospaced())
                         .foregroundStyle(.secondary)
+                    Spacer()
+                    Button {
+                        MarkdownCodeActions.copy(String(block.content.characters))
+                    } label: {
+                        Label("Copy", systemImage: "doc.on.doc")
+                            .labelStyle(.titleAndIcon)
+                    }
+                    .buttonStyle(.plain)
+                    .font(.caption2)
+                    .accessibilityLabel("Copy code")
                 }
                 ScrollView(.horizontal) {
                     Text(String(block.content.characters))
@@ -219,7 +249,11 @@ struct MarkdownMessageView: View {
                 }
             }
             .padding(10)
-            .background(Color.white.opacity(0.10))
+            .background(Color(nsColor: .controlBackgroundColor).opacity(0.75))
+            .overlay {
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(Color.secondary.opacity(0.14), lineWidth: 0.5)
+            }
             .clipShape(RoundedRectangle(cornerRadius: 8))
         }
     }
@@ -231,7 +265,7 @@ struct MarkdownMessageView: View {
         }
         for range in codeRanges {
             content[range].font = .body.monospaced()
-            content[range].backgroundColor = Color.white.opacity(0.12)
+            content[range].backgroundColor = Color.secondary.opacity(0.12)
         }
         return content
     }

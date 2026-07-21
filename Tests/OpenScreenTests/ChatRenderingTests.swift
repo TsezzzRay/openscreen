@@ -69,6 +69,23 @@ final class ChatRenderingTests: XCTestCase {
         XCTAssertEqual(String(document.blocks[0].content.characters), "let value = 1\n")
     }
 
+    func testMarkdownCodeCopyWritesPlainText() {
+        let pasteboard = NSPasteboard(name: .init("OpenScreenTests.CodeCopy"))
+        pasteboard.clearContents()
+
+        MarkdownCodeActions.copy("let value = 1", to: pasteboard)
+
+        XCTAssertEqual(pasteboard.string(forType: .string), "let value = 1")
+    }
+
+    func testCompletedStatusIsQuietWhileActionableStatusesRemainVisible() {
+        XCTAssertFalse(ChatTurnStatus.completed.showsInTranscript)
+        XCTAssertTrue(ChatTurnStatus.generating.showsInTranscript)
+        XCTAssertTrue(ChatTurnStatus.failed.showsInTranscript)
+        XCTAssertTrue(ChatTurnStatus.cancelled.showsInTranscript)
+        XCTAssertTrue(ChatTurnStatus.interrupted.showsInTranscript)
+    }
+
     func testChatScrollTriggerTracksVisibleMessageChanges() {
         let sessionID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
         let turnID = UUID(uuidString: "00000000-0000-0000-0000-000000000002")!
