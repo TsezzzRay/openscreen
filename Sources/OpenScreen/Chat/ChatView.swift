@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 extension ChatTurnStatus {
     var label: String {
@@ -35,6 +36,18 @@ struct ChatScrollTrigger: Equatable {
     let status: ChatTurnStatus?
     let turnError: String?
     let sessionError: String?
+}
+
+struct ChatImagePreviewState {
+    private(set) var url: URL?
+
+    mutating func present(_ url: URL) {
+        self.url = url
+    }
+
+    mutating func dismiss() {
+        url = nil
+    }
 }
 
 private struct ChatPanelMaterial: NSViewRepresentable {
@@ -192,9 +205,15 @@ struct ChatView: View {
     @State private var renameTitle = ""
     @State private var followsLatest = true
     @State private var composerHeight = ChatComposerLayout.minimumHeight
+    @State private var showsImageImporter = false
+    @State private var imagePreview = ChatImagePreviewState()
     @FocusState private var isRenameFocused: Bool
 
     private static let bottomID = "chat-bottom"
+
+    private var composerAttachmentHeight: CGFloat {
+        viewModel.pendingAttachments.isEmpty ? 0 : 62
+    }
 
     private var scrollTrigger: ChatScrollTrigger {
         let turn = viewModel.turns.last
@@ -223,6 +242,12 @@ struct ChatView: View {
             .overlay(alignment: .bottom) { composer }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background { ChatPanelMaterial() }
+            .overlay {
+                if let url = imagePreview.url {
+                    imagePreviewOverlay(url: url)
+                        .transition(.opacity)
+                }
+            }
             .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
             .overlay {
                 RoundedRectangle(cornerRadius: 28, style: .continuous)
@@ -235,6 +260,19 @@ struct ChatView: View {
                 }
             }
             .animation(.easeOut(duration: 0.14), value: renamedSessionID)
+            .animation(.easeOut(duration: 0.14), value: imagePreview.url)
+            .fileImporter(
+                isPresented: $showsImageImporter,
+                allowedContentTypes: [.image],
+                allowsMultipleSelection: true
+            ) { result in
+                switch result {
+                case let .success(urls):
+                    viewModel.addAttachments(from: urls)
+                case let .failure(error):
+                    viewModel.reportAttachmentError(error)
+                }
+            }
     }
 
     private var topControls: some View {
@@ -407,7 +445,8 @@ struct ChatView: View {
                                 ChatTurnView(
                                     turn: turn,
                                     isInteractionDisabled: viewModel.isManagingSession || viewModel.isSending,
-                                    onRetry: { viewModel.retry(turnID: turn.id) }
+                                    onRetry: { viewModel.retry(turnID: turn.id) },
+                                    onPreview: { imagePreview.present($0) }
                                 )
                             }
                         }
@@ -417,7 +456,12 @@ struct ChatView: View {
                     }
                     .padding(.horizontal, 18)
                     .padding(.top, 76)
-                    .padding(.bottom, ChatComposerLayout.transcriptBottomPadding(for: composerHeight))
+                    .padding(
+                        .bottom,
+                        ChatComposerLayout.transcriptBottomPadding(
+                            for: composerHeight + composerAttachmentHeight
+                        )
+                    )
                     .frame(maxWidth: .infinity)
                     .background { ChatScrollerStyle() }
                 }
@@ -482,16 +526,55 @@ struct ChatView: View {
 
     private var composer: some View {
         VStack(alignment: .leading, spacing: 6) {
+            if !viewModel.pendingAttachments.isEmpty {
+                ScrollView(.horizontal) {
+                    HStack(spacing: 8) {
+                        ForEach(viewModel.pendingAttachments) { attachment in
+                            attachmentThumbnail(
+                                attachment,
+                                width: 64,
+                                height: 48,
+                                removable: true
+                            )
+                        }
+                    }
+                    .padding(.top, 4)
+                    .padding(.trailing, 4)
+                }
+                .scrollIndicators(.hidden)
+                .frame(height: 58)
+            }
+
+            if let error = viewModel.attachmentError {
+                Text(error)
+                    .font(.caption2)
+                    .foregroundStyle(.red)
+            }
+
             ChatTextEditor(
                 text: $viewModel.draft,
                 height: $composerHeight,
                 focusRequest: viewModel.focusRequest,
                 isEnabled: !viewModel.isManagingSession && !viewModel.isSending,
+                onPasteImages: viewModel.addPastedImages,
                 onSubmit: viewModel.submit
             )
             .frame(height: composerHeight)
 
             HStack {
+                Button {
+                    showsImageImporter = true
+                } label: {
+                    Image(systemName: "photo.on.rectangle.angled")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 30, height: 30)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(viewModel.isManagingSession || viewModel.isSending)
+                .accessibilityLabel("Add screenshots")
+
                 Spacer()
                 requestButton
             }
@@ -538,6 +621,45 @@ struct ChatView: View {
         .opacity(isDisabled ? 0.45 : 1)
         .animation(.easeOut(duration: 0.14), value: viewModel.isSending)
         .accessibilityLabel(viewModel.isSending ? "Cancel request" : "Send")
+    }
+
+    @ViewBuilder
+    private func attachmentThumbnail(
+        _ attachment: ChatImageAttachment,
+        width: CGFloat,
+        height: CGFloat,
+        removable: Bool
+    ) -> some View {
+        if let image = NSImage(contentsOf: attachment.url) {
+            Image(nsImage: image)
+                .resizable()
+                .scaledToFill()
+                .frame(width: width, height: height)
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .stroke(Color.primary.opacity(0.12), lineWidth: 0.5)
+                }
+                .overlay(alignment: .topTrailing) {
+                    if removable {
+                        Button {
+                            viewModel.removeAttachment(id: attachment.id)
+                        } label: {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundStyle(.primary)
+                                .frame(width: 20, height: 20)
+                                .background(Color(nsColor: .controlBackgroundColor))
+                                .clipShape(Circle())
+                                .shadow(color: .black.opacity(0.16), radius: 3, y: 1)
+                        }
+                        .buttonStyle(.plain)
+                        .offset(x: 5, y: -5)
+                        .accessibilityLabel("Remove screenshot")
+                    }
+                }
+                .accessibilityLabel("Attached screenshot")
+        }
     }
 
     private func sessionErrorBanner(_ error: String) -> some View {
@@ -596,6 +718,42 @@ struct ChatView: View {
         }
     }
 
+    private func imagePreviewOverlay(url: URL) -> some View {
+        ZStack(alignment: .topTrailing) {
+            Color.black.opacity(0.72)
+                .contentShape(Rectangle())
+                .onTapGesture { imagePreview.dismiss() }
+
+            if let image = NSImage(contentsOf: url) {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFit()
+                    .padding(24)
+                    .onTapGesture {}
+                    .accessibilityLabel("Screenshot preview")
+            } else {
+                Label("Screenshot unavailable", systemImage: "photo.badge.exclamationmark")
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+
+            Button {
+                imagePreview.dismiss()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .frame(width: 34, height: 34)
+                    .background(Color(nsColor: .controlBackgroundColor))
+                    .clipShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .keyboardShortcut(.cancelAction)
+            .accessibilityLabel("Close screenshot preview")
+            .padding(14)
+        }
+    }
+
     private func commitRename(_ sessionID: UUID) {
         let title = renameTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !title.isEmpty else { return }
@@ -619,14 +777,12 @@ private struct ChatTurnView: View {
     let turn: ChatTurn
     let isInteractionDisabled: Bool
     let onRetry: () -> Void
+    let onPreview: (URL) -> Void
     @State private var showsReasoning = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 13) {
-            MarkdownMessageView(turn.question, alignment: .trailing, role: .question)
-                .foregroundStyle(Color.accentColor)
-                .frame(maxWidth: 310, alignment: .trailing)
-            .frame(maxWidth: .infinity, alignment: .trailing)
+            userMessage
 
             if !turn.reasoning.isEmpty {
                 reasoningDisclosure
@@ -643,6 +799,49 @@ private struct ChatTurnView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var userMessage: some View {
+        VStack(alignment: .trailing, spacing: 10) {
+            if !turn.attachments.isEmpty {
+                ScrollView(.horizontal) {
+                    HStack(spacing: 8) {
+                        ForEach(turn.attachments) { attachment in
+                            if let image = NSImage(contentsOf: attachment.url) {
+                                Button {
+                                    onPreview(attachment.url)
+                                } label: {
+                                    Image(nsImage: image)
+                                        .resizable()
+                                        .scaledToFill()
+                                        .frame(width: 112, height: 76)
+                                        .clipShape(RoundedRectangle(
+                                            cornerRadius: 12,
+                                            style: .continuous
+                                        ))
+                                        .overlay {
+                                            RoundedRectangle(
+                                                cornerRadius: 12,
+                                                style: .continuous
+                                            )
+                                            .stroke(Color.primary.opacity(0.12), lineWidth: 0.5)
+                                        }
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel("Open screenshot")
+                            }
+                        }
+                    }
+                }
+                .defaultScrollAnchor(.trailing)
+                .scrollIndicators(.hidden)
+            }
+
+            MarkdownMessageView(turn.question, alignment: .trailing, role: .question)
+                .foregroundStyle(Color.accentColor)
+        }
+        .frame(maxWidth: 310, alignment: .trailing)
+        .frame(maxWidth: .infinity, alignment: .trailing)
     }
 
     private var reasoningDisclosure: some View {

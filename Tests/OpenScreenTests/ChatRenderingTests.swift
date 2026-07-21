@@ -5,6 +5,22 @@ import XCTest
 
 @MainActor
 final class ChatRenderingTests: XCTestCase {
+    func testComposerExtractsEveryPastedImage() throws {
+        let pasteboard = NSPasteboard(name: .init("OpenScreenTests-\(UUID().uuidString)"))
+        pasteboard.clearContents()
+        let images = [12, 18].map { side in
+            let image = NSImage(size: NSSize(width: side, height: side))
+            image.lockFocus()
+            NSColor.systemBlue.setFill()
+            NSRect(x: 0, y: 0, width: side, height: side).fill()
+            image.unlockFocus()
+            return image
+        }
+        XCTAssertTrue(pasteboard.writeObjects(images))
+
+        XCTAssertEqual(SubmitTextView.images(from: pasteboard).count, 2)
+    }
+
     func testMarkdownDocumentPreservesRequestedBlockTypes() {
         let document = MarkdownDocument("""
         # Heading
@@ -128,6 +144,30 @@ final class ChatRenderingTests: XCTestCase {
             at: range.location,
             effectiveRange: nil
         ))
+    }
+
+    func testMarkdownInlineCodeAtLeadingEdgeKeepsBackgroundInsideTextBounds() throws {
+        let textView = SelectableMarkdownTextView()
+        textView.setFrameSize(NSSize(width: 300, height: 100))
+        textView.render(
+            MarkdownDocument("`npm run` starts the command."),
+            alignment: .left,
+            role: .body
+        )
+        let layoutManager = try XCTUnwrap(
+            textView.layoutManager as? GlyphOnlySelectionLayoutManager
+        )
+        let glyphRange = layoutManager.glyphRange(
+            forCharacterRange: NSRange(location: 0, length: textView.string.utf16.count),
+            actualCharacterRange: nil
+        )
+
+        let rects = layoutManager.inlineCodeBackgroundRects(
+            forGlyphRange: glyphRange,
+            at: textView.textContainerOrigin
+        )
+
+        XCTAssertEqual(try XCTUnwrap(rects.first).minX, 0, accuracy: 0.01)
     }
 
     func testMarkdownTextViewSelectsAcrossParagraphs() {
@@ -351,6 +391,17 @@ final class ChatRenderingTests: XCTestCase {
         let materialView = firstDescendant(of: NSVisualEffectView.self, in: hostingView)
         XCTAssertNotNil(materialView)
         XCTAssertEqual(materialView?.alphaValue ?? 0, 0.68, accuracy: 0.01)
+    }
+
+    func testScreenshotPreviewStatePresentsAndDismissesImage() {
+        let url = URL(fileURLWithPath: "/tmp/screenshot.png")
+        var state = ChatImagePreviewState()
+
+        state.present(url)
+        XCTAssertEqual(state.url, url)
+
+        state.dismiss()
+        XCTAssertNil(state.url)
     }
 
     func testChatViewUsesTracklessNativeScroller() async throws {

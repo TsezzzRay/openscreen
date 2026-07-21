@@ -107,7 +107,7 @@ export async function runChat(
       turn: {
         id: requestId,
         user: input.text,
-        screenshotPath: input.image,
+        images: input.images,
         startedAt: new Date().toISOString(),
       },
     }]);
@@ -142,7 +142,7 @@ export async function runChat(
     const buildRequest = () => makeRequest(
       model,
       input.text,
-      input.image,
+      input.images,
       context.maxOutputTokens,
       session,
     );
@@ -199,7 +199,7 @@ export async function runChat(
       user: input.text,
       assistant: result.output,
       reasoning: result.reasoning,
-      screenshotPath: input.image,
+      images: input.images,
       outputItems: result.outputItems,
       status: "completed" as const,
     };

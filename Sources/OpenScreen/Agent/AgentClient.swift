@@ -69,13 +69,13 @@ actor AgentClient {
         requestID: UUID = UUID(),
         sessionID: UUID,
         text: String,
-        imageURL: URL
+        images: [ChatImageAttachment]
     ) throws -> AsyncThrowingStream<AgentEvent, Error> {
         try request(.chat(
             requestID: requestID,
             sessionID: sessionID,
             text: text,
-            imagePath: imageURL.path
+            images: images
         ))
     }
 
@@ -90,12 +90,14 @@ actor AgentClient {
         requestID: UUID,
         sessionID: UUID,
         text: String,
+        images: [ChatImageAttachment] = [],
         status: AgentRequest.AttemptStatus
     ) async throws {
         for try await _ in try request(.recordAttempt(
             requestID: requestID,
             sessionID: sessionID,
             text: text,
+            images: images,
             status: status
         )) {}
     }

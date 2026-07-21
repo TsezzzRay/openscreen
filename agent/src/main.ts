@@ -19,6 +19,7 @@ import {
 import { withSessionLock } from "./session/lock.js";
 import {
   parseInputEnvelope,
+  type ChatImage,
   type InputEnvelope,
   type OutputEnvelope,
 } from "./protocol.js";
@@ -30,6 +31,7 @@ type SessionSnapshot = SessionSummary & {
     assistant: string;
     reasoning?: string;
     status: "completed" | "failed" | "cancelled" | "interrupted";
+    images?: ChatImage[];
     error?: string;
   }>;
 };
@@ -54,12 +56,13 @@ function snapshot(session: StoredSession): SessionSnapshot {
     title: session.title,
     createdAt: session.createdAt,
     updatedAt: session.updatedAt,
-    turns: session.visibleTurns.map(({ id, user, assistant, reasoning, status, error }) => ({
+    turns: session.visibleTurns.map(({ id, user, assistant, reasoning, status, images, error }) => ({
       id,
       user,
       assistant,
       reasoning,
       status,
+      images,
       error,
     })),
   };
@@ -122,6 +125,7 @@ async function run() {
             turn: {
               id: envelope.requestId,
               user: envelope.input.text,
+              ...(envelope.input.images.length > 0 ? { images: envelope.input.images } : {}),
               startedAt: new Date().toISOString(),
             },
           },

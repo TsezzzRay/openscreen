@@ -3,6 +3,7 @@ import Foundation
 struct ChatTurn: Identifiable {
     let id: UUID
     let question: String
+    let attachments: [ChatImageAttachment]
     var reasoning: String
     var answer: String
     var status: ChatTurnStatus
@@ -11,6 +12,7 @@ struct ChatTurn: Identifiable {
     init(
         id: UUID = UUID(),
         question: String,
+        attachments: [ChatImageAttachment] = [],
         reasoning: String,
         answer: String,
         status: ChatTurnStatus = .completed,
@@ -18,6 +20,7 @@ struct ChatTurn: Identifiable {
     ) {
         self.id = id
         self.question = question
+        self.attachments = attachments
         self.reasoning = reasoning
         self.answer = answer
         self.status = status

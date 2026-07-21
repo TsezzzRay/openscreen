@@ -203,4 +203,36 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertEqual(viewModel.draft, "Original prompt")
         XCTAssertEqual(viewModel.focusRequest, previousFocusRequest + 1)
     }
+
+    func testRetryRestoresEveryUserAttachmentAndSessionRestoreKeepsThemVisible() {
+        let viewModel = ChatViewModel(
+            agentClient: AgentClient(),
+            windowCapture: WindowCapture()
+        )
+        let sessionID = UUID()
+        let turnID = UUID()
+        let attachments = [
+            ChatImageAttachment(id: "one", source: .userUpload, path: "/tmp/one.png"),
+            ChatImageAttachment(id: "two", source: .userUpload, path: "/tmp/two.png"),
+        ]
+        viewModel.apply(.init(
+            id: sessionID,
+            title: "Attachments",
+            createdAt: "2026-07-21T00:00:00.000Z",
+            updatedAt: "2026-07-21T00:00:00.000Z",
+            turns: [.init(
+                id: turnID,
+                user: "Compare these",
+                assistant: "",
+                reasoning: nil,
+                status: .failed,
+                images: attachments,
+                error: "Request failed. Please retry."
+            )]
+        ))
+
+        XCTAssertEqual(viewModel.turns.first?.attachments, attachments)
+        viewModel.retry(turnID: turnID)
+        XCTAssertEqual(viewModel.pendingAttachments, attachments)
+    }
 }

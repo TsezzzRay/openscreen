@@ -2,12 +2,13 @@ import { readFile } from "node:fs/promises";
 
 import OpenAI from "openai";
 
-import type { OutputEnvelope } from "../protocol.js";
-import type { SessionState, Turn } from "../session/store.js";
+import type { ChatImage, OutputEnvelope } from "../protocol.js";
+import { turnImages, type SessionState, type Turn } from "../session/store.js";
 
 const instructions = `You are OpenScreen, a screen-aware assistant.
 
-Answer the user's question using the attached screenshot.
+Answer the user's question using the attached screenshots.
+The first image is the current window captured by OpenScreen. Any remaining images were uploaded by the user.
 Reply in the same language as the user.
 Be direct and concise.
 If the answer cannot be determined from the screenshot, say so.
@@ -54,16 +55,16 @@ function imagePart(
 async function userInput(
   model: string,
   text: string,
-  screenshotPath: string | undefined,
+  images: ChatImage[],
   readScreenshot: LoadScreenshot,
 ): Promise<OpenAI.Responses.ResponseInputItem> {
   return {
     role: "user",
     content: [
       { type: "input_text", text },
-      ...(screenshotPath
-        ? [imagePart(model, await readScreenshot(screenshotPath))]
-        : []),
+      ...await Promise.all(images.map(async (image) => (
+        imagePart(model, await readScreenshot(image.path))
+      ))),
     ],
   };
 }
@@ -75,7 +76,7 @@ async function turnsInput(
   preserveOutputItems = true,
 ): Promise<OpenAI.Responses.ResponseInput> {
   return (await Promise.all(turns.map(async (turn) => [
-    await userInput(model, turn.user, turn.screenshotPath, readScreenshot),
+    await userInput(model, turn.user, turnImages(turn), readScreenshot),
     ...(preserveOutputItems && (turn.status ?? "completed") === "completed" &&
         turn.outputItems?.length
       ? turn.outputItems
@@ -99,12 +100,15 @@ function turnOutput(turn: Turn) {
 export async function makeRequest(
   model: string,
   text: string,
-  screenshotPath: string,
+  images: ChatImage[] | string,
   maxOutputTokens: number,
   session: SessionState = { turns: [], firstKeptTurnIndex: 0 },
   readScreenshot: LoadScreenshot = loadScreenshot,
 ): Promise<OpenAI.Responses.ResponseCreateParamsStreaming> {
   const isMiniMaxM3 = model.toLowerCase() === "minimax-m3";
+  const requestImages = typeof images === "string"
+    ? [{ id: "legacy-system", source: "system_capture" as const, path: images }]
+    : images;
   const retainedInput = await turnsInput(
     model,
     session.turns.slice(session.firstKeptTurnIndex),
@@ -119,7 +123,7 @@ export async function makeRequest(
         ? [{ role: "developer" as const, content: `Conversation summary:\n${session.summary}` }]
         : []),
       ...retainedInput,
-      await userInput(model, text, screenshotPath, readScreenshot),
+      await userInput(model, text, requestImages, readScreenshot),
     ],
     reasoning: isMiniMaxM3 ? { effort: "minimal" } : { summary: "auto" },
     max_output_tokens: maxOutputTokens,

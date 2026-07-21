@@ -29,6 +29,7 @@ struct ChatTextEditor: NSViewRepresentable {
     @Binding var height: CGFloat
     let focusRequest: Int
     let isEnabled: Bool
+    let onPasteImages: ([NSImage]) -> Void
     let onSubmit: () -> Void
 
     func makeCoordinator() -> Coordinator {
@@ -44,6 +45,7 @@ struct ChatTextEditor: NSViewRepresentable {
         let textView = SubmitTextView()
         textView.delegate = context.coordinator
         textView.onSubmit = onSubmit
+        textView.onPasteImages = onPasteImages
         textView.isRichText = false
         textView.drawsBackground = false
         textView.font = .systemFont(ofSize: 16)
@@ -68,6 +70,7 @@ struct ChatTextEditor: NSViewRepresentable {
         guard let textView = scrollView.documentView as? SubmitTextView else { return }
         context.coordinator.parent = self
         textView.onSubmit = onSubmit
+        textView.onPasteImages = onPasteImages
         textView.isEditable = isEnabled
         if textView.string != text {
             textView.string = text
@@ -117,8 +120,22 @@ struct ChatTextEditor: NSViewRepresentable {
     }
 }
 
-private final class SubmitTextView: NSTextView {
+final class SubmitTextView: NSTextView {
     var onSubmit: (() -> Void)?
+    var onPasteImages: (([NSImage]) -> Void)?
+
+    static func images(from pasteboard: NSPasteboard) -> [NSImage] {
+        pasteboard.readObjects(forClasses: [NSImage.self]) as? [NSImage] ?? []
+    }
+
+    override func paste(_ sender: Any?) {
+        let pastedImages = Self.images(from: .general)
+        if !pastedImages.isEmpty {
+            onPasteImages?(pastedImages)
+            return
+        }
+        super.paste(sender)
+    }
 
     override func keyDown(with event: NSEvent) {
         if event.keyCode == 36, !event.modifierFlags.contains(.shift) {

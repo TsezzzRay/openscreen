@@ -261,12 +261,24 @@ final class GlyphOnlySelectionLayoutManager: NSLayoutManager {
         forGlyphRange glyphsToShow: NSRange,
         at origin: NSPoint
     ) {
-        guard let textStorage, let textContainer = textContainers.first else { return }
+        NSColor.secondaryLabelColor.withAlphaComponent(0.12).setFill()
+        for rect in inlineCodeBackgroundRects(forGlyphRange: glyphsToShow, at: origin) {
+            NSBezierPath(roundedRect: rect, xRadius: 4, yRadius: 4).fill()
+        }
+    }
+
+    func inlineCodeBackgroundRects(
+        forGlyphRange glyphsToShow: NSRange,
+        at origin: NSPoint
+    ) -> [NSRect] {
+        guard let textStorage, let textContainer = textContainers.first else { return [] }
         let characterRange = characterRange(
             forGlyphRange: glyphsToShow,
             actualGlyphRange: nil
         )
-        NSColor.secondaryLabelColor.withAlphaComponent(0.12).setFill()
+        let minX = origin.x
+        let maxX = origin.x + textContainer.size.width
+        var result: [NSRect] = []
 
         textStorage.enumerateAttribute(
             .inlineCodeBackground,
@@ -287,13 +299,18 @@ final class GlyphOnlySelectionLayoutManager: NSLayoutManager {
                 let backgroundRect = rect
                     .offsetBy(dx: origin.x, dy: origin.y)
                     .insetBy(dx: -2, dy: 1)
-                NSBezierPath(
-                    roundedRect: backgroundRect,
-                    xRadius: 4,
-                    yRadius: 4
-                ).fill()
+                let clampedMinX = max(minX, backgroundRect.minX)
+                let clampedMaxX = min(maxX, backgroundRect.maxX)
+                guard clampedMaxX > clampedMinX else { return }
+                result.append(NSRect(
+                    x: clampedMinX,
+                    y: backgroundRect.minY,
+                    width: clampedMaxX - clampedMinX,
+                    height: backgroundRect.height
+                ))
             }
         }
+        return result
     }
 
     func glyphOnlySelectionRects(

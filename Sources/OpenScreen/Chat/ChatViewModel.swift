@@ -1,9 +1,11 @@
+import AppKit
 import Foundation
 import SwiftUI
 
 @MainActor
 final class ChatViewModel: ObservableObject {
     @Published var draft = ""
+    @Published private(set) var pendingAttachments: [ChatImageAttachment] = []
     @Published private(set) var turns: [ChatTurn] = []
     @Published private(set) var sessions: [ChatSessionSummary] = []
     @Published private(set) var currentSessionID: UUID?
@@ -11,10 +13,12 @@ final class ChatViewModel: ObservableObject {
     @Published private(set) var activeSessionIDs: Set<UUID> = []
     @Published private(set) var isManagingSession = false
     @Published private(set) var sessionError: String?
+    @Published private(set) var attachmentError: String?
     @Published private(set) var focusRequest = 0
 
     private let agentClient: AgentClient
     private let windowCapture: WindowCapture
+    private let attachmentStore: ChatAttachmentStore
     private let defaults: UserDefaults
     private var turnCache: [UUID: [ChatTurn]] = [:]
     private var activeTurnIDs: [UUID: UUID] = [:]
@@ -28,10 +32,12 @@ final class ChatViewModel: ObservableObject {
     init(
         agentClient: AgentClient,
         windowCapture: WindowCapture,
+        attachmentStore: ChatAttachmentStore = ChatAttachmentStore(),
         defaults: UserDefaults = .standard
     ) {
         self.agentClient = agentClient
         self.windowCapture = windowCapture
+        self.attachmentStore = attachmentStore
         self.defaults = defaults
     }
 
@@ -39,11 +45,17 @@ final class ChatViewModel: ObservableObject {
         focusRequest += 1
     }
 
-    func startTurn(sessionID: UUID, id: UUID, question: String) {
+    func startTurn(
+        sessionID: UUID,
+        id: UUID,
+        question: String,
+        attachments: [ChatImageAttachment] = []
+    ) {
         var sessionTurns = turnCache[sessionID] ?? []
         sessionTurns.append(ChatTurn(
             id: id,
             question: question,
+            attachments: attachments,
             reasoning: "",
             answer: "",
             status: .capturing
@@ -64,6 +76,7 @@ final class ChatViewModel: ObservableObject {
             ChatTurn(
                 id: $0.id,
                 question: $0.user,
+                attachments: $0.images ?? [],
                 reasoning: $0.reasoning ?? "",
                 answer: $0.assistant,
                 status: $0.status,
@@ -187,7 +200,40 @@ final class ChatViewModel: ObservableObject {
         guard let turn = turns.first(where: { $0.id == turnID }),
               turn.status == .failed || turn.status == .cancelled else { return }
         draft = turn.question
+        pendingAttachments = turn.attachments
+        attachmentError = nil
         requestInputFocus()
+    }
+
+    func addAttachments(from urls: [URL]) {
+        do {
+            pendingAttachments.append(contentsOf: try attachmentStore.importImages(at: urls))
+            attachmentError = nil
+        } catch {
+            attachmentError = error.localizedDescription
+        }
+    }
+
+    func addPastedImages(_ images: [NSImage]) {
+        do {
+            pendingAttachments.append(contentsOf: try attachmentStore.importImages(images))
+            attachmentError = nil
+        } catch {
+            attachmentError = error.localizedDescription
+        }
+    }
+
+    func reportAttachmentError(_ error: Error) {
+        attachmentError = error.localizedDescription
+    }
+
+    func removeAttachment(id: String) {
+        guard let index = pendingAttachments.firstIndex(where: { $0.id == id }) else { return }
+        let attachment = pendingAttachments.remove(at: index)
+        let isUsedByHistory = turnCache.values
+            .flatMap { $0 }
+            .contains { turn in turn.attachments.contains(where: { $0.id == attachment.id }) }
+        if !isUsedByHistory { attachmentStore.remove(attachment) }
     }
 
     private func updateTurn(
@@ -239,8 +285,16 @@ final class ChatViewModel: ObservableObject {
               let sessionID = currentSessionID else { return }
 
         let turnID = UUID()
-        startTurn(sessionID: sessionID, id: turnID, question: text)
+        let userAttachments = pendingAttachments
+        startTurn(
+            sessionID: sessionID,
+            id: turnID,
+            question: text,
+            attachments: userAttachments
+        )
         draft = ""
+        pendingAttachments = []
+        attachmentError = nil
         activeSessionIDs.insert(sessionID)
         activeTurnIDs[sessionID] = turnID
 
@@ -257,11 +311,16 @@ final class ChatViewModel: ObservableObject {
             do {
                 let imageURL = try await windowCapture.captureActiveWindow()
                 try Task.checkCancellation()
+                let images = [ChatImageAttachment(
+                    id: UUID().uuidString,
+                    source: .systemCapture,
+                    path: imageURL.path
+                )] + userAttachments
                 let events = try await agentClient.send(
                     requestID: turnID,
                     sessionID: sessionID,
                     text: text,
-                    imageURL: imageURL
+                    images: images
                 )
                 sentToAgent = true
                 markRequesting(sessionID: sessionID, turnID: turnID)
@@ -282,6 +341,7 @@ final class ChatViewModel: ObservableObject {
                         sessionID: sessionID,
                         turnID: turnID,
                         text: text,
+                        images: userAttachments,
                         status: .cancelled
                     )
                 }
@@ -292,6 +352,7 @@ final class ChatViewModel: ObservableObject {
                         sessionID: sessionID,
                         turnID: turnID,
                         text: text,
+                        images: userAttachments,
                         status: .failed
                     )
                 }
@@ -311,6 +372,7 @@ final class ChatViewModel: ObservableObject {
         sessionID: UUID,
         turnID: UUID,
         text: String,
+        images: [ChatImageAttachment],
         status: AgentRequest.AttemptStatus
     ) async {
         let record = Task {
@@ -318,6 +380,7 @@ final class ChatViewModel: ObservableObject {
                 requestID: turnID,
                 sessionID: sessionID,
                 text: text,
+                images: images,
                 status: status
             )
             return try await agentClient.listSessions()

@@ -18,7 +18,7 @@ struct AgentRequest: Encodable {
 
     struct Input: Encodable {
         let text: String
-        let image: String?
+        let images: [ChatImageAttachment]
     }
 
     let requestId: UUID
@@ -80,13 +80,13 @@ struct AgentRequest: Encodable {
         requestID: UUID = UUID(),
         sessionID: UUID,
         text: String,
-        imagePath: String
+        images: [ChatImageAttachment]
     ) -> Self {
         Self(
             requestId: requestID,
             type: .chat,
             sessionId: sessionID,
-            input: Input(text: text, image: imagePath)
+            input: Input(text: text, images: images)
         )
     }
 
@@ -107,13 +107,14 @@ struct AgentRequest: Encodable {
         requestID: UUID,
         sessionID: UUID,
         text: String,
+        images: [ChatImageAttachment] = [],
         status: AttemptStatus
     ) -> Self {
         Self(
             requestId: requestID,
             type: .recordAttempt,
             sessionId: sessionID,
-            input: Input(text: text, image: nil),
+            input: Input(text: text, images: images),
             status: status
         )
     }
@@ -148,7 +149,26 @@ struct StoredChatTurn: Decodable, Equatable, Sendable {
     let assistant: String
     let reasoning: String?
     let status: ChatTurnStatus
+    let images: [ChatImageAttachment]?
     let error: String?
+
+    init(
+        id: UUID,
+        user: String,
+        assistant: String,
+        reasoning: String?,
+        status: ChatTurnStatus,
+        images: [ChatImageAttachment]? = nil,
+        error: String?
+    ) {
+        self.id = id
+        self.user = user
+        self.assistant = assistant
+        self.reasoning = reasoning
+        self.status = status
+        self.images = images
+        self.error = error
+    }
 }
 
 struct ChatSessionSnapshot: Decodable, Identifiable, Equatable, Sendable {

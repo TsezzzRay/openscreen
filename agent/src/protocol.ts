@@ -1,8 +1,14 @@
+export type ChatImage = {
+  id: string;
+  source: "system_capture" | "user_upload";
+  path: string;
+};
+
 export type InputEnvelope = {
   requestId: string;
   type: "chat";
   sessionId: string;
-  input: { text: string; image: string };
+  input: { text: string; images: ChatImage[] };
 } | {
   requestId: string;
   type: "list_sessions";
@@ -27,7 +33,7 @@ export type InputEnvelope = {
   requestId: string;
   type: "record_attempt";
   sessionId: string;
-  input: { text: string };
+  input: { text: string; images: ChatImage[] };
   status: "failed" | "cancelled";
 };
 
@@ -50,6 +56,20 @@ function record(value: unknown): Record<string, unknown> {
 function text(value: unknown) {
   if (typeof value !== "string" || !value) invalid();
   return value;
+}
+
+function chatImages(value: unknown): ChatImage[] {
+  if (!Array.isArray(value)) invalid();
+  return value.map((item) => {
+    const image = record(item);
+    const source = text(image.source);
+    if (source !== "system_capture" && source !== "user_upload") invalid();
+    return {
+      id: text(image.id),
+      source,
+      path: text(image.path),
+    };
+  });
 }
 
 export function parseInputEnvelope(line: string): InputEnvelope {
@@ -75,19 +95,28 @@ export function parseInputEnvelope(line: string): InputEnvelope {
 
   const input = record(value.input);
   if (type === "chat") {
+    const images = "images" in input
+      ? chatImages(input.images)
+      : [{ id: "legacy-system", source: "system_capture" as const, path: text(input.image) }];
+    if (
+      images.length === 0 || images[0]?.source !== "system_capture" ||
+      images.filter((image) => image.source === "system_capture").length !== 1
+    ) invalid();
     return {
       requestId,
       type,
       sessionId,
-      input: { text: text(input.text), image: text(input.image) },
+      input: { text: text(input.text), images },
     };
   }
   if (type === "record_attempt" && (value.status === "failed" || value.status === "cancelled")) {
+    const images = "images" in input ? chatImages(input.images) : [];
+    if (images.some((image) => image.source !== "user_upload")) invalid();
     return {
       requestId,
       type,
       sessionId,
-      input: { text: text(input.text) },
+      input: { text: text(input.text), images },
       status: value.status,
     };
   }

@@ -14,11 +14,15 @@ import {
 
 const loadScreenshot = async (path: string) => Buffer.from(path).toString("base64");
 
-test("builds a streaming Responses API screenshot request", async () => {
+test("builds a streaming Responses API request with system and user screenshots in order", async () => {
   const request = await makeRequest(
     "vision-model",
     "What is on screen?",
-    "current.png",
+    [
+      { id: "system", source: "system_capture", path: "current.png" },
+      { id: "upload-1", source: "user_upload", path: "one.png" },
+      { id: "upload-2", source: "user_upload", path: "two.png" },
+    ] as any,
     21_760,
     undefined,
     loadScreenshot,
@@ -35,6 +39,16 @@ test("builds a streaming Responses API screenshot request", async () => {
         type: "input_image",
         detail: "auto",
         image_url: `data:image/png;base64,${Buffer.from("current.png").toString("base64")}`,
+      },
+      {
+        type: "input_image",
+        detail: "auto",
+        image_url: `data:image/png;base64,${Buffer.from("one.png").toString("base64")}`,
+      },
+      {
+        type: "input_image",
+        detail: "auto",
+        image_url: `data:image/png;base64,${Buffer.from("two.png").toString("base64")}`,
       },
     ],
   });

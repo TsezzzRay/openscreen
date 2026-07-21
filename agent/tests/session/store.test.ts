@@ -63,6 +63,41 @@ test("stores metadata on the first line and replays completed turns and compacti
   assert.equal(loaded.visibleTurns[0]?.status, "completed");
 });
 
+test("persists ordered images and exposes them when restoring visible turns", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "openscreen-sessions-"));
+  t.after(() => rm(directory, { force: true, recursive: true }));
+  const session = await createSession(directory);
+  const images = [
+    { id: "system", source: "system_capture", path: "/tmp/system.png" },
+    { id: "upload-1", source: "user_upload", path: "/tmp/one.png" },
+    { id: "upload-2", source: "user_upload", path: "/tmp/two.png" },
+  ];
+  await appendSessionEvents(directory, session.id, [
+    {
+      type: "turn_started",
+      turn: {
+        id: "turn-1",
+        user: "Question",
+        images,
+        startedAt: "2026-07-19T00:00:01.000Z",
+      },
+    },
+    {
+      type: "turn_completed",
+      turn: {
+        id: "turn-1",
+        user: "Question",
+        assistant: "Answer",
+        images,
+      },
+    },
+  ] as any);
+
+  const loaded = await loadSession(directory, session.id);
+  assert.deepEqual(loaded.turns[0]?.images, images);
+  assert.deepEqual(loaded.visibleTurns[0]?.images, images.slice(1));
+});
+
 test("restores an unfinished turn as interrupted without adding it to model context", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "openscreen-sessions-"));
   t.after(() => rm(directory, { force: true, recursive: true }));

@@ -12,12 +12,14 @@ import {
 import { join } from "node:path";
 
 import type OpenAI from "openai";
+import type { ChatImage } from "../protocol.js";
 
 export type Turn = {
   id?: string;
   user: string;
   assistant: string;
   reasoning?: string;
+  images?: ChatImage[];
   screenshotPath?: string;
   status?: "completed" | "failed" | "cancelled";
   outputItems?: Array<
@@ -28,6 +30,7 @@ export type Turn = {
 export type VisibleTurn = Pick<Turn, "id" | "user" | "assistant" | "reasoning"> & {
   id: string;
   status: "completed" | "failed" | "cancelled" | "interrupted";
+  images?: ChatImage[];
   error?: string;
 };
 
@@ -61,6 +64,7 @@ type SessionHeader = {
 type StartedTurn = {
   id: string;
   user: string;
+  images?: ChatImage[];
   screenshotPath?: string;
   startedAt: string;
 };
@@ -100,11 +104,32 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
+function isChatImages(value: unknown): value is ChatImage[] {
+  return Array.isArray(value) && value.every((image) => (
+    isRecord(image) && typeof image.id === "string" && image.id.length > 0 &&
+    (image.source === "system_capture" || image.source === "user_upload") &&
+    typeof image.path === "string" && image.path.length > 0
+  ));
+}
+
+export function turnImages(turn: { images?: ChatImage[]; screenshotPath?: string }): ChatImage[] {
+  if (turn.images) return turn.images;
+  return turn.screenshotPath
+    ? [{ id: "legacy-system", source: "system_capture", path: turn.screenshotPath }]
+    : [];
+}
+
+function visibleImages(turn: { images?: ChatImage[]; screenshotPath?: string }) {
+  const images = turnImages(turn).filter((image) => image.source === "user_upload");
+  return images.length > 0 ? { images } : {};
+}
+
 function isTurn(value: unknown): value is Turn & { id: string } {
   return typeof value === "object" && value !== null &&
     "id" in value && typeof value.id === "string" && value.id.length > 0 &&
     "user" in value && typeof value.user === "string" &&
     "assistant" in value && typeof value.assistant === "string" &&
+    (!("images" in value) || value.images === undefined || isChatImages(value.images)) &&
     (!("screenshotPath" in value) || value.screenshotPath === undefined ||
       typeof value.screenshotPath === "string") &&
     (!("status" in value) || value.status === undefined || value.status === "completed" ||
@@ -145,6 +170,7 @@ function parseEvent(line: string, lineNumber: number): SessionEvent {
       const turn = value.turn;
       if (!isRecord(turn) || typeof turn.id !== "string" || !turn.id ||
           typeof turn.user !== "string" ||
+          ("images" in turn && turn.images !== undefined && !isChatImages(turn.images)) ||
           ("screenshotPath" in turn && turn.screenshotPath !== undefined &&
             typeof turn.screenshotPath !== "string") ||
           typeof turn.startedAt !== "string") break;
@@ -288,6 +314,7 @@ export async function loadSession(directory: string, id: string): Promise<Stored
           assistant: "",
           reasoning: "",
           status: "interrupted",
+          ...visibleImages(event.turn),
         };
         visibleIndexes.set(event.turn.id, visibleTurns.length);
         visibleTurns.push(visible);
@@ -315,6 +342,7 @@ export async function loadSession(directory: string, id: string): Promise<Stored
           assistant: event.turn.assistant,
           reasoning: event.turn.reasoning,
           status: "completed",
+          ...visibleImages(event.turn),
         };
         pending.delete(event.turn.id);
         pendingTurns.delete(event.turn.id);
@@ -332,6 +360,7 @@ export async function loadSession(directory: string, id: string): Promise<Stored
             user: started.user,
             assistant: visible.assistant,
             reasoning: visible.reasoning,
+            ...(started.images ? { images: started.images } : {}),
             ...(started.screenshotPath ? { screenshotPath: started.screenshotPath } : {}),
             status: "failed",
           });
@@ -350,6 +379,7 @@ export async function loadSession(directory: string, id: string): Promise<Stored
           user: started.user,
           assistant: visible.assistant,
           reasoning: visible.reasoning,
+          ...(started.images ? { images: started.images } : {}),
           ...(started.screenshotPath ? { screenshotPath: started.screenshotPath } : {}),
           status: "cancelled",
         });
