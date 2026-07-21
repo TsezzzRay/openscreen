@@ -213,6 +213,129 @@ private struct SelectableMarkdownView: NSViewRepresentable {
     }
 }
 
+final class GlyphOnlySelectionLayoutManager: NSLayoutManager {
+    static let selectionColor = NSColor(
+        calibratedRed: 0.18,
+        green: 0.48,
+        blue: 0.96,
+        alpha: 0.34
+    )
+
+    override func fillBackgroundRectArray(
+        _ rectArray: UnsafePointer<NSRect>,
+        count rectCount: Int,
+        forCharacterRange charRange: NSRange,
+        color: NSColor
+    ) {
+        guard color.isEqual(Self.selectionColor) else {
+            super.fillBackgroundRectArray(
+                rectArray,
+                count: rectCount,
+                forCharacterRange: charRange,
+                color: color
+            )
+            return
+        }
+
+        let rects = glyphOnlySelectionRects(
+            from: Array(UnsafeBufferPointer(start: rectArray, count: rectCount)),
+            forCharacterRange: charRange
+        )
+        rects.withUnsafeBufferPointer { buffer in
+            guard let baseAddress = buffer.baseAddress else { return }
+            super.fillBackgroundRectArray(
+                baseAddress,
+                count: buffer.count,
+                forCharacterRange: charRange,
+                color: color
+            )
+        }
+    }
+
+    override func drawBackground(forGlyphRange glyphsToShow: NSRange, at origin: NSPoint) {
+        drawInlineCodeBackgrounds(forGlyphRange: glyphsToShow, at: origin)
+        super.drawBackground(forGlyphRange: glyphsToShow, at: origin)
+    }
+
+    private func drawInlineCodeBackgrounds(
+        forGlyphRange glyphsToShow: NSRange,
+        at origin: NSPoint
+    ) {
+        guard let textStorage, let textContainer = textContainers.first else { return }
+        let characterRange = characterRange(
+            forGlyphRange: glyphsToShow,
+            actualGlyphRange: nil
+        )
+        NSColor.secondaryLabelColor.withAlphaComponent(0.12).setFill()
+
+        textStorage.enumerateAttribute(
+            .inlineCodeBackground,
+            in: characterRange
+        ) { value, range, _ in
+            guard value != nil else { return }
+            let glyphRange = NSIntersectionRange(
+                self.glyphRange(forCharacterRange: range, actualCharacterRange: nil),
+                glyphsToShow
+            )
+            guard glyphRange.length > 0 else { return }
+
+            self.enumerateEnclosingRects(
+                forGlyphRange: glyphRange,
+                withinSelectedGlyphRange: glyphRange,
+                in: textContainer
+            ) { rect, _ in
+                let backgroundRect = rect
+                    .offsetBy(dx: origin.x, dy: origin.y)
+                    .insetBy(dx: -2, dy: 1)
+                NSBezierPath(
+                    roundedRect: backgroundRect,
+                    xRadius: 4,
+                    yRadius: 4
+                ).fill()
+            }
+        }
+    }
+
+    func glyphOnlySelectionRects(
+        from selectionRects: [NSRect],
+        forCharacterRange characterRange: NSRange
+    ) -> [NSRect] {
+        guard !selectionRects.isEmpty,
+              characterRange.length > 0,
+              let textContainer = textContainers.first else { return selectionRects }
+
+        ensureLayout(for: textContainer)
+        let glyphRange = glyphRange(
+            forCharacterRange: characterRange,
+            actualCharacterRange: nil
+        )
+        var glyphIndex = glyphRange.location
+        var result: [NSRect] = []
+
+        while glyphIndex < NSMaxRange(glyphRange) {
+            var lineRange = NSRange()
+            let usedRect = lineFragmentUsedRect(
+                forGlyphAt: glyphIndex,
+                effectiveRange: &lineRange
+            )
+            if usedRect.width > 0 {
+                for selectionRect in selectionRects {
+                    let clipped = selectionRect.intersection(usedRect)
+                    if !clipped.isNull, clipped.width > 0, clipped.height > 0 {
+                        result.append(clipped)
+                    }
+                }
+            }
+
+            let nextIndex = NSMaxRange(lineRange)
+            guard nextIndex > glyphIndex else { break }
+            glyphIndex = nextIndex
+        }
+
+        return result
+    }
+}
+
 final class SelectableMarkdownTextView: NSTextView {
     private struct CodeOverlay {
         let range: NSRange
@@ -227,7 +350,15 @@ final class SelectableMarkdownTextView: NSTextView {
     }
 
     override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
+        let textStorage = NSTextStorage()
+        let layoutManager = GlyphOnlySelectionLayoutManager()
+        let textContainer = NSTextContainer(size: NSSize(
+            width: frameRect.width,
+            height: .greatestFiniteMagnitude
+        ))
+        textStorage.addLayoutManager(layoutManager)
+        layoutManager.addTextContainer(textContainer)
+        super.init(frame: frameRect, textContainer: textContainer)
         configure()
     }
 
@@ -246,6 +377,9 @@ final class SelectableMarkdownTextView: NSTextView {
         textContainer?.widthTracksTextView = true
         isHorizontallyResizable = false
         isVerticallyResizable = true
+        selectedTextAttributes = [
+            .backgroundColor: GlyphOnlySelectionLayoutManager.selectionColor,
+        ]
         linkTextAttributes = [
             .foregroundColor: NSColor.linkColor,
             .underlineStyle: NSUnderlineStyle.single.rawValue,
@@ -299,6 +433,41 @@ final class SelectableMarkdownTextView: NSTextView {
                 width: size.width,
                 height: size.height
             )
+        }
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        for path in codeBlockBackgroundPaths() where path.bounds.intersects(dirtyRect) {
+            NSColor.controlBackgroundColor.withAlphaComponent(0.88).setFill()
+            path.fill()
+            NSColor.separatorColor.withAlphaComponent(0.24).setStroke()
+            path.lineWidth = 0.5
+            path.stroke()
+        }
+        super.draw(dirtyRect)
+    }
+
+    func codeBlockBackgroundPaths() -> [NSBezierPath] {
+        guard bounds.width > 0, let textContainer, let layoutManager else { return [] }
+        layoutManager.ensureLayout(for: textContainer)
+        let origin = textContainerOrigin
+
+        return codeOverlays.map { overlay in
+            let glyphRange = layoutManager.glyphRange(
+                forCharacterRange: overlay.range,
+                actualCharacterRange: nil
+            )
+            let laidOutRect = layoutManager.boundingRect(
+                forGlyphRange: glyphRange,
+                in: textContainer
+            )
+            let rect = NSRect(
+                x: 0,
+                y: laidOutRect.minY + origin.y - 6,
+                width: bounds.width,
+                height: laidOutRect.height + 12
+            )
+            return NSBezierPath(roundedRect: rect, xRadius: 10, yRadius: 10)
         }
     }
 
@@ -410,8 +579,8 @@ final class SelectableMarkdownTextView: NSTextView {
             if intent.contains(.code) {
                 inlineFont = NSFont.monospacedSystemFont(ofSize: font.pointSize, weight: .regular)
                 fragment.addAttribute(
-                    .backgroundColor,
-                    value: NSColor.secondaryLabelColor.withAlphaComponent(0.12),
+                    .inlineCodeBackground,
+                    value: true,
                     range: range
                 )
             } else {
@@ -451,18 +620,15 @@ final class SelectableMarkdownTextView: NSTextView {
 
     private func codeParagraphStyle(alignment: NSTextAlignment) -> NSParagraphStyle {
         let block = NSTextBlock()
-        block.backgroundColor = NSColor.controlBackgroundColor.withAlphaComponent(0.75)
-        block.setBorderColor(NSColor.separatorColor.withAlphaComponent(0.28))
         for edge in [NSRectEdge.minX, .maxX, .minY, .maxY] {
             block.setWidth(8, type: .absoluteValueType, for: .padding, edge: edge)
         }
-        block.setWidth(0.5, type: .absoluteValueType, for: .border, edge: .minX)
-        block.setWidth(0.5, type: .absoluteValueType, for: .border, edge: .maxX)
-        block.setWidth(0.5, type: .absoluteValueType, for: .border, edge: .minY)
-        block.setWidth(0.5, type: .absoluteValueType, for: .border, edge: .maxY)
 
         let style = NSMutableParagraphStyle()
         style.alignment = alignment
+        style.firstLineHeadIndent = 10
+        style.headIndent = 10
+        style.tailIndent = -10
         style.textBlocks = [block]
         return style
     }
@@ -482,11 +648,18 @@ final class SelectableMarkdownTextView: NSTextView {
             return CodeOverlay(range: block.range, source: block.source, button: button)
         }
         needsLayout = true
+        needsDisplay = true
     }
 }
 
 private extension NSAttributedString {
     var fullRange: NSRange { NSRange(location: 0, length: length) }
+}
+
+private extension NSAttributedString.Key {
+    static let inlineCodeBackground = NSAttributedString.Key(
+        "OpenScreenInlineCodeBackground"
+    )
 }
 
 struct MarkdownMessageView: View {

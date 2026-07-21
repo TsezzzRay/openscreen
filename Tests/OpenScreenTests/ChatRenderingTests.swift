@@ -78,8 +78,61 @@ final class ChatRenderingTests: XCTestCase {
         XCTAssertEqual(pasteboard.string(forType: .string), "let value = 1")
     }
 
+    func testMarkdownCodeBlockUsesRoundedFullWidthBackground() throws {
+        let textView = SelectableMarkdownTextView()
+        textView.setFrameSize(NSSize(width: 300, height: 200))
+        textView.render(
+            MarkdownDocument("```swift\nlet value = 1\n```"),
+            alignment: .left,
+            role: .body
+        )
+
+        let path = try XCTUnwrap(textView.codeBlockBackgroundPaths().first)
+        let layoutManager = try XCTUnwrap(textView.layoutManager)
+        let textContainer = try XCTUnwrap(textView.textContainer)
+        let codeRange = (textView.string as NSString).range(of: "let value = 1")
+        let codeBounds = layoutManager.boundingRect(
+            forGlyphRange: layoutManager.glyphRange(
+                forCharacterRange: codeRange,
+                actualCharacterRange: nil
+            ),
+            in: textContainer
+        )
+
+        XCTAssertEqual(path.bounds.minX, 0, accuracy: 0.01)
+        XCTAssertEqual(path.bounds.width, 300, accuracy: 0.01)
+        XCTAssertGreaterThan(path.elementCount, 5)
+        XCTAssertGreaterThanOrEqual(codeBounds.minX - path.bounds.minX, 8)
+        XCTAssertGreaterThanOrEqual(codeBounds.minY - path.bounds.minY, 6)
+        XCTAssertGreaterThanOrEqual(path.bounds.maxY - codeBounds.maxY, 6)
+    }
+
+    func testMarkdownInlineCodeUsesCustomRoundedBackground() throws {
+        let textView = SelectableMarkdownTextView()
+        textView.setFrameSize(NSSize(width: 300, height: 100))
+        textView.render(
+            MarkdownDocument("Open `session.ts` now."),
+            alignment: .left,
+            role: .body
+        )
+        let range = (textView.string as NSString).range(of: "session.ts")
+        let storage = try XCTUnwrap(textView.textStorage)
+
+        XCTAssertNotNil(storage.attribute(
+            NSAttributedString.Key("OpenScreenInlineCodeBackground"),
+            at: range.location,
+            effectiveRange: nil
+        ))
+        XCTAssertNil(storage.attribute(
+            .backgroundColor,
+            at: range.location,
+            effectiveRange: nil
+        ))
+    }
+
     func testMarkdownTextViewSelectsAcrossParagraphs() {
         let textView = SelectableMarkdownTextView()
+        textView.setFrameSize(NSSize(width: 300, height: 200))
         textView.render(
             MarkdownDocument("First paragraph.\n\nSecond paragraph."),
             alignment: .left,
@@ -90,6 +143,29 @@ final class ChatRenderingTests: XCTestCase {
 
         XCTAssertEqual(textView.string, "First paragraph.\n\nSecond paragraph.")
         XCTAssertEqual(textView.selectedRange().length, textView.string.utf16.count)
+    }
+
+    func testMarkdownSelectionHighlightsOnlyLaidOutText() throws {
+        let textView = SelectableMarkdownTextView()
+        textView.setFrameSize(NSSize(width: 300, height: 200))
+        textView.render(
+            MarkdownDocument("First paragraph.\n\nSecond paragraph."),
+            alignment: .left,
+            role: .body
+        )
+
+        let layoutManager = try XCTUnwrap(
+            textView.layoutManager as? GlyphOnlySelectionLayoutManager
+        )
+        let characterRange = NSRange(location: 0, length: textView.string.utf16.count)
+        let rects = layoutManager.glyphOnlySelectionRects(
+            from: [NSRect(x: 0, y: 0, width: 300, height: 42)],
+            forCharacterRange: characterRange
+        )
+
+        XCTAssertEqual(rects.count, 2)
+        XCTAssertLessThan(rects[0].width, 300)
+        XCTAssertGreaterThan(rects[1].minY, rects[0].maxY)
     }
 
     func testChatComposerHeightGrowsUntilMaximum() {
