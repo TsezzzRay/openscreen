@@ -80,15 +80,55 @@ final class ChatScroller: NSScroller {
     }
 }
 
+@MainActor
+final class ChatScrollerVisibility: NSObject {
+    private weak var scrollView: NSScrollView?
+
+    init(scrollView: NSScrollView) {
+        self.scrollView = scrollView
+        super.init()
+        scrollView.hasVerticalScroller = true
+        scrollView.autohidesScrollers = false
+        scrollView.scrollerStyle = .overlay
+        let scroller = ChatScroller()
+        scroller.alphaValue = 0
+        scrollView.verticalScroller = scroller
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(scrollingDidStart(_:)),
+            name: NSScrollView.willStartLiveScrollNotification,
+            object: scrollView
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(scrollingDidEnd(_:)),
+            name: NSScrollView.didEndLiveScrollNotification,
+            object: scrollView
+        )
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+
+    @objc private func scrollingDidStart(_ notification: Notification) {
+        (scrollView?.verticalScroller as? ChatScroller)?.show()
+    }
+
+    @objc private func scrollingDidEnd(_ notification: Notification) {
+        (scrollView?.verticalScroller as? ChatScroller)?.hide()
+    }
+}
+
 private final class ChatScrollerStyleView: NSView {
     private var didInstallScroller = false
-    private weak var observedScrollView: NSScrollView?
+    private var scrollerVisibility: ChatScrollerVisibility?
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         if window == nil {
             didInstallScroller = false
-            removeScrollObservers()
+            scrollerVisibility = nil
             return
         }
         scheduleInstallation()
@@ -104,50 +144,7 @@ private final class ChatScrollerStyleView: NSView {
 
     private func installScroller() {
         guard let scrollView = enclosingScrollView else { return }
-        scrollView.hasVerticalScroller = true
-        scrollView.autohidesScrollers = false
-        let scroller = ChatScroller()
-        scroller.alphaValue = 0
-        scrollView.verticalScroller = scroller
-        observeScrolling(in: scrollView)
-    }
-
-    private func observeScrolling(in scrollView: NSScrollView) {
-        removeScrollObservers()
-        let center = NotificationCenter.default
-        observedScrollView = scrollView
-        center.addObserver(
-            self,
-            selector: #selector(scrollingDidStart(_:)),
-            name: NSScrollView.willStartLiveScrollNotification,
-            object: scrollView
-        )
-        center.addObserver(
-            self,
-            selector: #selector(scrollingDidEnd(_:)),
-            name: NSScrollView.didEndLiveScrollNotification,
-            object: scrollView
-        )
-    }
-
-    @objc private func scrollingDidStart(_ notification: Notification) {
-        let scrollView = notification.object as? NSScrollView
-        (scrollView?.verticalScroller as? ChatScroller)?.show()
-    }
-
-    @objc private func scrollingDidEnd(_ notification: Notification) {
-        let scrollView = notification.object as? NSScrollView
-        (scrollView?.verticalScroller as? ChatScroller)?.hide()
-    }
-
-    private func removeScrollObservers() {
-        guard let observedScrollView else { return }
-        NotificationCenter.default.removeObserver(
-            self,
-            name: nil,
-            object: observedScrollView
-        )
-        self.observedScrollView = nil
+        scrollerVisibility = ChatScrollerVisibility(scrollView: scrollView)
     }
 }
 
@@ -194,6 +191,7 @@ struct ChatView: View {
     @State private var renamedSessionID: UUID?
     @State private var renameTitle = ""
     @State private var followsLatest = true
+    @State private var composerHeight = ChatComposerLayout.minimumHeight
     @FocusState private var isRenameFocused: Bool
 
     private static let bottomID = "chat-bottom"
@@ -419,7 +417,7 @@ struct ChatView: View {
                     }
                     .padding(.horizontal, 18)
                     .padding(.top, 76)
-                    .padding(.bottom, 94)
+                    .padding(.bottom, ChatComposerLayout.transcriptBottomPadding(for: composerHeight))
                     .frame(maxWidth: .infinity)
                     .background { ChatScrollerStyle() }
                 }
@@ -483,29 +481,34 @@ struct ChatView: View {
     }
 
     private var composer: some View {
-        HStack(spacing: 7) {
+        VStack(alignment: .leading, spacing: 6) {
             ChatTextEditor(
                 text: $viewModel.draft,
+                height: $composerHeight,
                 focusRequest: viewModel.focusRequest,
                 isEnabled: !viewModel.isManagingSession && !viewModel.isSending,
                 onSubmit: viewModel.submit
             )
-            .frame(height: 36)
+            .frame(height: composerHeight)
 
-            requestButton
+            HStack {
+                Spacer()
+                requestButton
+            }
         }
-        .padding(.leading, 12)
-        .padding(.trailing, 6)
-        .padding(.vertical, 6)
+        .padding(.leading, 14)
+        .padding(.trailing, 8)
+        .padding(.top, 11)
+        .padding(.bottom, 8)
         .background {
-            RoundedRectangle(cornerRadius: 15, style: .continuous)
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
                 .fill(Color(nsColor: .textBackgroundColor))
         }
         .overlay {
-            RoundedRectangle(cornerRadius: 15, style: .continuous)
-                .stroke(Color.secondary.opacity(0.18), lineWidth: 0.5)
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .stroke(Color.secondary.opacity(0.14), lineWidth: 0.5)
         }
-        .shadow(color: Color.black.opacity(0.07), radius: 9, y: 4)
+        .shadow(color: Color.black.opacity(0.10), radius: 18, y: 8)
         .padding(.horizontal, 12)
         .padding(.top, 6)
         .padding(.bottom, 12)
@@ -620,7 +623,7 @@ private struct ChatTurnView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 13) {
-            MarkdownMessageView(turn.question, alignment: .trailing)
+            MarkdownMessageView(turn.question, alignment: .trailing, role: .question)
                 .foregroundStyle(Color.accentColor)
                 .frame(maxWidth: 310, alignment: .trailing)
             .frame(maxWidth: .infinity, alignment: .trailing)
@@ -664,7 +667,7 @@ private struct ChatTurnView: View {
             .accessibilityLabel(showsReasoning ? "Hide reasoning summary" : "Show reasoning summary")
 
             if showsReasoning {
-                MarkdownMessageView(turn.reasoning)
+                MarkdownMessageView(turn.reasoning, role: .reasoning)
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .transition(.opacity.combined(with: .move(edge: .top)))

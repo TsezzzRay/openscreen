@@ -78,6 +78,28 @@ final class ChatRenderingTests: XCTestCase {
         XCTAssertEqual(pasteboard.string(forType: .string), "let value = 1")
     }
 
+    func testMarkdownTextViewSelectsAcrossParagraphs() {
+        let textView = SelectableMarkdownTextView()
+        textView.render(
+            MarkdownDocument("First paragraph.\n\nSecond paragraph."),
+            alignment: .left,
+            role: .body
+        )
+
+        textView.setSelectedRange(NSRange(location: 0, length: textView.string.utf16.count))
+
+        XCTAssertEqual(textView.string, "First paragraph.\n\nSecond paragraph.")
+        XCTAssertEqual(textView.selectedRange().length, textView.string.utf16.count)
+    }
+
+    func testChatComposerHeightGrowsUntilMaximum() {
+        XCTAssertEqual(ChatComposerLayout.height(for: 20), 36)
+        XCTAssertEqual(ChatComposerLayout.height(for: 72), 72)
+        XCTAssertEqual(ChatComposerLayout.height(for: 180), 120)
+        XCTAssertEqual(ChatComposerLayout.transcriptBottomPadding(for: 36), 140)
+        XCTAssertEqual(ChatComposerLayout.transcriptBottomPadding(for: 120), 224)
+    }
+
     func testCompletedStatusIsQuietWhileActionableStatusesRemainVisible() {
         XCTAssertFalse(ChatTurnStatus.completed.showsInTranscript)
         XCTAssertTrue(ChatTurnStatus.generating.showsInTranscript)
@@ -281,6 +303,13 @@ final class ChatRenderingTests: XCTestCase {
         XCTAssertFalse(scrollView.autohidesScrollers)
         XCTAssertTrue(scrollView.verticalScroller is ChatScroller)
         XCTAssertEqual(scrollView.verticalScroller?.alphaValue, 0)
+
+        let composerScrollView = try XCTUnwrap(
+            descendants(of: NSScrollView.self, in: hostingView)
+                .first { $0 !== scrollView && $0.frame.height <= ChatComposerLayout.maximumHeight }
+        )
+        XCTAssertTrue(composerScrollView.verticalScroller is ChatScroller)
+        XCTAssertEqual(composerScrollView.verticalScroller?.alphaValue, 0)
 
         NotificationCenter.default.post(
             name: NSScrollView.willStartLiveScrollNotification,
