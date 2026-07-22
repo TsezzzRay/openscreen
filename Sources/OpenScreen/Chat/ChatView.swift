@@ -63,85 +63,13 @@ private struct ChatPanelMaterial: NSViewRepresentable {
     func updateNSView(_ view: NSVisualEffectView, context: Context) {}
 }
 
-final class ChatScroller: NSScroller {
-    override func drawKnobSlot(in slotRect: NSRect, highlight flag: Bool) {}
-
-    override func drawKnob() {
-        let knob = rect(for: .knob)
-        guard knob.height > 0 else { return }
-        let thumb = NSRect(x: knob.midX - 2.5, y: knob.minY, width: 5, height: knob.height)
-        NSColor.secondaryLabelColor.withAlphaComponent(0.36).setFill()
-        NSBezierPath(roundedRect: thumb, xRadius: 2.5, yRadius: 2.5).fill()
-    }
-
-    func show() {
-        layer?.removeAllAnimations()
-        alphaValue = 1
-    }
-
-    func hide() {
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.18
-            animator().alphaValue = 0
-        }
-    }
-
-    override func mouseDown(with event: NSEvent) {
-        show()
-        super.mouseDown(with: event)
-        hide()
-    }
-}
-
-@MainActor
-final class ChatScrollerVisibility: NSObject {
-    private weak var scrollView: NSScrollView?
-
-    init(scrollView: NSScrollView) {
-        self.scrollView = scrollView
-        super.init()
-        scrollView.hasVerticalScroller = true
-        scrollView.autohidesScrollers = false
-        scrollView.scrollerStyle = .overlay
-        let scroller = ChatScroller()
-        scroller.alphaValue = 0
-        scrollView.verticalScroller = scroller
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(scrollingDidStart(_:)),
-            name: NSScrollView.willStartLiveScrollNotification,
-            object: scrollView
-        )
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(scrollingDidEnd(_:)),
-            name: NSScrollView.didEndLiveScrollNotification,
-            object: scrollView
-        )
-    }
-
-    deinit {
-        NotificationCenter.default.removeObserver(self)
-    }
-
-    @objc private func scrollingDidStart(_ notification: Notification) {
-        (scrollView?.verticalScroller as? ChatScroller)?.show()
-    }
-
-    @objc private func scrollingDidEnd(_ notification: Notification) {
-        (scrollView?.verticalScroller as? ChatScroller)?.hide()
-    }
-}
-
 private final class ChatScrollerStyleView: NSView {
     private var didInstallScroller = false
-    private var scrollerVisibility: ChatScrollerVisibility?
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         if window == nil {
             didInstallScroller = false
-            scrollerVisibility = nil
             return
         }
         scheduleInstallation()
@@ -157,7 +85,9 @@ private final class ChatScrollerStyleView: NSView {
 
     private func installScroller() {
         guard let scrollView = enclosingScrollView else { return }
-        scrollerVisibility = ChatScrollerVisibility(scrollView: scrollView)
+        scrollView.hasVerticalScroller = true
+        scrollView.autohidesScrollers = true
+        scrollView.scrollerStyle = .overlay
     }
 }
 

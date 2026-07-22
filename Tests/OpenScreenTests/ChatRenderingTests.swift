@@ -470,7 +470,7 @@ final class ChatRenderingTests: XCTestCase {
         XCTAssertNil(state.url)
     }
 
-    func testChatViewUsesTracklessNativeScroller() async throws {
+    func testChatViewUsesNativeOverlayScrollers() async throws {
         let viewModel = ChatViewModel(
             agentClient: AgentClient(),
             windowCapture: WindowCapture()
@@ -488,34 +488,27 @@ final class ChatRenderingTests: XCTestCase {
         defer { window.orderOut(nil) }
 
         let scrollView = try await waitForChatScrollView(in: hostingView)
-        for _ in 0..<50 where !(scrollView.verticalScroller is ChatScroller) {
-            hostingView.layoutSubtreeIfNeeded()
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        try await Task.sleep(for: .milliseconds(100))
+        hostingView.layoutSubtreeIfNeeded()
         XCTAssertTrue(scrollView.hasVerticalScroller)
-        XCTAssertFalse(scrollView.autohidesScrollers)
-        XCTAssertTrue(scrollView.verticalScroller is ChatScroller)
-        XCTAssertEqual(scrollView.verticalScroller?.alphaValue, 0)
+        XCTAssertTrue(scrollView.autohidesScrollers)
+        XCTAssertEqual(scrollView.scrollerStyle, .overlay)
+        let transcriptScroller = try XCTUnwrap(scrollView.verticalScroller)
+        XCTAssertEqual(NSStringFromClass(type(of: transcriptScroller)), NSStringFromClass(NSScroller.self))
+        XCTAssertTrue(transcriptScroller.target === scrollView)
+        XCTAssertNotNil(transcriptScroller.action)
 
         let composerScrollView = try XCTUnwrap(
             descendants(of: NSScrollView.self, in: hostingView)
                 .first { $0 !== scrollView && $0.frame.height <= ChatComposerLayout.maximumHeight }
         )
-        XCTAssertTrue(composerScrollView.verticalScroller is ChatScroller)
-        XCTAssertEqual(composerScrollView.verticalScroller?.alphaValue, 0)
-
-        NotificationCenter.default.post(
-            name: NSScrollView.willStartLiveScrollNotification,
-            object: scrollView
-        )
-        XCTAssertEqual(scrollView.verticalScroller?.alphaValue, 1)
-
-        NotificationCenter.default.post(
-            name: NSScrollView.didEndLiveScrollNotification,
-            object: scrollView
-        )
-        try await Task.sleep(for: .milliseconds(250))
-        XCTAssertEqual(scrollView.verticalScroller?.alphaValue ?? 1, 0, accuracy: 0.01)
+        XCTAssertTrue(composerScrollView.hasVerticalScroller)
+        XCTAssertTrue(composerScrollView.autohidesScrollers)
+        XCTAssertEqual(composerScrollView.scrollerStyle, .overlay)
+        let composerScroller = try XCTUnwrap(composerScrollView.verticalScroller)
+        XCTAssertEqual(NSStringFromClass(type(of: composerScroller)), NSStringFromClass(NSScroller.self))
+        XCTAssertTrue(composerScroller.target === composerScrollView)
+        XCTAssertNotNil(composerScroller.action)
     }
 
     private func firstDescendant<T: NSView>(of type: T.Type, in view: NSView) -> T? {

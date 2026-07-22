@@ -41,6 +41,7 @@ struct ChatTextEditor: NSViewRepresentable {
         scrollView.drawsBackground = false
         scrollView.hasVerticalScroller = true
         scrollView.autohidesScrollers = true
+        scrollView.scrollerStyle = .overlay
 
         let textView = SubmitTextView()
         textView.delegate = context.coordinator
@@ -62,7 +63,6 @@ struct ChatTextEditor: NSViewRepresentable {
         )
         textView.textContainer?.widthTracksTextView = true
         scrollView.documentView = textView
-        context.coordinator.scrollerVisibility = ChatScrollerVisibility(scrollView: scrollView)
         return scrollView
     }
 
@@ -93,7 +93,6 @@ struct ChatTextEditor: NSViewRepresentable {
     final class Coordinator: NSObject, NSTextViewDelegate {
         var parent: ChatTextEditor
         var focusRequest = -1
-        var scrollerVisibility: ChatScrollerVisibility?
 
         init(parent: ChatTextEditor) {
             self.parent = parent
