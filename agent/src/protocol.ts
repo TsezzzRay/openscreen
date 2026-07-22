@@ -1,8 +1,6 @@
-export type ChatImage = {
-  id: string;
-  source: "system_capture" | "user_upload";
-  path: string;
-};
+import type { ChatImage, ChatStreamEvent } from "./chat/types.js";
+
+export type { ChatImage } from "./chat/types.js";
 
 export type InputEnvelope = {
   requestId: string;
@@ -39,10 +37,7 @@ export type InputEnvelope = {
 
 export type OutputEnvelope = {
   requestId: string;
-  type: "started" | "reasoning_delta" | "answer_delta" | "completed" | "failed" | "cancelled";
-  delta?: string;
-  message?: string;
-};
+} & (ChatStreamEvent | { type: "started" | "cancelled" });
 
 function invalid(): never {
   throw new Error("Invalid agent request");

@@ -163,7 +163,7 @@ export async function runChat(
     const batcher = new EventBatcher(sessionsDirectory, sessionId);
     let result: Awaited<ReturnType<typeof relayStream>>;
     try {
-      result = await relayStream(requestId, stream, (event) => {
+      result = await relayStream(stream, (event) => {
         if (event.type === "failed") {
           if (signal.aborted) return;
           process.stderr.write(`Model request failed: ${event.message ?? "unknown error"}\n`);
@@ -172,7 +172,7 @@ export async function runChat(
           emit({ requestId, sessionId, type: "failed", message: failureMessage });
           return;
         }
-        emit({ ...event, sessionId });
+        emit({ requestId, sessionId, ...event });
         if (event.type === "reasoning_delta" || event.type === "answer_delta") {
           batcher.add({ type: event.type, turnId: requestId, delta: event.delta ?? "" });
         }

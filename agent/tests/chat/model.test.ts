@@ -303,60 +303,55 @@ test("summarizes old screenshots as plain facts without internal references", as
   assert.match(summaryRequest.instructions, /reference markers/i);
 });
 
-test("maps Responses API deltas to request-scoped JSONL events", () => {
+test("maps Responses API deltas to chat stream events", () => {
   assert.deepEqual(
-    mapEvent("request-1", {
+    mapEvent({
       type: "response.reasoning_summary_text.delta",
       delta: "Checking the screen",
     }),
     {
-      requestId: "request-1",
       type: "reasoning_delta",
       delta: "Checking the screen",
     },
   );
   assert.deepEqual(
-    mapEvent("request-1", {
+    mapEvent({
       type: "response.reasoning_text.delta",
       delta: "MiniMax thinking",
     }),
     {
-      requestId: "request-1",
       type: "reasoning_delta",
       delta: "MiniMax thinking",
     },
   );
   assert.deepEqual(
-    mapEvent("request-1", {
+    mapEvent({
       type: "response.output_text.delta",
       delta: "This is OpenScreen.",
     }),
     {
-      requestId: "request-1",
       type: "answer_delta",
       delta: "This is OpenScreen.",
     },
   );
   assert.deepEqual(
-    mapEvent("request-1", {
+    mapEvent({
       type: "response.refusal.delta",
       delta: "I cannot help with that.",
     }),
     {
-      requestId: "request-1",
       type: "answer_delta",
       delta: "I cannot help with that.",
     },
   );
-  assert.deepEqual(mapEvent("request-1", { type: "response.completed" }), {
-    requestId: "request-1",
+  assert.deepEqual(mapEvent({ type: "response.completed" }), {
     type: "completed",
   });
   assert.deepEqual(
-    mapEvent("request-1", { type: "error", message: "Provider failed" }),
-    { requestId: "request-1", type: "failed", message: "Provider failed" },
+    mapEvent({ type: "error", message: "Provider failed" }),
+    { type: "failed", message: "Provider failed" },
   );
-  assert.equal(mapEvent("request-1", { type: "response.created" }), undefined);
+  assert.equal(mapEvent({ type: "response.created" }), undefined);
 });
 
 test("completes only after a successful stream is exhausted", async () => {
@@ -381,7 +376,7 @@ test("completes only after a successful stream is exhausted", async () => {
     exhausted = true;
   }
 
-  const output = await relayStream("request-1", stream(), (event) => events.push(event));
+  const output = await relayStream(stream(), (event) => events.push(event));
 
   assert.equal(exhausted, true);
   assert.deepEqual(output, {
@@ -397,8 +392,8 @@ test("completes only after a successful stream is exhausted", async () => {
     totalTokens: 42,
   });
   assert.deepEqual(events, [
-    { requestId: "request-1", type: "reasoning_delta", delta: "Checked screen" },
-    { requestId: "request-1", type: "answer_delta", delta: "Final answer" },
+    { type: "reasoning_delta", delta: "Checked screen" },
+    { type: "answer_delta", delta: "Final answer" },
   ]);
 });
 
@@ -408,11 +403,10 @@ test("fails a stream that ends without a terminal event", async () => {
     yield { type: "response.output_text.delta", delta: "Partial answer" };
   }
 
-  const output = await relayStream("request-1", stream(), (event) => events.push(event));
+  const output = await relayStream(stream(), (event) => events.push(event));
 
   assert.equal(output, null);
   assert.deepEqual(events.at(-1), {
-    requestId: "request-1",
     type: "failed",
     message: "Model stream ended before completion",
   });

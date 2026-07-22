@@ -2,8 +2,14 @@ import { readFile } from "node:fs/promises";
 
 import OpenAI from "openai";
 
-import type { ChatImage, OutputEnvelope } from "../protocol.js";
-import { turnImages, type SessionState, type Turn } from "../session/store.js";
+import {
+  turnImages,
+  type ChatImage,
+  type ChatStreamEvent,
+  type ConversationOutputItem,
+  type SessionState,
+  type Turn,
+} from "./types.js";
 
 const instructions = `You are OpenScreen, a screen-aware assistant.
 
@@ -15,10 +21,6 @@ If the answer cannot be determined from the screenshot, say so.
 Do not claim that you clicked, typed, changed, or executed anything.`;
 
 type LoadScreenshot = (path: string) => Promise<string>;
-
-type ConversationOutputItem =
-  | OpenAI.Responses.ResponseReasoningItem
-  | OpenAI.Responses.ResponseOutputMessage;
 
 const loadScreenshot: LoadScreenshot = async (path) => (
   await readFile(path)
@@ -132,34 +134,31 @@ export async function makeRequest(
 }
 
 export function mapEvent(
-  requestId: string,
   event: ModelEvent,
-): OutputEnvelope | undefined {
+): ChatStreamEvent | undefined {
   switch (event.type) {
     case "response.reasoning_summary_text.delta":
     case "response.reasoning_text.delta":
-      return { requestId, type: "reasoning_delta", delta: event.delta ?? "" };
+      return { type: "reasoning_delta", delta: event.delta ?? "" };
     case "response.output_text.delta":
     case "response.refusal.delta":
-      return { requestId, type: "answer_delta", delta: event.delta ?? "" };
+      return { type: "answer_delta", delta: event.delta ?? "" };
     case "response.completed":
-      return { requestId, type: "completed" };
+      return { type: "completed" };
     case "response.failed":
     case "response.incomplete":
       return {
-        requestId,
         type: "failed",
         message: event.response?.error?.message ?? "Model response failed",
       };
     case "error":
-      return { requestId, type: "failed", message: event.message ?? "Model request failed" };
+      return { type: "failed", message: event.message ?? "Model request failed" };
   }
 }
 
 export async function relayStream(
-  requestId: string,
   stream: AsyncIterable<ModelEvent>,
-  send: (event: OutputEnvelope) => void,
+  send: (event: ChatStreamEvent) => void,
 ): Promise<{
   output: string;
   reasoning: string;
@@ -194,7 +193,7 @@ export async function relayStream(
       totalTokens = modelEvent.response?.usage?.total_tokens;
       continue;
     }
-    const event = mapEvent(requestId, modelEvent);
+    const event = mapEvent(modelEvent);
     if (!event) continue;
     send(event);
     if (event.type === "failed") return null;
@@ -202,7 +201,6 @@ export async function relayStream(
 
   if (!completed) {
     send({
-      requestId,
       type: "failed",
       message: "Model stream ended before completion",
     });

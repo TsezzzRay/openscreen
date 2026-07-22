@@ -11,33 +11,18 @@ import {
 } from "node:fs/promises";
 import { join } from "node:path";
 
-import type OpenAI from "openai";
-import type { ChatImage } from "../protocol.js";
-
-export type Turn = {
-  id?: string;
-  user: string;
-  assistant: string;
-  reasoning?: string;
-  images?: ChatImage[];
-  screenshotPath?: string;
-  status?: "completed" | "failed" | "cancelled";
-  outputItems?: Array<
-    OpenAI.Responses.ResponseReasoningItem | OpenAI.Responses.ResponseOutputMessage
-  >;
-};
+import {
+  turnImages,
+  type ChatImage,
+  type SessionState,
+  type Turn,
+} from "../chat/types.js";
 
 export type VisibleTurn = Pick<Turn, "id" | "user" | "assistant" | "reasoning"> & {
   id: string;
   status: "completed" | "failed" | "cancelled" | "interrupted";
   images?: ChatImage[];
   error?: string;
-};
-
-export type SessionState = {
-  turns: Turn[];
-  summary?: string;
-  firstKeptTurnIndex: number;
 };
 
 export type StoredSession = SessionState & {
@@ -110,13 +95,6 @@ function isChatImages(value: unknown): value is ChatImage[] {
     (image.source === "system_capture" || image.source === "user_upload") &&
     typeof image.path === "string" && image.path.length > 0
   ));
-}
-
-export function turnImages(turn: { images?: ChatImage[]; screenshotPath?: string }): ChatImage[] {
-  if (turn.images) return turn.images;
-  return turn.screenshotPath
-    ? [{ id: "legacy-system", source: "system_capture", path: turn.screenshotPath }]
-    : [];
 }
 
 function visibleImages(turn: { images?: ChatImage[]; screenshotPath?: string }) {

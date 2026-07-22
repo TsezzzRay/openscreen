@@ -1,5 +1,18 @@
 import Foundation
 
+enum ChatImageSource: String, Codable, Sendable {
+    case systemCapture = "system_capture"
+    case userUpload = "user_upload"
+}
+
+struct ChatImageAttachment: Codable, Identifiable, Equatable, Sendable {
+    let id: String
+    let source: ChatImageSource
+    let path: String
+
+    var url: URL { URL(fileURLWithPath: path) }
+}
+
 struct AgentRequest: Encodable {
     enum Kind: String, Encodable {
         case listSessions = "list_sessions"
