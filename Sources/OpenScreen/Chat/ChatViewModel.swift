@@ -4,8 +4,6 @@ import SwiftUI
 
 @MainActor
 final class ChatViewModel: ObservableObject {
-    @Published var draft = ""
-    @Published private(set) var pendingAttachments: [ChatImageAttachment] = []
     @Published private(set) var turns: [ChatTurn] = []
     @Published private(set) var sessions: [ChatSessionSummary] = []
     @Published private(set) var currentSessionID: UUID?
@@ -13,8 +11,8 @@ final class ChatViewModel: ObservableObject {
     @Published private(set) var activeSessionIDs: Set<UUID> = []
     @Published private(set) var isManagingSession = false
     @Published private(set) var sessionError: String?
-    @Published private(set) var attachmentError: String?
     @Published private(set) var focusRequest = 0
+    @Published private var composerStates: [UUID: ComposerState] = [:]
 
     private let agentClient: AgentClient
     private let windowCapture: WindowCapture
@@ -24,6 +22,18 @@ final class ChatViewModel: ObservableObject {
     private var activeTurnIDs: [UUID: UUID] = [:]
     private var requestTasks: [UUID: Task<Void, Never>] = [:]
     private static let selectedSessionKey = "OpenScreenSelectedSessionID"
+
+    private struct ComposerState {
+        var draft = ""
+        var pendingAttachments: [ChatImageAttachment] = []
+        var attachmentError: String?
+        var attachmentImportsInFlight = 0
+    }
+
+    var draft: String { currentComposerState.draft }
+    var pendingAttachments: [ChatImageAttachment] { currentComposerState.pendingAttachments }
+    var attachmentError: String? { currentComposerState.attachmentError }
+    var isImportingAttachments: Bool { currentComposerState.attachmentImportsInFlight > 0 }
 
     var isSending: Bool {
         currentSessionID.map(activeSessionIDs.contains) ?? false
@@ -43,6 +53,11 @@ final class ChatViewModel: ObservableObject {
 
     func requestInputFocus() {
         focusRequest += 1
+    }
+
+    func updateDraft(_ draft: String) {
+        guard let sessionID = currentSessionID else { return }
+        updateComposer(for: sessionID) { $0.draft = draft }
     }
 
     func startTurn(
@@ -198,42 +213,83 @@ final class ChatViewModel: ObservableObject {
 
     func retry(turnID: UUID) {
         guard let turn = turns.first(where: { $0.id == turnID }),
-              turn.status == .failed || turn.status == .cancelled else { return }
-        draft = turn.question
-        pendingAttachments = turn.attachments
-        attachmentError = nil
+              turn.status == .failed || turn.status == .cancelled,
+              let sessionID = currentSessionID else { return }
+        updateComposer(for: sessionID) {
+            $0.draft = turn.question
+            $0.pendingAttachments = turn.attachments
+            $0.attachmentError = nil
+        }
         requestInputFocus()
     }
 
     func addAttachments(from urls: [URL]) {
-        do {
-            pendingAttachments.append(contentsOf: try attachmentStore.importImages(at: urls))
-            attachmentError = nil
-        } catch {
-            attachmentError = error.localizedDescription
+        guard let sessionID = currentSessionID else { return }
+        updateComposer(for: sessionID) {
+            $0.attachmentImportsInFlight += 1
+            $0.attachmentError = nil
+        }
+        Task {
+            defer {
+                updateComposer(for: sessionID) {
+                    $0.attachmentImportsInFlight -= 1
+                }
+            }
+            do {
+                let attachments = try await attachmentStore.importImages(at: urls)
+                updateComposer(for: sessionID) {
+                    $0.pendingAttachments.append(contentsOf: attachments)
+                }
+            } catch {
+                updateComposer(for: sessionID) { $0.attachmentError = error.localizedDescription }
+            }
         }
     }
 
-    func addPastedImages(_ images: [NSImage]) {
-        do {
-            pendingAttachments.append(contentsOf: try attachmentStore.importImages(images))
-            attachmentError = nil
-        } catch {
-            attachmentError = error.localizedDescription
+    func addPastedImages(_ imageData: [Data]) {
+        guard let sessionID = currentSessionID else { return }
+        updateComposer(for: sessionID) {
+            $0.attachmentImportsInFlight += 1
+            $0.attachmentError = nil
+        }
+        Task {
+            defer {
+                updateComposer(for: sessionID) {
+                    $0.attachmentImportsInFlight -= 1
+                }
+            }
+            do {
+                let attachments = try await attachmentStore.importImages(imageData)
+                updateComposer(for: sessionID) {
+                    $0.pendingAttachments.append(contentsOf: attachments)
+                }
+            } catch {
+                updateComposer(for: sessionID) { $0.attachmentError = error.localizedDescription }
+            }
         }
     }
 
     func reportAttachmentError(_ error: Error) {
-        attachmentError = error.localizedDescription
+        guard let sessionID = currentSessionID else { return }
+        updateComposer(for: sessionID) { $0.attachmentError = error.localizedDescription }
     }
 
     func removeAttachment(id: String) {
-        guard let index = pendingAttachments.firstIndex(where: { $0.id == id }) else { return }
-        let attachment = pendingAttachments.remove(at: index)
+        guard let sessionID = currentSessionID else { return }
+        var removedAttachment: ChatImageAttachment?
+        updateComposer(for: sessionID) { state in
+            guard let index = state.pendingAttachments.firstIndex(where: { $0.id == id }) else {
+                return
+            }
+            removedAttachment = state.pendingAttachments.remove(at: index)
+        }
+        guard let attachment = removedAttachment else { return }
         let isUsedByHistory = turnCache.values
             .flatMap { $0 }
             .contains { turn in turn.attachments.contains(where: { $0.id == attachment.id }) }
-        if !isUsedByHistory { attachmentStore.remove(attachment) }
+        if !isUsedByHistory {
+            Task { await attachmentStore.remove(attachment) }
+        }
     }
 
     private func updateTurn(
@@ -281,7 +337,7 @@ final class ChatViewModel: ObservableObject {
 
     func submit() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, !isManagingSession, !isSending,
+        guard !text.isEmpty, !isManagingSession, !isSending, !isImportingAttachments,
               let sessionID = currentSessionID else { return }
 
         let turnID = UUID()
@@ -292,9 +348,11 @@ final class ChatViewModel: ObservableObject {
             question: text,
             attachments: userAttachments
         )
-        draft = ""
-        pendingAttachments = []
-        attachmentError = nil
+        updateComposer(for: sessionID) {
+            $0.draft = ""
+            $0.pendingAttachments = []
+            $0.attachmentError = nil
+        }
         activeSessionIDs.insert(sessionID)
         activeTurnIDs[sessionID] = turnID
 
@@ -305,7 +363,6 @@ final class ChatViewModel: ObservableObject {
                     activeSessionIDs.remove(sessionID)
                     requestTasks.removeValue(forKey: sessionID)
                 }
-                if currentSessionID == sessionID { requestInputFocus() }
             }
             var sentToAgent = false
             do {
@@ -366,6 +423,20 @@ final class ChatViewModel: ObservableObject {
             }
         }
         requestTasks[sessionID] = task
+    }
+
+    private var currentComposerState: ComposerState {
+        guard let sessionID = currentSessionID else { return ComposerState() }
+        return composerStates[sessionID] ?? ComposerState()
+    }
+
+    private func updateComposer(
+        for sessionID: UUID,
+        update: (inout ComposerState) -> Void
+    ) {
+        var state = composerStates[sessionID] ?? ComposerState()
+        update(&state)
+        composerStates[sessionID] = state
     }
 
     private func recordLocalAttempt(

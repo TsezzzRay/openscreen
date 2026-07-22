@@ -4,7 +4,7 @@ import XCTest
 
 @MainActor
 final class ChatAttachmentStoreTests: XCTestCase {
-    func testImportsMultipleImagesAsManagedPNGFiles() throws {
+    func testImportsMultipleImagesAsManagedPNGFiles() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -24,11 +24,14 @@ final class ChatAttachmentStoreTests: XCTestCase {
         }
 
         let store = ChatAttachmentStore(directory: destination)
-        let attachments = try store.importImages(at: sources)
+        requireActor(store)
+        let attachments = try await store.importImages(at: sources)
 
         XCTAssertEqual(attachments.count, 2)
         XCTAssertTrue(attachments.allSatisfy { $0.source == .userUpload })
         XCTAssertTrue(attachments.allSatisfy { $0.url.pathExtension == "png" })
         XCTAssertTrue(attachments.allSatisfy { FileManager.default.fileExists(atPath: $0.path) })
     }
+
+    private func requireActor<T: Actor>(_ actor: T) {}
 }

@@ -26,8 +26,7 @@ enum ChatAttachmentError: LocalizedError {
     }
 }
 
-@MainActor
-struct ChatAttachmentStore {
+actor ChatAttachmentStore {
     private let directory: URL?
 
     init(directory: URL? = nil) {
@@ -40,10 +39,7 @@ struct ChatAttachmentStore {
             for url in urls {
                 let accessed = url.startAccessingSecurityScopedResource()
                 defer { if accessed { url.stopAccessingSecurityScopedResource() } }
-                guard let image = NSImage(contentsOf: url) else {
-                    throw ChatAttachmentError.invalidImage
-                }
-                attachments.append(try importImage(image))
+                attachments.append(try importImage(Data(contentsOf: url)))
             }
             return attachments
         } catch {
@@ -52,11 +48,11 @@ struct ChatAttachmentStore {
         }
     }
 
-    func importImages(_ images: [NSImage]) throws -> [ChatImageAttachment] {
+    func importImages(_ imageData: [Data]) throws -> [ChatImageAttachment] {
         var attachments: [ChatImageAttachment] = []
         do {
-            for image in images {
-                attachments.append(try importImage(image))
+            for data in imageData {
+                attachments.append(try importImage(data))
             }
             return attachments
         } catch {
@@ -70,9 +66,8 @@ struct ChatAttachmentStore {
         try? FileManager.default.removeItem(at: attachment.url)
     }
 
-    private func importImage(_ image: NSImage) throws -> ChatImageAttachment {
-        guard let tiff = image.tiffRepresentation,
-              let bitmap = NSBitmapImageRep(data: tiff) else {
+    private func importImage(_ data: Data) throws -> ChatImageAttachment {
+        guard let bitmap = NSBitmapImageRep(data: data) else {
             throw ChatAttachmentError.invalidImage
         }
         guard let png = bitmap.representation(using: .png, properties: [:]) else {

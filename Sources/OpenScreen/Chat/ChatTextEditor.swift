@@ -29,7 +29,7 @@ struct ChatTextEditor: NSViewRepresentable {
     @Binding var height: CGFloat
     let focusRequest: Int
     let isEnabled: Bool
-    let onPasteImages: ([NSImage]) -> Void
+    let onPasteImages: ([Data]) -> Void
     let onSubmit: () -> Void
 
     func makeCoordinator() -> Coordinator {
@@ -72,16 +72,19 @@ struct ChatTextEditor: NSViewRepresentable {
         textView.onSubmit = onSubmit
         textView.onPasteImages = onPasteImages
         textView.isEditable = isEnabled
-        if textView.string != text {
+        let replacedText = textView.string != text
+        if replacedText {
             textView.string = text
             textView.setSelectedRange(NSRange(location: textView.string.utf16.count, length: 0))
         }
-        DispatchQueue.main.async { context.coordinator.resize(textView) }
+        DispatchQueue.main.async {
+            context.coordinator.resize(textView, revealSelection: replacedText)
+        }
         if context.coordinator.focusRequest != focusRequest {
             context.coordinator.focusRequest = focusRequest
             DispatchQueue.main.async {
                 textView.window?.makeFirstResponder(textView)
-                context.coordinator.resize(textView)
+                context.coordinator.resize(textView, revealSelection: true)
             }
         }
     }
@@ -99,10 +102,10 @@ struct ChatTextEditor: NSViewRepresentable {
         func textDidChange(_ notification: Notification) {
             guard let textView = notification.object as? NSTextView else { return }
             parent.text = textView.string
-            resize(textView)
+            resize(textView, revealSelection: true)
         }
 
-        func resize(_ textView: NSTextView) {
+        func resize(_ textView: NSTextView, revealSelection: Bool = false) {
             guard let scrollView = textView.enclosingScrollView else { return }
             let width = scrollView.contentSize.width
             guard width > 0 else { return }
@@ -112,7 +115,9 @@ struct ChatTextEditor: NSViewRepresentable {
                 width: width,
                 height: max(contentHeight, scrollView.contentSize.height)
             ))
-            textView.scrollRangeToVisible(textView.selectedRange())
+            if revealSelection {
+                textView.scrollRangeToVisible(textView.selectedRange())
+            }
             if abs(parent.height - editorHeight) > 0.5 {
                 parent.height = editorHeight
             }
@@ -122,23 +127,25 @@ struct ChatTextEditor: NSViewRepresentable {
 
 final class SubmitTextView: NSTextView {
     var onSubmit: (() -> Void)?
-    var onPasteImages: (([NSImage]) -> Void)?
+    var onPasteImages: (([Data]) -> Void)?
 
-    static func images(from pasteboard: NSPasteboard) -> [NSImage] {
-        pasteboard.readObjects(forClasses: [NSImage.self]) as? [NSImage] ?? []
+    static func imageData(from pasteboard: NSPasteboard) -> [Data] {
+        pasteboard.pasteboardItems?.compactMap { item in
+            item.data(forType: .png) ?? item.data(forType: .tiff)
+        } ?? []
     }
 
     override func paste(_ sender: Any?) {
-        let pastedImages = Self.images(from: .general)
-        if !pastedImages.isEmpty {
-            onPasteImages?(pastedImages)
+        let pastedImageData = Self.imageData(from: .general)
+        if !pastedImageData.isEmpty {
+            onPasteImages?(pastedImageData)
             return
         }
         super.paste(sender)
     }
 
     override func keyDown(with event: NSEvent) {
-        if event.keyCode == 36, !event.modifierFlags.contains(.shift) {
+        if event.keyCode == 36, !event.modifierFlags.contains(.shift), !hasMarkedText() {
             onSubmit?()
             return
         }

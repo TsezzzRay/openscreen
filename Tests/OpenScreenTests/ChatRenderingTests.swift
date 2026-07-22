@@ -18,7 +18,35 @@ final class ChatRenderingTests: XCTestCase {
         }
         XCTAssertTrue(pasteboard.writeObjects(images))
 
-        XCTAssertEqual(SubmitTextView.images(from: pasteboard).count, 2)
+        XCTAssertEqual(SubmitTextView.imageData(from: pasteboard).count, 2)
+    }
+
+    func testComposerDoesNotSubmitWhileConfirmingMarkedText() throws {
+        let textView = SubmitTextView()
+        var didSubmit = false
+        textView.onSubmit = { didSubmit = true }
+        textView.setMarkedText(
+            "ni",
+            selectedRange: NSRange(location: 2, length: 0),
+            replacementRange: NSRange(location: NSNotFound, length: 0)
+        )
+        XCTAssertTrue(textView.hasMarkedText())
+        let event = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: [],
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            characters: "\r",
+            charactersIgnoringModifiers: "\r",
+            isARepeat: false,
+            keyCode: 36
+        ))
+
+        textView.keyDown(with: event)
+
+        XCTAssertFalse(didSubmit)
     }
 
     func testMarkdownDocumentPreservesRequestedBlockTypes() {
@@ -216,6 +244,40 @@ final class ChatRenderingTests: XCTestCase {
         XCTAssertEqual(ChatComposerLayout.transcriptBottomPadding(for: 120), 224)
     }
 
+    func testComposerResizeDoesNotJumpBackToCaret() {
+        var draft = ""
+        var height = ChatComposerLayout.maximumHeight
+        let editor = ChatTextEditor(
+            text: Binding(
+                get: { draft },
+                set: { draft = $0 }
+            ),
+            height: Binding(
+                get: { height },
+                set: { height = $0 }
+            ),
+            focusRequest: 0,
+            isEnabled: true,
+            onPasteImages: { _ in },
+            onSubmit: {}
+        )
+        let coordinator = editor.makeCoordinator()
+        let scrollView = NSScrollView(frame: NSRect(x: 0, y: 0, width: 240, height: 120))
+        let textView = SubmitTextView(frame: scrollView.bounds)
+        textView.isVerticallyResizable = true
+        textView.textContainer?.widthTracksTextView = true
+        textView.string = String(repeating: "Long draft line\n", count: 80)
+        textView.setSelectedRange(NSRange(location: textView.string.utf16.count, length: 0))
+        scrollView.documentView = textView
+
+        coordinator.resize(textView)
+        scrollView.contentView.scroll(to: .zero)
+        scrollView.reflectScrolledClipView(scrollView.contentView)
+        coordinator.resize(textView)
+
+        XCTAssertEqual(scrollView.contentView.bounds.minY, 0, accuracy: 0.5)
+    }
+
     func testCompletedStatusIsQuietWhileActionableStatusesRemainVisible() {
         XCTAssertFalse(ChatTurnStatus.completed.showsInTranscript)
         XCTAssertTrue(ChatTurnStatus.generating.showsInTranscript)
@@ -394,11 +456,15 @@ final class ChatRenderingTests: XCTestCase {
     }
 
     func testScreenshotPreviewStatePresentsAndDismissesImage() {
-        let url = URL(fileURLWithPath: "/tmp/screenshot.png")
+        let attachment = ChatImageAttachment(
+            id: "preview",
+            source: .userUpload,
+            path: "/tmp/screenshot.png"
+        )
         var state = ChatImagePreviewState()
 
-        state.present(url)
-        XCTAssertEqual(state.url, url)
+        state.present(attachment)
+        XCTAssertEqual(state.url, attachment.url)
 
         state.dismiss()
         XCTAssertNil(state.url)

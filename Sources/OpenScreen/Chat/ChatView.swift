@@ -41,8 +41,8 @@ struct ChatScrollTrigger: Equatable {
 struct ChatImagePreviewState {
     private(set) var url: URL?
 
-    mutating func present(_ url: URL) {
-        self.url = url
+    mutating func present(_ attachment: ChatImageAttachment) {
+        url = attachment.url
     }
 
     mutating func dismiss() {
@@ -552,10 +552,13 @@ struct ChatView: View {
             }
 
             ChatTextEditor(
-                text: $viewModel.draft,
+                text: Binding(
+                    get: { viewModel.draft },
+                    set: { viewModel.updateDraft($0) }
+                ),
                 height: $composerHeight,
                 focusRequest: viewModel.focusRequest,
-                isEnabled: !viewModel.isManagingSession && !viewModel.isSending,
+                isEnabled: !viewModel.isManagingSession,
                 onPasteImages: viewModel.addPastedImages,
                 onSubmit: viewModel.submit
             )
@@ -572,8 +575,14 @@ struct ChatView: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .disabled(viewModel.isManagingSession || viewModel.isSending)
+                .disabled(viewModel.isManagingSession)
                 .accessibilityLabel("Add screenshots")
+
+                if viewModel.isImportingAttachments {
+                    ProgressView()
+                        .controlSize(.small)
+                        .accessibilityLabel("Preparing screenshots")
+                }
 
                 Spacer()
                 requestButton
@@ -600,7 +609,8 @@ struct ChatView: View {
     private var requestButton: some View {
         let isDisabled = viewModel.isManagingSession ||
             (!viewModel.isSending &&
-                viewModel.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                (viewModel.isImportingAttachments ||
+                    viewModel.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
         return Button {
             if viewModel.isSending {
                 viewModel.cancelCurrentRequest()
@@ -631,34 +641,40 @@ struct ChatView: View {
         removable: Bool
     ) -> some View {
         if let image = NSImage(contentsOf: attachment.url) {
-            Image(nsImage: image)
-                .resizable()
-                .scaledToFill()
-                .frame(width: width, height: height)
-                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .stroke(Color.primary.opacity(0.12), lineWidth: 0.5)
-                }
-                .overlay(alignment: .topTrailing) {
-                    if removable {
-                        Button {
-                            viewModel.removeAttachment(id: attachment.id)
-                        } label: {
-                            Image(systemName: "xmark")
-                                .font(.system(size: 9, weight: .bold))
-                                .foregroundStyle(.primary)
-                                .frame(width: 20, height: 20)
-                                .background(Color(nsColor: .controlBackgroundColor))
-                                .clipShape(Circle())
-                                .shadow(color: .black.opacity(0.16), radius: 3, y: 1)
-                        }
-                        .buttonStyle(.plain)
-                        .offset(x: 5, y: -5)
-                        .accessibilityLabel("Remove screenshot")
+            ZStack(alignment: .topTrailing) {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: width, height: height)
+                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .stroke(Color.primary.opacity(0.12), lineWidth: 0.5)
                     }
+                    .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .onTapGesture { imagePreview.present(attachment) }
+                    .accessibilityLabel("Attached screenshot")
+                    .accessibilityHint("Opens screenshot preview")
+                    .accessibilityAddTraits(.isButton)
+                    .accessibilityAction { imagePreview.present(attachment) }
+
+                if removable {
+                    Button {
+                        viewModel.removeAttachment(id: attachment.id)
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundStyle(.primary)
+                            .frame(width: 20, height: 20)
+                            .background(Color(nsColor: .controlBackgroundColor))
+                            .clipShape(Circle())
+                            .shadow(color: .black.opacity(0.16), radius: 3, y: 1)
+                    }
+                    .buttonStyle(.plain)
+                    .offset(x: 5, y: -5)
+                    .accessibilityLabel("Remove screenshot")
                 }
-                .accessibilityLabel("Attached screenshot")
+            }
         }
     }
 
@@ -777,7 +793,7 @@ private struct ChatTurnView: View {
     let turn: ChatTurn
     let isInteractionDisabled: Bool
     let onRetry: () -> Void
-    let onPreview: (URL) -> Void
+    let onPreview: (ChatImageAttachment) -> Void
     @State private var showsReasoning = false
 
     var body: some View {
@@ -809,7 +825,7 @@ private struct ChatTurnView: View {
                         ForEach(turn.attachments) { attachment in
                             if let image = NSImage(contentsOf: attachment.url) {
                                 Button {
-                                    onPreview(attachment.url)
+                                    onPreview(attachment)
                                 } label: {
                                     Image(nsImage: image)
                                         .resizable()

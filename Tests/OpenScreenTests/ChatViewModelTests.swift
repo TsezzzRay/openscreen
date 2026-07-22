@@ -1,3 +1,4 @@
+import AppKit
 import XCTest
 @testable import OpenScreen
 
@@ -234,5 +235,100 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertEqual(viewModel.turns.first?.attachments, attachments)
         viewModel.retry(turnID: turnID)
         XCTAssertEqual(viewModel.pendingAttachments, attachments)
+    }
+
+    func testComposerDraftAndAttachmentsAreIsolatedBySession() {
+        let viewModel = ChatViewModel(
+            agentClient: AgentClient(),
+            windowCapture: WindowCapture()
+        )
+        let firstSessionID = UUID()
+        let secondSessionID = UUID()
+        let turnID = UUID()
+        let attachment = ChatImageAttachment(
+            id: "one",
+            source: .userUpload,
+            path: "/tmp/one.png"
+        )
+        let firstSession = ChatSessionSnapshot(
+            id: firstSessionID,
+            title: "First",
+            createdAt: "2026-07-21T00:00:00.000Z",
+            updatedAt: "2026-07-21T00:00:00.000Z",
+            turns: [.init(
+                id: turnID,
+                user: "First draft",
+                assistant: "",
+                reasoning: nil,
+                status: .failed,
+                images: [attachment],
+                error: "Request failed. Please retry."
+            )]
+        )
+
+        viewModel.apply(firstSession)
+        viewModel.retry(turnID: turnID)
+        viewModel.apply(.init(
+            id: secondSessionID,
+            title: "Second",
+            createdAt: "2026-07-21T00:00:00.000Z",
+            updatedAt: "2026-07-21T00:00:00.000Z",
+            turns: []
+        ))
+
+        XCTAssertEqual(viewModel.draft, "")
+        XCTAssertTrue(viewModel.pendingAttachments.isEmpty)
+
+        viewModel.apply(firstSession)
+
+        XCTAssertEqual(viewModel.draft, "First draft")
+        XCTAssertEqual(viewModel.pendingAttachments, [attachment])
+    }
+
+    func testAttachmentImportReturnsToTheSessionThatStartedIt() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let firstSessionID = UUID()
+        let secondSessionID = UUID()
+        let viewModel = ChatViewModel(
+            agentClient: AgentClient(),
+            windowCapture: WindowCapture(),
+            attachmentStore: ChatAttachmentStore(directory: root)
+        )
+        let firstSession = ChatSessionSnapshot(
+            id: firstSessionID,
+            title: "First",
+            createdAt: "2026-07-21T00:00:00.000Z",
+            updatedAt: "2026-07-21T00:00:00.000Z",
+            turns: []
+        )
+        let image = NSImage(size: NSSize(width: 20, height: 20))
+        image.lockFocus()
+        NSColor.systemBlue.setFill()
+        NSRect(x: 0, y: 0, width: 20, height: 20).fill()
+        image.unlockFocus()
+        let imageData = try XCTUnwrap(image.tiffRepresentation)
+
+        viewModel.apply(firstSession)
+        viewModel.addPastedImages([imageData])
+        XCTAssertTrue(viewModel.isImportingAttachments)
+        viewModel.apply(.init(
+            id: secondSessionID,
+            title: "Second",
+            createdAt: "2026-07-21T00:00:00.000Z",
+            updatedAt: "2026-07-21T00:00:00.000Z",
+            turns: []
+        ))
+        XCTAssertFalse(viewModel.isImportingAttachments)
+        XCTAssertTrue(viewModel.pendingAttachments.isEmpty)
+
+        viewModel.apply(firstSession)
+        for _ in 0..<100 where viewModel.isImportingAttachments {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+
+        XCTAssertFalse(viewModel.isImportingAttachments)
+        XCTAssertEqual(viewModel.pendingAttachments.count, 1)
     }
 }
