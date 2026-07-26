@@ -4,9 +4,12 @@ import OpenAI from "openai";
 
 import {
   turnImages,
+  type AgentRunEvent,
+  type AgentTool,
   type ChatImage,
   type ChatStreamEvent,
   type ConversationOutputItem,
+  type ModelOutputItem,
   type SessionState,
   type Turn,
 } from "./types.js";
@@ -31,6 +34,7 @@ export type ModelEvent = {
   delta?: string;
   message?: string;
   response?: {
+    id?: string;
     error?: { message?: string } | null;
     output?: OpenAI.Responses.ResponseOutputItem[];
     usage?: { total_tokens?: number } | null;
@@ -162,12 +166,14 @@ export async function relayStream(
 ): Promise<{
   output: string;
   reasoning: string;
-  outputItems?: ConversationOutputItem[];
+  responseId?: string;
+  outputItems?: ModelOutputItem[];
   totalTokens?: number;
 } | null> {
   let output = "";
   let reasoning = "";
-  let outputItems: ConversationOutputItem[] | undefined;
+  let responseId: string | undefined;
+  let outputItems: ModelOutputItem[] | undefined;
   let completed = false;
   let totalTokens: number | undefined;
 
@@ -186,9 +192,11 @@ export async function relayStream(
     }
     if (modelEvent.type === "response.completed") {
       completed = true;
+      responseId = modelEvent.response?.id;
       outputItems = modelEvent.response?.output?.filter(
-        (item): item is ConversationOutputItem =>
-          item.type === "reasoning" || item.type === "message",
+        (item): item is ModelOutputItem =>
+          item.type === "reasoning" || item.type === "message" ||
+          item.type === "function_call",
       );
       totalTokens = modelEvent.response?.usage?.total_tokens;
       continue;
@@ -207,7 +215,123 @@ export async function relayStream(
     return null;
   }
 
-  return { output, reasoning, outputItems, totalTokens };
+  return {
+    output,
+    reasoning,
+    ...(responseId ? { responseId } : {}),
+    outputItems,
+    totalTokens,
+  };
+}
+
+type BuildAgentRequest = (
+  items: ConversationOutputItem[],
+  tools: OpenAI.Responses.FunctionTool[],
+) => Promise<OpenAI.Responses.ResponseCreateParamsStreaming>;
+
+function toolOutput(value: unknown) {
+  if (typeof value === "string") return value;
+  return JSON.stringify(value) ?? "null";
+}
+
+export async function runAgentLoop(
+  client: OpenAI,
+  buildRequest: BuildAgentRequest,
+  tools: AgentTool[],
+  send: (event: ChatStreamEvent) => void,
+  record: (event: AgentRunEvent) => Promise<void>,
+  signal: AbortSignal,
+): Promise<{
+  type: "completed";
+  output: string;
+  reasoning: string;
+  outputItems: ConversationOutputItem[];
+  totalTokens?: number;
+} | null> {
+  const definitions = tools.map(({ definition }) => definition);
+  const items: ConversationOutputItem[] = [];
+  let output = "";
+  let reasoning = "";
+  let totalTokens: number | undefined;
+  let step = 0;
+  const callIds = new Set<string>();
+
+  while (true) {
+    signal.throwIfAborted();
+    const request = await buildRequest(items, definitions);
+    signal.throwIfAborted();
+    const stream = await client.responses.create(request, { signal });
+    const result = await relayStream(stream, send);
+    if (!result) return null;
+
+    step += 1;
+    output += result.output;
+    reasoning += result.reasoning;
+    totalTokens = result.totalTokens;
+    const modelItems = result.outputItems ?? [];
+    const calls = modelItems.filter(
+      (item): item is OpenAI.Responses.ResponseFunctionToolCall =>
+        item.type === "function_call",
+    );
+    for (const call of calls) {
+      if (callIds.has(call.call_id)) {
+        throw new Error(`Duplicate function call ID: ${call.call_id}`);
+      }
+      callIds.add(call.call_id);
+    }
+    items.push(...modelItems);
+    await record({
+      type: "agent_step_completed",
+      step,
+      responseId: result.responseId,
+      outputItems: modelItems,
+      totalTokens: result.totalTokens,
+    });
+    signal.throwIfAborted();
+
+    if (calls.length === 0) {
+      return { type: "completed", output, reasoning, outputItems: items, totalTokens };
+    }
+
+    for (const call of calls) {
+      signal.throwIfAborted();
+      let callOutput: string;
+      let status: "completed" | "failed" = "completed";
+      try {
+        const tool = tools.find(({ definition }) => definition.name === call.name);
+        if (!tool) throw new Error(`Unknown tool: ${call.name}`);
+        const argumentsValue: unknown = JSON.parse(call.arguments);
+        if (typeof argumentsValue !== "object" || argumentsValue === null ||
+            Array.isArray(argumentsValue)) {
+          throw new Error("Tool arguments must be an object");
+        }
+        callOutput = toolOutput(await tool.execute(
+          argumentsValue as Record<string, unknown>,
+          signal,
+        ));
+      } catch (error) {
+        signal.throwIfAborted();
+        status = "failed";
+        callOutput = JSON.stringify({
+          error: error instanceof Error ? error.message : "Tool failed",
+        });
+      }
+      const resultItem = {
+        type: "function_call_output" as const,
+        call_id: call.call_id,
+        output: callOutput,
+      };
+      items.push(resultItem);
+      await record({
+        type: "tool_result_recorded",
+        step,
+        callId: call.call_id,
+        name: call.name,
+        output: callOutput,
+        status,
+      });
+    }
+  }
 }
 
 export async function countTurns(
@@ -236,6 +360,7 @@ export async function countRequestTokens(
       instructions: request.instructions,
       input: request.input,
       reasoning: request.reasoning,
+      tools: request.tools,
     }, { signal })
   ).input_tokens;
 }

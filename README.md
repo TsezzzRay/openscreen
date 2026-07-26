@@ -4,7 +4,7 @@ OpenScreen is an early-stage, open-source macOS assistant that answers questions
 
 Press `Option + Space` to open a floating panel, ask a question, and OpenScreen captures the active window immediately before sending the request to a Responses API-compatible vision provider.
 
-> OpenScreen is under active development. It can understand the current screen, but it cannot click, type, run commands, or complete multi-step tasks yet. Issues and pull requests are temporarily disabled while the core product is changing.
+> OpenScreen is under active development. It can understand the current screen, but it cannot retrieve prior activity or memory, click, type, or run commands yet. Issues and pull requests are temporarily disabled while the core product is changing.
 
 ## Current capabilities
 
@@ -13,6 +13,7 @@ Press `Option + Space` to open a floating panel, ask a question, and OpenScreen 
 - Active-window capture using ScreenCaptureKit.
 - Persistent multi-session chat history with create, switch, and rename controls.
 - Per-turn capture, request, generation, and completion status with cancellation and editable retries.
+- A streaming Agent Loop for every request, with durable model-step and tool-result records.
 - Markdown messages with smart follow-to-latest scrolling during streaming.
 - Automatic text-and-screenshot context compaction at 90% of the model context window.
 - Streaming Responses API providers with image input.
@@ -53,7 +54,7 @@ On first launch, macOS will request Screen Recording permission. After granting 
 
 OpenScreen does not capture the screen continuously. It captures the active window only after a question is submitted.
 
-Conversation state is stored locally as one append-only JSONL file per session under `~/Library/Application Support/OpenScreen/sessions/`. The first line contains session metadata; later lines record turn starts, batched streaming deltas, completed, failed, or cancelled turns, and context compaction. Completed, failed, and cancelled turns are restored into model context; failed and cancelled responses are explicitly marked as incomplete. A turn interrupted by process exit remains visible but is excluded from future model requests. The selected session is restored when the app starts again.
+Conversation state is stored locally as one append-only JSONL file per session under `~/Library/Application Support/OpenScreen/sessions/`. The first line contains session metadata; later lines record turn starts, batched streaming deltas, Agent Run model steps and tool results, completed, failed, or cancelled turns, and context compaction. Completed, failed, and cancelled turns are restored into model context; failed and cancelled responses are explicitly marked as incomplete. A turn interrupted by process exit remains visible but is excluded from future model requests. The selected session is restored when the app starts again.
 
 Each screenshot is:
 
@@ -69,7 +70,7 @@ Screenshots are not deleted automatically in the current version. Review your pr
 - Development launch only; there is no signed app bundle or installer.
 - No session deletion, search, or cloud sync.
 - Only one request per session can run at a time; different sessions can stream concurrently.
-- No click, type, scroll, application control, Bash, or tool execution.
+- The production tool registry is empty: activity and memory retrieval, click, type, scroll, application control, and Bash are not connected yet.
 - No automatic retries or settings interface; Retry opens the previous prompt for editing and captures a new screenshot when resubmitted.
 
 ## Architecture
@@ -78,11 +79,11 @@ Screenshots are not deleted automatically in the current version. Review your pr
 macOS app (Swift, AppKit, SwiftUI, ScreenCaptureKit)
     -> JSON Lines over stdin/stdout
 local agent (Node.js, TypeScript, OpenAI SDK)
-    -> streaming Responses API with retained text and Base64 PNG screenshots
+    -> streaming Agent Loop with retained text and Base64 PNG screenshots
 configured Responses API-compatible provider
 ```
 
-The macOS process owns the panel, shortcut, capture, selected-session UI, per-session streaming cache, and local screenshot files. The Node.js process owns durable per-session turn history, cross-process session locks, screenshot paths, context compaction, runtime configuration, and model requests. Every chat event carries both `requestId` and `sessionId`; reasoning and final-answer text are rendered separately. Completed, failed, and cancelled turns are retained in model context, with unsuccessful responses marked as incomplete so they are not mistaken for finished answers. The default configuration compacts at 244,800 of 272,000 multimodal tokens, keeps about 20,000 tokens of recent turns in model context, and retains the full event history on disk.
+The macOS process owns the panel, shortcut, capture, selected-session UI, per-session streaming cache, and local screenshot files. The Node.js process owns durable per-session turn history, Agent Loop execution, tool dispatch, Agent Run records, cross-process session locks, screenshot paths, context compaction, runtime configuration, and model requests. Every chat event carries both `requestId` and `sessionId`; reasoning and final-answer text are rendered separately. Completed, failed, and cancelled turns are retained in model context, with unsuccessful responses marked as incomplete so they are not mistaken for finished answers. The production tool list stays empty until activity and memory retrieval are connected during integration. The default configuration compacts at 244,800 of 272,000 multimodal tokens, keeps about 20,000 tokens of recent turns in model context, and retains the full event history on disk.
 
 ## Development
 

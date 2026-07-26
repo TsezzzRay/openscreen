@@ -63,6 +63,148 @@ test("stores metadata on the first line and replays completed turns and compacti
   assert.equal(loaded.visibleTurns[0]?.status, "completed");
 });
 
+test("records agent runs and rebuilds tool context from append-only events", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "openscreen-sessions-"));
+  t.after(() => rm(directory, { force: true, recursive: true }));
+  const session = await createSession(directory);
+  const reasoningItem = {
+    id: "reasoning-1",
+    type: "reasoning" as const,
+    status: "completed" as const,
+    summary: [],
+    content: [],
+  };
+  const functionCall = {
+    id: "function-1",
+    call_id: "call-1",
+    type: "function_call" as const,
+    status: "completed" as const,
+    name: "retrieve_context",
+    arguments: JSON.stringify({ query: "project status" }),
+  };
+  const message = {
+    id: "message-1",
+    type: "message" as const,
+    status: "completed" as const,
+    role: "assistant" as const,
+    content: [{
+      type: "output_text" as const,
+      text: "The project is active.",
+      annotations: [],
+    }],
+  };
+  await appendSessionEvents(directory, session.id, [
+    {
+      type: "turn_started",
+      turn: {
+        id: "turn-1",
+        user: "What is the project status?",
+        startedAt: "2026-07-27T00:00:00.000Z",
+        agentRun: true,
+      },
+    },
+    {
+      type: "agent_step_completed",
+      turnId: "turn-1",
+      step: 1,
+      responseId: "response-1",
+      outputItems: [reasoningItem, functionCall],
+      totalTokens: 20,
+    },
+    {
+      type: "tool_result_recorded",
+      turnId: "turn-1",
+      step: 1,
+      callId: "call-1",
+      name: "retrieve_context",
+      output: JSON.stringify({ matches: [{ text: "The project is active." }] }),
+      status: "completed",
+    },
+    {
+      type: "agent_step_completed",
+      turnId: "turn-1",
+      step: 2,
+      responseId: "response-2",
+      outputItems: [message],
+      totalTokens: 30,
+    },
+    {
+      type: "turn_completed",
+      turn: {
+        id: "turn-1",
+        user: "What is the project status?",
+        assistant: "The project is active.",
+      },
+    },
+  ]);
+
+  const loaded = await loadSession(directory, session.id);
+
+  assert.deepEqual(loaded.agentRuns, [{
+    id: "turn-1",
+    status: "completed",
+    startedAt: "2026-07-27T00:00:00.000Z",
+    steps: [
+      {
+        step: 1,
+        responseId: "response-1",
+        outputItems: [reasoningItem, functionCall],
+        totalTokens: 20,
+        toolResults: [{
+          callId: "call-1",
+          name: "retrieve_context",
+          output: JSON.stringify({ matches: [{ text: "The project is active." }] }),
+          status: "completed",
+        }],
+      },
+      {
+        step: 2,
+        responseId: "response-2",
+        outputItems: [message],
+        totalTokens: 30,
+        toolResults: [],
+      },
+    ],
+  }]);
+  assert.deepEqual(loaded.turns[0]?.outputItems, [
+    reasoningItem,
+    functionCall,
+    {
+      type: "function_call_output",
+      call_id: "call-1",
+      output: JSON.stringify({ matches: [{ text: "The project is active." }] }),
+    },
+    message,
+  ]);
+});
+
+test("rejects malformed model output items in agent run events", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "openscreen-sessions-"));
+  t.after(() => rm(directory, { force: true, recursive: true }));
+  const session = await createSession(directory);
+  const path = join(directory, `${session.id}.jsonl`);
+  await appendFile(path, [
+    JSON.stringify({
+      type: "turn_started",
+      turn: {
+        id: "turn-1",
+        user: "Question",
+        startedAt: "2026-07-27T00:00:00.000Z",
+        agentRun: true,
+      },
+    }),
+    JSON.stringify({
+      type: "agent_step_completed",
+      turnId: "turn-1",
+      step: 1,
+      outputItems: [{ type: "message" }],
+    }),
+    "",
+  ].join("\n"));
+
+  await assert.rejects(loadSession(directory, session.id), /Invalid session event/);
+});
+
 test("persists ordered images and exposes them when restoring visible turns", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "openscreen-sessions-"));
   t.after(() => rm(directory, { force: true, recursive: true }));

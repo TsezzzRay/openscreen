@@ -8,6 +8,186 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import test from "node:test";
 
+import OpenAI from "openai";
+
+import { runChat } from "../../src/chat/runner.js";
+import { createSession, loadSession } from "../../src/session/store.js";
+
+test("cancels an agent run while a tool is executing", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "openscreen-agent-loop-"));
+  t.after(() => rm(directory, { force: true, recursive: true }));
+  const session = await createSession(directory);
+  const imagePath = join(directory, "screen.png");
+  await writeFile(imagePath, "screen");
+  let toolStarted!: () => void;
+  const toolReady = new Promise<void>((resolve) => { toolStarted = resolve; });
+  const client = {
+    responses: {
+      inputTokens: {
+        count: async () => ({ input_tokens: 1 }),
+      },
+      create: async () => (async function* () {
+        yield {
+          type: "response.completed",
+          response: {
+            id: "response-1",
+            output: [{
+              id: "function-1",
+              call_id: "call-1",
+              type: "function_call",
+              status: "completed",
+              name: "retrieve_context",
+              arguments: "{}",
+            }],
+          },
+        };
+      })(),
+    },
+  } as unknown as OpenAI;
+  const controller = new AbortController();
+  const events: any[] = [];
+  const running = runChat(
+    {
+      requestId: "turn-1",
+      type: "chat",
+      sessionId: session.id,
+      input: {
+        text: "Find context",
+        images: [{
+          id: "screen",
+          source: "system_capture",
+          path: imagePath,
+        }],
+      },
+    },
+    directory,
+    client,
+    "vision-model",
+    {
+      windowTokens: 1_000,
+      compactAtTokens: 900,
+      keepRecentTokens: 100,
+      maxOutputTokens: 100,
+      summaryMaxOutputTokens: 50,
+    },
+    (event) => events.push(event),
+    controller.signal,
+    [{
+      definition: {
+        type: "function",
+        name: "retrieve_context",
+        parameters: {
+          type: "object",
+          properties: {},
+          required: [],
+          additionalProperties: false,
+        },
+        strict: true,
+      },
+      execute: async (_argumentsValue, signal) => new Promise((resolve, reject) => {
+        toolStarted();
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+      }),
+    }],
+  );
+
+  await toolReady;
+  controller.abort();
+  await running;
+
+  assert.equal(events.at(-1)?.type, "cancelled");
+  const loaded = await loadSession(directory, session.id);
+  assert.equal(loaded.visibleTurns[0]?.status, "cancelled");
+  assert.equal(loaded.agentRuns[0]?.status, "cancelled");
+  assert.equal(loaded.agentRuns[0]?.steps.length, 1);
+  assert.deepEqual(loaded.agentRuns[0]?.steps[0]?.toolResults, []);
+});
+
+test("fails duplicate tool call IDs without corrupting the session", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "openscreen-agent-loop-"));
+  t.after(() => rm(directory, { force: true, recursive: true }));
+  const session = await createSession(directory);
+  const imagePath = join(directory, "screen.png");
+  await writeFile(imagePath, "screen");
+  const client = {
+    responses: {
+      inputTokens: {
+        count: async () => ({ input_tokens: 1 }),
+      },
+      create: async () => (async function* () {
+        yield {
+          type: "response.completed",
+          response: {
+            id: "response-1",
+            output: [1, 2].map((number) => ({
+              id: `function-${number}`,
+              call_id: "duplicate-call",
+              type: "function_call",
+              status: "completed",
+              name: "retrieve_context",
+              arguments: "{}",
+            })),
+          },
+        };
+      })(),
+    },
+  } as unknown as OpenAI;
+  let toolCalls = 0;
+  const events: any[] = [];
+
+  await runChat(
+    {
+      requestId: "turn-1",
+      type: "chat",
+      sessionId: session.id,
+      input: {
+        text: "Find context",
+        images: [{
+          id: "screen",
+          source: "system_capture",
+          path: imagePath,
+        }],
+      },
+    },
+    directory,
+    client,
+    "vision-model",
+    {
+      windowTokens: 1_000,
+      compactAtTokens: 900,
+      keepRecentTokens: 100,
+      maxOutputTokens: 100,
+      summaryMaxOutputTokens: 50,
+    },
+    (event) => events.push(event),
+    new AbortController().signal,
+    [{
+      definition: {
+        type: "function",
+        name: "retrieve_context",
+        parameters: {
+          type: "object",
+          properties: {},
+          required: [],
+          additionalProperties: false,
+        },
+        strict: true,
+      },
+      execute: async () => {
+        toolCalls += 1;
+        return "unreachable";
+      },
+    }],
+  );
+
+  assert.equal(events.at(-1)?.type, "failed");
+  assert.equal(toolCalls, 0);
+  const loaded = await loadSession(directory, session.id);
+  assert.equal(loaded.visibleTurns[0]?.status, "failed");
+  assert.equal(loaded.agentRuns[0]?.status, "failed");
+  assert.deepEqual(loaded.agentRuns[0]?.steps, []);
+});
+
 test("rebuilds the agent process context after turn-end compaction", async (t) => {
   const compactAtTokens = 50_000;
   const modelRequests: unknown[] = [];
@@ -229,6 +409,7 @@ test("rebuilds the agent process context after turn-end compaction", async (t) =
   assert.doesNotMatch(JSON.stringify(summaryRequests[0]?.input), /reasoning-1/);
   assert.equal(summaryRequests.length, 1);
   assert.equal(modelRequests.length, 7);
+  assert.ok(modelRequests.every((request: any) => request.tools === undefined));
   assert.match(JSON.stringify(modelRequests[1]), /reasoning-1/);
 
   async function concurrentTurn(text: string, targetSessionId: string) {
@@ -340,6 +521,10 @@ test("rebuilds the agent process context after turn-end compaction", async (t) =
     ["createdAt", "id", "title", "type"],
   );
   assert.ok(persistedLines.some((event) => event.type === "answer_delta"));
+  assert.ok(persistedLines.some(
+    (event) => event.type === "turn_started" && event.turn.agentRun === true,
+  ));
+  assert.ok(persistedLines.some((event) => event.type === "agent_step_completed"));
   assert.ok(persistedLines.some((event) => event.type === "turn_completed"));
   assert.ok(persistedLines.some((event) => event.type === "context_compacted"));
 

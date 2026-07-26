@@ -13,9 +13,14 @@ import {
   countRequestTokens,
   countTurns,
   makeRequest,
-  relayStream,
+  runAgentLoop,
   summarizeTurns,
 } from "./model.js";
+import type {
+  AgentRunEvent,
+  AgentTool,
+  ConversationOutputItem,
+} from "./types.js";
 
 const REQUEST_FAILED_MESSAGE = "Request failed. Please retry.";
 
@@ -61,10 +66,14 @@ class EventBatcher {
     });
   }
 
-  async close() {
+  async drain() {
     this.flush();
     await this.writes;
     if (this.error) throw this.error;
+  }
+
+  async close() {
+    await this.drain();
   }
 }
 
@@ -76,6 +85,7 @@ export async function runChat(
   context: RuntimeConfig["context"],
   emit: Emit,
   signal: AbortSignal,
+  tools: AgentTool[] = [],
 ) {
   const { requestId, sessionId, input } = envelope;
   let turnStarted = false;
@@ -109,6 +119,7 @@ export async function runChat(
         user: input.text,
         images: input.images,
         startedAt: new Date().toISOString(),
+        agentRun: true,
       },
     }]);
     turnStarted = true;
@@ -139,44 +150,62 @@ export async function runChat(
       }
       return compacted;
     };
-    const buildRequest = () => makeRequest(
-      model,
-      input.text,
-      input.images,
-      context.maxOutputTokens,
-      session,
-    );
-    let request = await buildRequest();
-    if (await finishCancelled()) return;
-    await compactIfNeeded(
-      context.compactAtTokens,
-      () => countRequestTokens(client, request, signal),
-      async () => {
-        const compacted = await compact();
-        request = await buildRequest();
-        return compacted;
-      },
-    );
-    if (await finishCancelled()) return;
-
-    const stream = await client.responses.create(request, { signal });
+    const buildRequest = async (
+      runItems: ConversationOutputItem[],
+      toolDefinitions: OpenAI.Responses.FunctionTool[],
+    ) => {
+      const createRequest = async () => {
+        const request = await makeRequest(
+          model,
+          input.text,
+          input.images,
+          context.maxOutputTokens,
+          session,
+        );
+        if (!Array.isArray(request.input)) throw new Error("Invalid model input");
+        request.input.push(...runItems);
+        if (toolDefinitions.length > 0) request.tools = toolDefinitions;
+        return request;
+      };
+      let request = await createRequest();
+      await compactIfNeeded(
+        context.compactAtTokens,
+        () => countRequestTokens(client, request, signal),
+        async () => {
+          const compacted = await compact();
+          request = await createRequest();
+          return compacted;
+        },
+      );
+      return request;
+    };
     const batcher = new EventBatcher(sessionsDirectory, sessionId);
-    let result: Awaited<ReturnType<typeof relayStream>>;
+    let result: Awaited<ReturnType<typeof runAgentLoop>>;
     try {
-      result = await relayStream(stream, (event) => {
-        if (event.type === "failed") {
-          if (signal.aborted) return;
-          process.stderr.write(`Model request failed: ${event.message ?? "unknown error"}\n`);
-          failureEmitted = true;
-          failureMessage = REQUEST_FAILED_MESSAGE;
-          emit({ requestId, sessionId, type: "failed", message: failureMessage });
-          return;
-        }
-        emit({ requestId, sessionId, ...event });
-        if (event.type === "reasoning_delta" || event.type === "answer_delta") {
-          batcher.add({ type: event.type, turnId: requestId, delta: event.delta ?? "" });
-        }
-      });
+      result = await runAgentLoop(
+        client,
+        buildRequest,
+        tools,
+        (event) => {
+          if (event.type === "failed") {
+            if (signal.aborted) return;
+            process.stderr.write(`Model request failed: ${event.message ?? "unknown error"}\n`);
+            failureEmitted = true;
+            failureMessage = REQUEST_FAILED_MESSAGE;
+            emit({ requestId, sessionId, type: "failed", message: failureMessage });
+            return;
+          }
+          emit({ requestId, sessionId, ...event });
+          if (event.type === "reasoning_delta" || event.type === "answer_delta") {
+            batcher.add({ type: event.type, turnId: requestId, delta: event.delta ?? "" });
+          }
+        },
+        async (event: AgentRunEvent) => {
+          batcher.add({ ...event, turnId: requestId });
+          await batcher.drain();
+        },
+        signal,
+      );
     } finally {
       await batcher.close();
     }
@@ -204,7 +233,11 @@ export async function runChat(
       status: "completed" as const,
     };
     terminalStarted = true;
-    await appendSessionEvents(sessionsDirectory, sessionId, [{ type: "turn_completed", turn }]);
+    const { outputItems: _outputItems, ...persistedTurn } = turn;
+    await appendSessionEvents(sessionsDirectory, sessionId, [{
+      type: "turn_completed",
+      turn: persistedTurn,
+    }]);
     session.turns.push(turn);
     if (wasEmpty && session.title === "New Chat") {
       try {
