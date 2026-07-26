@@ -18,6 +18,7 @@ import type {
   StoredSession,
 } from "./harness/session/types.js";
 import { withSessionLock } from "./harness/session/lock.js";
+import { ScreenObservationRuntime } from "./screen-observation/runtime.js";
 import {
   parseInputEnvelope,
   serializeOutputEnvelope,
@@ -60,6 +61,16 @@ async function run() {
     "sessions",
   );
   const lines = createInterface({ input: process.stdin, crlfDelay: Infinity });
+  const observationRuntime = process.env.OPENSCREEN_OBSERVATION_HELPER_PATH === undefined
+    ? undefined
+    : new ScreenObservationRuntime();
+  void observationRuntime?.start().catch((error) => {
+    process.stderr.write(
+      `OpenScreen observation unavailable: ${
+        error instanceof Error ? error.message : "unknown error"
+      }\n`,
+    );
+  });
 
   const sessionQueues = new Map<string, Promise<void>>();
   const activeRequests = new Map<string, { sessionId: string; controller: AbortController }>();
@@ -196,16 +207,20 @@ async function run() {
     void task.finally(() => active.delete(task));
   };
 
-  for await (const line of lines) {
-    try {
-      dispatch(parseInputEnvelope(line));
-    } catch (error) {
-      process.stderr.write(
-        `Invalid agent request: ${error instanceof Error ? error.message : "unknown error"}\n`,
-      );
+  try {
+    for await (const line of lines) {
+      try {
+        dispatch(parseInputEnvelope(line));
+      } catch (error) {
+        process.stderr.write(
+          `Invalid agent request: ${error instanceof Error ? error.message : "unknown error"}\n`,
+        );
+      }
     }
+    await Promise.allSettled([...active]);
+  } finally {
+    await observationRuntime?.stop();
   }
-  await Promise.allSettled([...active]);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

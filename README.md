@@ -11,6 +11,7 @@ Press `Option + Space` to open a floating panel, ask a question, and OpenScreen 
 - Global `Option + Space` shortcut.
 - Movable floating panel that stays above other applications.
 - Active-window capture using ScreenCaptureKit.
+- Event-driven foreground-window observations using a native macOS helper.
 - Persistent multi-session chat history with create, switch, and rename controls.
 - Per-turn capture, request, generation, and completion status with cancellation and editable retries.
 - A streaming Agent Loop for every request, with durable model-step and tool-result records.
@@ -20,7 +21,8 @@ Press `Option + Space` to open a floating panel, ask a question, and OpenScreen 
 
 ## Requirements
 
-- macOS 15 or later.
+- macOS 15 or later with Screen Recording, Accessibility, and Input Monitoring
+  permission for native screen observation.
 - Swift 6.2 toolchain.
 - Node.js 20.12 or later and npm.
 - An API key and reasoning-capable model from a Responses API-compatible provider that supports image input, streaming, and `/responses/input_tokens`. OpenAI-compatible models and MiniMax M3 are supported.
@@ -48,13 +50,40 @@ OpenScreen sends `reasoning.summary: "auto"` to other Responses API providers an
 
 `config.json` contains the non-secret defaults for context, sessions, timeline processing, and long-term memory. Process environment variables can override these values, but `.env.example` intentionally lists only the three common provider variables. The API key is never read from JSON. See the [Agent configuration reference](agent/README.md#runtime-configuration) for the ownership and validation rules.
 
-On first launch, macOS will request Screen Recording permission. After granting permission, press `Option + Space`, enter a question, and press `Enter`. Use `Shift + Enter` to insert a newline. Stop OpenScreen with `Control + C` in the launching terminal.
+On first launch, macOS will request Screen Recording and Accessibility access.
+Input Monitoring is also needed for click and keyboard-activity signals. A denied
+permission degrades only the corresponding signal or capture source: OpenScreen
+continues using the sources that remain available. After granting permission,
+press `Option + Space`, enter a question, and press `Enter`. Use `Shift + Enter`
+to insert a newline. Stop OpenScreen with `Control + C` in the launching terminal.
 
 ## Privacy
 
-OpenScreen does not capture the screen continuously. It captures the active window only after a question is submitted.
+OpenScreen observes only the foreground window. A low-resolution
+ScreenCaptureKit stream detects visual changes; full observations are produced
+after application/window changes, clicks, settled keyboard or Accessibility
+activity, and meaningful visual changes. Continuous animation or video is
+sampled at most once every 10 seconds, while a static window produces no
+heartbeat observations. Raw keys and typed key values are never recorded by the
+event tap, and secure Accessibility fields are replaced with `[REDACTED]`.
 
-Conversation state is stored locally under `~/Library/Application Support/OpenScreen/sessions/`. Completed, failed, and cancelled turns are restored into model context, while a turn interrupted by process exit remains visible but is excluded from future model requests. The selected session is restored when the app starts again. The [Agent README](agent/README.md#persistence) describes the underlying persistence formats.
+Each automatic `ScreenObservation` contains foreground-window metadata, a
+bounded Accessibility snapshot, normalized visible text, and an in-memory JPEG
+screenshot. These observations are deduplicated in the Node process and are not
+currently persisted, added to long-term memory, or sent to a model. OpenScreen
+and its helper processes are excluded by PID and bundle identity so the panel
+cannot create a capture loop.
+
+Conversation state is stored locally as one append-only JSONL file per session
+under `~/Library/Application Support/OpenScreen/sessions/`. The first line
+contains session metadata; later lines record turn starts, batched streaming
+deltas, completed, failed, or cancelled turns, and context compaction.
+Completed, failed, and cancelled turns are restored into model context; failed
+and cancelled responses are explicitly marked as incomplete. A turn interrupted
+by process exit remains visible but is excluded from future model requests. The
+selected session is restored when the app starts again. The
+[Agent README](agent/README.md#persistence) describes the underlying
+persistence formats.
 
 Each screenshot is:
 
@@ -72,6 +101,8 @@ Screenshots are not deleted automatically in the current version. Review your pr
 - Only one request per session can run at a time; different sessions can stream concurrently.
 - The production tool registry is empty: activity and memory retrieval, click, type, scroll, application control, and Bash are not connected yet.
 - No automatic retries or settings interface; Retry opens the previous prompt for editing and captures a new screenshot when resubmitted.
+- Automatic screen observations are held only in memory and are not yet consumed
+  by activity memory or an Agent Loop.
 
 ## Architecture
 
@@ -79,15 +110,38 @@ Screenshots are not deleted automatically in the current version. Review your pr
 macOS app (Swift, AppKit, SwiftUI, ScreenCaptureKit)
     -> JSON Lines over stdin/stdout
 local agent (Node.js, TypeScript, OpenAI SDK)
+    -> JSON Lines over stdin/stdout
+native observation helper (Swift, AXObserver, CGEventTap, ScreenCaptureKit)
+
+local agent
     -> streaming Agent Loop with retained text and Base64 PNG screenshots
 configured Responses API-compatible provider
 ```
 
-The macOS process owns the panel, shortcut, capture, UI state, and local screenshot files. The Node.js process owns sessions, Agent Loop execution, tool dispatch, context compaction, runtime configuration, persistence, and model requests. See the [Agent README](agent/README.md) for its internal structure and data flow.
+The macOS process owns the panel, shortcut, explicit chat capture,
+selected-session UI, per-session streaming cache, and local chat screenshot
+files. The Node.js process owns durable chat history, screen-observation
+scheduling and deduplication, cross-process session locks, context compaction,
+runtime configuration, and model requests. It starts and supervises the native
+helper while OpenScreen is running. The helper owns only macOS activity signals,
+foreground-window screenshots, Accessibility snapshots, and permission status;
+it does not persist observations or make business decisions.
+
+Every chat event carries both `requestId` and `sessionId`; reasoning and
+final-answer text are rendered separately. Completed, failed, and cancelled
+turns are retained in model context, with unsuccessful responses marked as
+incomplete so they are not mistaken for finished answers. The default
+configuration keeps recent turns in model context and retains the full event
+history on disk. See the [Agent README](agent/README.md) for its internal
+structure and data flow.
 
 ## Activity memory core
 
-The Node Agent contains timeline and long-term-memory processing for later integration with live screen observations and terminal turns. Live observation wiring, memory search, automatic recall, and model-context injection are not connected yet. Implementation boundaries and persistence behavior are documented in the [Agent README](agent/README.md).
+The Node Agent contains timeline and long-term-memory processing for later
+integration with live screen observations and terminal turns. Live observation
+wiring, memory search, automatic recall, and model-context injection are not
+connected yet. Implementation boundaries and persistence behavior are
+documented in the [Agent README](agent/README.md).
 
 ## Development
 

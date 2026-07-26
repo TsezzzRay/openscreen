@@ -8,8 +8,9 @@
   "scripts": {
     "build:agent": "node -e \"require('node:fs').rmSync('agent/dist', { recursive: true, force: true })\" && tsc -p agent/tsconfig.json",
     "build:agent-tests": "node -e \"require('node:fs').rmSync('agent/dist-test', { recursive: true, force: true })\" && tsc -p agent/tsconfig.test.json",
+    "build:helper": "swift build --product OpenScreenObservationHelper",
     "test:agent": "npm run build:agent && npm run build:agent-tests && node --test agent/dist-test/tests/*.test.js agent/dist-test/tests/*/*.test.js",
-    "dev": "npm run build:agent && swift run OpenScreen"
+    "dev": "npm run build:agent && npm run build:helper && OPENSCREEN_OBSERVATION_HELPER_PATH=\"$PWD/.build/debug/OpenScreenObservationHelper\" swift run OpenScreen"
   },
   "dependencies": {
     "openai": "latest"
