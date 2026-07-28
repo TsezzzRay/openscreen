@@ -85,6 +85,20 @@ configured Responses API-compatible provider
 
 The macOS process owns the panel, shortcut, capture, selected-session UI, per-session streaming cache, and local screenshot files. The Node.js process owns durable per-session turn history, Agent Loop execution, tool dispatch, Agent Run records, cross-process session locks, screenshot paths, context compaction, runtime configuration, and model requests. Every chat event carries both `requestId` and `sessionId`; reasoning and final-answer text are rendered separately. Completed, failed, and cancelled turns are retained in model context, with unsuccessful responses marked as incomplete so they are not mistaken for finished answers. The production tool list stays empty until activity and memory retrieval are connected during integration. The default configuration compacts at 244,800 of 272,000 multimodal tokens, keeps about 20,000 tokens of recent turns in model context, and retains the full event history on disk.
 
+## Activity memory core
+
+The Node agent includes an activity-memory core for integration with persisted screen observations and terminal turns:
+
+- `processTimelineSource` converts one `ScreenObservation` or one terminal turn into one factual timeline entry. A turn includes its Agent Run when present, so conversation and tool activity do not produce duplicate timeline entries.
+- A screen observation is sent as one Responses API JSON request containing the observation JSON and its Base64 screenshot as an `input_image`. The screenshot remains Base64 in the persisted observation; activity memory does not create a separate image file.
+- Input tokens are counted before generation. A single observation or turn at or above the configured input budget is discarded without fallback processing or persistence.
+- Timeline entries are append-only JSONL under `~/Library/Application Support/OpenScreen/timeline/YYYY-MM-DD.jsonl`.
+- `processMemoryIfDue` processes unhandled timeline entries every 24 hours. It creates, supersedes, or skips long-term memories, splitting one due run only when the model context requires multiple requests.
+- Memory events are append-only JSONL under `~/Library/Application Support/OpenScreen/memory/events.jsonl`. Processed timeline IDs and the latest attempt time are recovered from this log; there is no checkpoint file.
+- Generated summaries and memories are English, while quoted user text, code, errors, URLs, paths, and proper nouns remain verbatim. Outputs containing recognizable passwords, API tokens, or private keys are rejected before persistence.
+
+The core currently uses fixed test observations and turns. Live screen-observation and Agent Loop wiring, memory search, automatic recall, and model-context injection belong to the later integration phase.
+
 ## Development
 
 Run the Agent tests:
