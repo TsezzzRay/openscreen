@@ -2,7 +2,10 @@ import AppKit
 import CoreGraphics
 
 enum WindowResolver {
-    static func currentWindow(excluding filter: SelfCaptureFilter) -> WindowMetadata? {
+    static func currentWindow(
+        excluding filter: SelfCaptureFilter,
+        configuration: NativeObservationConfiguration.WindowSelection
+    ) -> WindowMetadata? {
         guard let application = NSWorkspace.shared.frontmostApplication else {
             return nil
         }
@@ -31,7 +34,8 @@ enum WindowResolver {
             processIdentifier: processIdentifier,
             bundleIdentifier: bundleIdentifier,
             applicationName: application.localizedName ?? "Unknown",
-            from: windows
+            from: windows,
+            configuration: configuration
         ) ?? WindowMetadata(
             processIdentifier: processIdentifier,
             bundleIdentifier: bundleIdentifier,
@@ -46,7 +50,8 @@ enum WindowResolver {
         processIdentifier: pid_t,
         bundleIdentifier: String?,
         applicationName: String,
-        from windows: [[String: Any]]
+        from windows: [[String: Any]],
+        configuration: NativeObservationConfiguration.WindowSelection
     ) -> WindowMetadata? {
         let candidates = windows.compactMap { window -> WindowMetadata? in
             guard
@@ -81,12 +86,12 @@ enum WindowResolver {
             guard let frame = candidate.frame else {
                 return false
             }
-            return frame.width >= 160
-                && frame.height >= 120
+            return frame.width >= CGFloat(configuration.minimumWidth)
+                && frame.height >= CGFloat(configuration.minimumHeight)
                 && max(
                     frame.width / frame.height,
                     frame.height / frame.width
-                ) <= 4
+                ) <= configuration.maximumAspectRatio
         }) ?? candidates.first
     }
 }

@@ -11,6 +11,7 @@ final class ActivityMonitor {
         processIdentifiers: [],
         bundleIdentifiers: []
     )
+    private var configuration: NativeObservationConfiguration?
     private var workspaceObservers = [NSObjectProtocol]()
     private var accessibilityObserver: AXObserver?
     private var accessibilityApplication: AXUIElement?
@@ -24,8 +25,12 @@ final class ActivityMonitor {
         self.visualMonitor = VisualStreamMonitor(writer: writer)
     }
 
-    func start(filter: SelfCaptureFilter) {
+    func start(
+        filter: SelfCaptureFilter,
+        configuration: NativeObservationConfiguration
+    ) {
         self.filter = filter
+        self.configuration = configuration
         guard !started else {
             refresh(kind: .applicationActivated)
             return
@@ -187,9 +192,18 @@ final class ActivityMonitor {
     }
 
     private func refresh(kind: NativeActivityKind) {
-        let window = WindowResolver.currentWindow(excluding: filter)
+        guard let configuration else {
+            return
+        }
+        let window = WindowResolver.currentWindow(
+            excluding: filter,
+            configuration: configuration.windowSelection
+        )
         observeAccessibility(for: window)
-        visualMonitor.restart(for: window)
+        visualMonitor.restart(
+            for: window,
+            configuration: configuration.visualMonitoring
+        )
         guard let window else {
             return
         }
@@ -205,7 +219,13 @@ final class ActivityMonitor {
     }
 
     private func emitCurrent(kind: NativeActivityKind) {
-        guard let window = WindowResolver.currentWindow(excluding: filter) else {
+        guard
+            let configuration,
+            let window = WindowResolver.currentWindow(
+                excluding: filter,
+                configuration: configuration.windowSelection
+            )
+        else {
             return
         }
         writer.write(

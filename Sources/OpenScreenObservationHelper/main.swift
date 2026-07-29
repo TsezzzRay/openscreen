@@ -69,6 +69,7 @@ final class HelperRuntime {
     private let monitor: ActivityMonitor
     private var reader: JSONLineReader?
     private var filter: SelfCaptureFilter?
+    private var configuration: NativeObservationConfiguration?
     private var signalSources = [DispatchSourceSignal]()
     private var stopped = false
 
@@ -104,7 +105,7 @@ final class HelperRuntime {
     private func handle(line: String) {
         do {
             let command = try HelperCommand.decode(line)
-            guard command.protocolVersion == 1 else {
+            guard command.protocolVersion == helperProtocolVersion else {
                 writer.write(
                     .error(
                         requestId: command.requestId,
@@ -133,6 +134,16 @@ final class HelperRuntime {
     }
 
     private func configure(_ command: HelperCommand) {
+        guard let configuration = command.configuration else {
+            writer.write(
+                .error(
+                    requestId: command.requestId,
+                    code: "invalid_configuration",
+                    message: "Native observation configuration is required"
+                )
+            )
+            return
+        }
         var processIdentifiers = Set(command.excludedProcessIdentifiers ?? [])
         processIdentifiers.insert(ProcessInfo.processInfo.processIdentifier)
         var bundleIdentifiers = Set(command.excludedBundleIdentifiers ?? [])
@@ -144,12 +155,17 @@ final class HelperRuntime {
             bundleIdentifiers: bundleIdentifiers
         )
         self.filter = filter
-        monitor.start(filter: filter)
+        self.configuration = configuration
+        monitor.start(filter: filter, configuration: configuration)
         writer.write(.configured(requestId: command.requestId))
     }
 
     private func capture(_ command: HelperCommand) {
-        guard let filter, let signal = command.signal else {
+        guard
+            let filter,
+            let configuration,
+            let signal = command.signal
+        else {
             writer.write(
                 .error(
                     requestId: command.requestId,
@@ -163,7 +179,8 @@ final class HelperRuntime {
             do {
                 let result = try await ObservationCaptureEngine.capture(
                     signal: signal,
-                    excluding: filter
+                    excluding: filter,
+                    configuration: configuration
                 )
                 writer.write(
                     .captureResult(

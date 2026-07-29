@@ -1,5 +1,7 @@
 import Foundation
 
+let helperProtocolVersion = 2
+
 struct HelperCommand: Decodable, Sendable {
     enum CommandType: String, Decodable, Sendable {
         case configure
@@ -12,6 +14,7 @@ struct HelperCommand: Decodable, Sendable {
     let type: CommandType
     let excludedProcessIdentifiers: [pid_t]?
     let excludedBundleIdentifiers: [String]?
+    let configuration: NativeObservationConfiguration?
     let signal: NativeActivitySignal?
 
     static func decode(_ line: String) throws -> HelperCommand {
@@ -33,7 +36,7 @@ struct HelperOutput: Encodable, Sendable {
 
     static func ready(processIdentifier: pid_t) -> HelperOutput {
         HelperOutput(
-            protocolVersion: 1,
+            protocolVersion: helperProtocolVersion,
             type: "ready",
             processIdentifier: processIdentifier,
             requestId: nil,
@@ -48,7 +51,7 @@ struct HelperOutput: Encodable, Sendable {
 
     static func configured(requestId: String) -> HelperOutput {
         HelperOutput(
-            protocolVersion: 1,
+            protocolVersion: helperProtocolVersion,
             type: "configured",
             processIdentifier: nil,
             requestId: requestId,
@@ -63,7 +66,7 @@ struct HelperOutput: Encodable, Sendable {
 
     static func activity(_ signal: NativeActivitySignal) -> HelperOutput {
         HelperOutput(
-            protocolVersion: 1,
+            protocolVersion: helperProtocolVersion,
             type: "signal",
             processIdentifier: nil,
             requestId: nil,
@@ -81,7 +84,7 @@ struct HelperOutput: Encodable, Sendable {
         result: NativeCaptureResult
     ) -> HelperOutput {
         HelperOutput(
-            protocolVersion: 1,
+            protocolVersion: helperProtocolVersion,
             type: "captureResult",
             processIdentifier: nil,
             requestId: requestId,
@@ -100,7 +103,7 @@ struct HelperOutput: Encodable, Sendable {
         message: String? = nil
     ) -> HelperOutput {
         HelperOutput(
-            protocolVersion: 1,
+            protocolVersion: helperProtocolVersion,
             type: "status",
             processIdentifier: nil,
             requestId: nil,
@@ -119,7 +122,7 @@ struct HelperOutput: Encodable, Sendable {
         message: String
     ) -> HelperOutput {
         HelperOutput(
-            protocolVersion: 1,
+            protocolVersion: helperProtocolVersion,
             type: "error",
             processIdentifier: nil,
             requestId: requestId,

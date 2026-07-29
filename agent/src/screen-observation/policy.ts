@@ -5,6 +5,7 @@ import type {
   NativeActivitySignal,
   ObservationContentSignature,
   PlannedCapture,
+  ScreenObservationConfig,
 } from "./types.js";
 
 type PendingCapture = PlannedCapture & {
@@ -18,25 +19,16 @@ const BOUNDARY_KINDS = new Set<NativeActivityKind>([
   "wake",
 ]);
 
-const DELAYS: Partial<Record<NativeActivityKind, number>> = {
-  mouseClick: 400,
-  focusedElementChanged: 500,
-  keyActivity: 1_500,
-  accessibilityChanged: 3_000,
-  visualChanged: 750,
-};
-
-const CAPS: Partial<Record<NativeActivityKind, number>> = {
-  keyActivity: 30_000,
-  visualChanged: 10_000,
-};
-
 export function isBoundaryKind(kind: NativeActivityKind) {
   return BOUNDARY_KINDS.has(kind);
 }
 
 export class CapturePlanner {
   private readonly pending = new Map<string, PendingCapture>();
+
+  constructor(
+    private readonly config: ScreenObservationConfig["scheduling"],
+  ) {}
 
   push(signal: NativeActivitySignal, nowMilliseconds: number) {
     if (isBoundaryKind(signal.kind)) {
@@ -49,13 +41,17 @@ export class CapturePlanner {
       return;
     }
 
-    const delay = DELAYS[signal.kind];
+    const delay = this.config.delaysMilliseconds[
+      signal.kind as keyof ScreenObservationConfig["scheduling"]["delaysMilliseconds"]
+    ];
     if (delay === undefined) {
       throw new Error(`Unsupported activity kind: ${signal.kind}`);
     }
     const previous = this.pending.get(signal.kind);
     const firstAtMilliseconds = previous?.firstAtMilliseconds ?? nowMilliseconds;
-    const cap = CAPS[signal.kind];
+    const cap = this.config.capsMilliseconds[
+      signal.kind as keyof ScreenObservationConfig["scheduling"]["capsMilliseconds"]
+    ];
     const dueAtMilliseconds = Math.min(
       nowMilliseconds + delay,
       cap === undefined ? Number.POSITIVE_INFINITY : firstAtMilliseconds + cap,
@@ -117,7 +113,7 @@ export function shouldEmitObservation(
   previous: ObservationContentSignature | undefined,
   current: ObservationContentSignature,
   boundary: boolean,
-  visualThreshold = 0.08,
+  visualThreshold: number,
 ) {
   if (previous === undefined || boundary || previous.windowKey !== current.windowKey) return true;
   if (previous.accessibilityHash !== current.accessibilityHash) return true;

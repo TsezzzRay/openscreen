@@ -4,11 +4,16 @@ import { once } from "node:events";
 import { createInterface, type Interface } from "node:readline";
 
 import {
+  HELPER_PROTOCOL_VERSION,
   encodeHelperCommand,
   parseHelperOutput,
   type HelperOutput,
 } from "./helper-protocol.js";
-import type { NativeActivitySignal, NativeCaptureResult } from "./types.js";
+import type {
+  NativeActivitySignal,
+  NativeCaptureResult,
+  NativeHelperConfiguration,
+} from "./types.js";
 
 export type HelperLifecycle = "starting" | "ready" | "restarting" | "degraded" | "stopped";
 
@@ -19,8 +24,11 @@ type NativeHelperOptions = {
   currentDirectory?: string;
   excludedProcessIdentifiers: number[];
   excludedBundleIdentifiers: string[];
-  maxRestarts?: number;
-  restartDelayMilliseconds?: number;
+  configuration: NativeHelperConfiguration;
+  maxRestarts: number;
+  restartDelayMilliseconds: number;
+  configurationTimeoutMilliseconds: number;
+  shutdownTimeoutMilliseconds: number;
   onSignal: (signal: NativeActivitySignal) => void;
   onLifecycle?: (state: HelperLifecycle) => void;
 };
@@ -38,6 +46,8 @@ export class NativeHelperClient {
   private desiredRunning = false;
   private restartCount = 0;
   private restartTimer?: NodeJS.Timeout;
+  private configurationRequestId?: string;
+  private configurationTimer?: NodeJS.Timeout;
   private lifecycle?: HelperLifecycle;
   private startPromise?: Promise<void>;
   private resolveFirstStart?: () => void;
@@ -69,7 +79,7 @@ export class NativeHelperClient {
       this.pendingCaptures.set(requestId, { resolve, reject });
     });
     this.child.stdin.write(encodeHelperCommand({
-      protocolVersion: 1,
+      protocolVersion: HELPER_PROTOCOL_VERSION,
       requestId,
       type: "capture",
       signal,
@@ -95,14 +105,17 @@ export class NativeHelperClient {
     }
     const requestId = randomUUID();
     child.stdin.write(encodeHelperCommand({
-      protocolVersion: 1,
+      protocolVersion: HELPER_PROTOCOL_VERSION,
       requestId,
       type: "shutdown",
     }));
     child.stdin.end();
     await Promise.race([
       once(child, "close").then(() => undefined),
-      new Promise<void>((resolve) => setTimeout(resolve, 500)),
+      new Promise<void>((resolve) => setTimeout(
+        resolve,
+        this.options.shutdownTimeoutMilliseconds,
+      )),
     ]);
     if (child.exitCode === null) child.kill();
     this.finishStopped();
@@ -110,6 +123,7 @@ export class NativeHelperClient {
 
   private launch(state: HelperLifecycle) {
     if (!this.desiredRunning) return;
+    this.clearConfigurationHandshake();
     this.configured = false;
     this.notifyLifecycle(state);
     const child = spawn(this.options.command, this.options.arguments ?? [], {
@@ -149,16 +163,28 @@ export class NativeHelperClient {
     }
     if (output.type === "ready") {
       const requestId = randomUUID();
+      this.configurationRequestId = requestId;
+      this.configurationTimer = setTimeout(() => {
+        this.failChild(
+          child,
+          new Error("Observation helper configuration timed out"),
+        );
+      }, this.options.configurationTimeoutMilliseconds);
       child.stdin.write(encodeHelperCommand({
-        protocolVersion: 1,
+        protocolVersion: HELPER_PROTOCOL_VERSION,
         requestId,
         type: "configure",
         excludedProcessIdentifiers: this.options.excludedProcessIdentifiers,
         excludedBundleIdentifiers: this.options.excludedBundleIdentifiers,
-      }));
+        configuration: this.options.configuration,
+      }), (error) => {
+        if (error) this.failChild(child, error);
+      });
       return;
     }
     if (output.type === "configured") {
+      if (output.requestId !== this.configurationRequestId) return;
+      this.clearConfigurationHandshake();
       this.configured = true;
       this.notifyLifecycle("ready");
       this.resolveFirstStart?.();
@@ -177,6 +203,14 @@ export class NativeHelperClient {
       pending.resolve(output.result);
       return;
     }
+    if (
+      output.type === "error" &&
+      output.requestId === this.configurationRequestId
+    ) {
+      this.clearConfigurationHandshake();
+      this.failChild(child, new Error(`${output.code}: ${output.message}`));
+      return;
+    }
     if (output.type === "error" && output.requestId !== undefined) {
       const pending = this.pendingCaptures.get(output.requestId);
       if (pending === undefined) return;
@@ -187,6 +221,7 @@ export class NativeHelperClient {
 
   private handleExit(child: ChildProcessWithoutNullStreams, error: Error) {
     if (child !== this.child) return;
+    this.clearConfigurationHandshake();
     this.outputLines?.close();
     this.outputLines = undefined;
     this.child = undefined;
@@ -197,8 +232,7 @@ export class NativeHelperClient {
       this.finishStopped();
       return;
     }
-    const maximum = this.options.maxRestarts ?? 3;
-    if (this.restartCount >= maximum) {
+    if (this.restartCount >= this.options.maxRestarts) {
       this.desiredRunning = false;
       this.notifyLifecycle("degraded");
       this.rejectFirstStart?.(error);
@@ -213,11 +247,12 @@ export class NativeHelperClient {
         this.restartTimer = undefined;
         this.launch("starting");
       },
-      this.options.restartDelayMilliseconds ?? 500,
+      this.options.restartDelayMilliseconds,
     );
   }
 
   private finishStopped() {
+    this.clearConfigurationHandshake();
     this.outputLines?.close();
     this.outputLines = undefined;
     this.child = undefined;
@@ -232,5 +267,19 @@ export class NativeHelperClient {
     if (this.lifecycle === state) return;
     this.lifecycle = state;
     this.options.onLifecycle?.(state);
+  }
+
+  private clearConfigurationHandshake() {
+    if (this.configurationTimer !== undefined) {
+      clearTimeout(this.configurationTimer);
+      this.configurationTimer = undefined;
+    }
+    this.configurationRequestId = undefined;
+  }
+
+  private failChild(child: ChildProcessWithoutNullStreams, error: Error) {
+    if (child !== this.child) return;
+    this.handleExit(child, error);
+    if (child.exitCode === null) child.kill();
   }
 }

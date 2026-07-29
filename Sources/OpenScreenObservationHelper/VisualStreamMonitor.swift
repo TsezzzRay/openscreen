@@ -18,7 +18,11 @@ final class VisualStreamMonitor {
         self.writer = writer
     }
 
-    func restart(for window: WindowMetadata?) {
+    func restart(
+        for window: WindowMetadata?,
+        configuration nativeConfiguration:
+            NativeObservationConfiguration.VisualMonitoring
+    ) {
         stop()
         guard let window, let windowIdentifier = window.windowIdentifier else {
             return
@@ -43,7 +47,11 @@ final class VisualStreamMonitor {
                     return
                 }
                 let configuration = SCStreamConfiguration()
-                let scale = min(1, 320 / max(1, captureWindow.frame.width))
+                let scale = min(
+                    1,
+                    CGFloat(nativeConfiguration.maxWidth)
+                        / max(1, captureWindow.frame.width)
+                )
                 configuration.width = max(
                     1,
                     Int((captureWindow.frame.width * scale).rounded())
@@ -52,12 +60,18 @@ final class VisualStreamMonitor {
                     1,
                     Int((captureWindow.frame.height * scale).rounded())
                 )
-                configuration.minimumFrameInterval = CMTime(value: 1, timescale: 2)
-                configuration.queueDepth = 2
+                configuration.minimumFrameInterval = CMTime(
+                    value: Int64(nativeConfiguration.sampleIntervalMilliseconds),
+                    timescale: 1_000
+                )
+                configuration.queueDepth = nativeConfiguration.queueDepth
                 configuration.pixelFormat = kCVPixelFormatType_32BGRA
                 configuration.showsCursor = false
 
-                let receiver = VisualFrameReceiver(window: window) { [writer] signal in
+                let receiver = VisualFrameReceiver(
+                    window: window,
+                    configuration: nativeConfiguration
+                ) { [writer] signal in
                     writer.write(.activity(signal))
                 }
                 let stream = SCStream(
@@ -104,17 +118,18 @@ final class VisualStreamMonitor {
 }
 
 private final class VisualFrameReceiver: NSObject, SCStreamOutput, @unchecked Sendable {
-    private static let changeThreshold = 0.015
-
     private let window: WindowMetadata
+    private let configuration: NativeObservationConfiguration.VisualMonitoring
     private let emit: @Sendable (NativeActivitySignal) -> Void
     private var previousSignature: [UInt8]?
 
     init(
         window: WindowMetadata,
+        configuration: NativeObservationConfiguration.VisualMonitoring,
         emit: @escaping @Sendable (NativeActivitySignal) -> Void
     ) {
         self.window = window
+        self.configuration = configuration
         self.emit = emit
     }
 
@@ -130,7 +145,10 @@ private final class VisualFrameReceiver: NSObject, SCStreamOutput, @unchecked Se
         else {
             return
         }
-        let signature = VisualSignature.make(from: pixelBuffer)
+        let signature = VisualSignature.make(
+            from: pixelBuffer,
+            configuration: configuration
+        )
         guard !signature.isEmpty else {
             return
         }
@@ -139,7 +157,8 @@ private final class VisualFrameReceiver: NSObject, SCStreamOutput, @unchecked Se
         }
         guard
             let previousSignature,
-            VisualSignature.distance(previousSignature, signature) >= Self.changeThreshold
+            VisualSignature.distance(previousSignature, signature)
+                >= configuration.changeThreshold
         else {
             return
         }

@@ -6,12 +6,13 @@ import type {
   NativeActivityKind,
   NativeActivitySignal,
   NativeCaptureResult,
+  NativeHelperConfiguration,
   ScreenshotCapture,
   WindowFrame,
   WindowMetadata,
 } from "./types.js";
 
-const PROTOCOL_VERSION = 1;
+export const HELPER_PROTOCOL_VERSION = 2 as const;
 const ACTIVITY_KINDS = new Set<NativeActivityKind>([
   "applicationActivated",
   "focusedWindowChanged",
@@ -32,12 +33,13 @@ const CAPTURE_STATUSES = new Set<CaptureStatus>([
 ]);
 
 export type HelperCommand = {
-  protocolVersion: 1;
+  protocolVersion: typeof HELPER_PROTOCOL_VERSION;
   requestId: string;
 } & ({
   type: "configure";
   excludedProcessIdentifiers: number[];
   excludedBundleIdentifiers: string[];
+  configuration: NativeHelperConfiguration;
 } | {
   type: "capture";
   signal: NativeActivitySignal;
@@ -46,7 +48,7 @@ export type HelperCommand = {
 });
 
 export type HelperOutput = {
-  protocolVersion: 1;
+  protocolVersion: typeof HELPER_PROTOCOL_VERSION;
 } & ({
   type: "ready";
   processIdentifier: number;
@@ -254,22 +256,34 @@ export function parseHelperOutput(line: string): HelperOutput {
   } catch {
     return invalid();
   }
-  if (integer(value.protocolVersion) !== PROTOCOL_VERSION) {
+  if (integer(value.protocolVersion) !== HELPER_PROTOCOL_VERSION) {
     throw new Error("Unsupported helper protocol version");
   }
   const type = text(value.type);
   if (type === "ready") {
-    return { protocolVersion: 1, type, processIdentifier: integer(value.processIdentifier) };
+    return {
+      protocolVersion: HELPER_PROTOCOL_VERSION,
+      type,
+      processIdentifier: integer(value.processIdentifier),
+    };
   }
   if (type === "configured") {
-    return { protocolVersion: 1, type, requestId: text(value.requestId) };
+    return {
+      protocolVersion: HELPER_PROTOCOL_VERSION,
+      type,
+      requestId: text(value.requestId),
+    };
   }
   if (type === "signal") {
-    return { protocolVersion: 1, type, signal: activitySignal(value.signal) };
+    return {
+      protocolVersion: HELPER_PROTOCOL_VERSION,
+      type,
+      signal: activitySignal(value.signal),
+    };
   }
   if (type === "captureResult") {
     return {
-      protocolVersion: 1,
+      protocolVersion: HELPER_PROTOCOL_VERSION,
       type,
       requestId: text(value.requestId),
       result: captureResult(value.result),
@@ -283,7 +297,7 @@ export function parseHelperOutput(line: string): HelperOutput {
       !["ready", "degraded", "stopped"].includes(helperStatus)
     ) invalid();
     return {
-      protocolVersion: 1,
+      protocolVersion: HELPER_PROTOCOL_VERSION,
       type,
       component: component as Extract<HelperOutput, { type: "status" }>["component"],
       status: helperStatus as Extract<HelperOutput, { type: "status" }>["status"],
@@ -292,7 +306,7 @@ export function parseHelperOutput(line: string): HelperOutput {
   }
   if (type === "error") {
     return {
-      protocolVersion: 1,
+      protocolVersion: HELPER_PROTOCOL_VERSION,
       type,
       requestId: optionalText(value.requestId),
       code: text(value.code),

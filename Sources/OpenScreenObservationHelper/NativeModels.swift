@@ -13,6 +13,40 @@ enum NativeActivityKind: String, Codable, Sendable {
     case wake
 }
 
+struct NativeObservationConfiguration: Codable, Equatable, Sendable {
+    struct Accessibility: Codable, Equatable, Sendable {
+        let maxDepth: Int
+        let maxNodes: Int
+        let timeoutMilliseconds: Int
+        let maxTextLength: Int
+    }
+
+    struct Screenshot: Codable, Equatable, Sendable {
+        let maxWidth: Int
+        let jpegQuality: Double
+    }
+
+    struct VisualMonitoring: Codable, Equatable, Sendable {
+        let maxWidth: Int
+        let sampleIntervalMilliseconds: Int
+        let queueDepth: Int
+        let changeThreshold: Double
+        let signatureWidth: Int
+        let signatureHeight: Int
+    }
+
+    struct WindowSelection: Codable, Equatable, Sendable {
+        let minimumWidth: Int
+        let minimumHeight: Int
+        let maximumAspectRatio: Double
+    }
+
+    let accessibility: Accessibility
+    let screenshot: Screenshot
+    let visualMonitoring: VisualMonitoring
+    let windowSelection: WindowSelection
+}
+
 struct WindowFrame: Codable, Equatable, Sendable {
     let x: CGFloat
     let y: CGFloat

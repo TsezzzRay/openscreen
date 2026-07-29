@@ -4,21 +4,22 @@ import XCTest
 final class ObservationHelperTests: XCTestCase {
     func testHelperCommandDecodesConfiguration() throws {
         let line = """
-        {"protocolVersion":1,"requestId":"configure-1","type":"configure","excludedProcessIdentifiers":[10,20],"excludedBundleIdentifiers":["com.openscreen.app"]}
+        {"protocolVersion":2,"requestId":"configure-1","type":"configure","excludedProcessIdentifiers":[10,20],"excludedBundleIdentifiers":["com.openscreen.app"],"configuration":{"accessibility":{"maxDepth":40,"maxNodes":5000,"timeoutMilliseconds":2000,"maxTextLength":8192},"screenshot":{"maxWidth":1920,"jpegQuality":0.85},"visualMonitoring":{"maxWidth":320,"sampleIntervalMilliseconds":500,"queueDepth":2,"changeThreshold":0.015,"signatureWidth":32,"signatureHeight":18},"windowSelection":{"minimumWidth":160,"minimumHeight":120,"maximumAspectRatio":4}}}
         """
 
         let command = try HelperCommand.decode(line)
 
-        XCTAssertEqual(command.protocolVersion, 1)
+        XCTAssertEqual(command.protocolVersion, 2)
         XCTAssertEqual(command.requestId, "configure-1")
         XCTAssertEqual(command.type, .configure)
         XCTAssertEqual(command.excludedProcessIdentifiers, [10, 20])
         XCTAssertEqual(command.excludedBundleIdentifiers, ["com.openscreen.app"])
+        XCTAssertEqual(command.configuration, testObservationConfiguration)
     }
 
     func testHelperCommandDecodesCaptureSignal() throws {
         let line = """
-        {"protocolVersion":1,"requestId":"capture-1","type":"capture","signal":{"kind":"mouseClick","occurredAt":"2026-07-27T00:00:00.000Z","window":{"processIdentifier":100,"bundleIdentifier":"com.example.Editor","applicationName":"Editor","windowIdentifier":7,"title":"Document","frame":{"x":0,"y":0,"width":1200,"height":800}}}}
+        {"protocolVersion":2,"requestId":"capture-1","type":"capture","signal":{"kind":"mouseClick","occurredAt":"2026-07-27T00:00:00.000Z","window":{"processIdentifier":100,"bundleIdentifier":"com.example.Editor","applicationName":"Editor","windowIdentifier":7,"title":"Document","frame":{"x":0,"y":0,"width":1200,"height":800}}}}
         """
 
         let command = try HelperCommand.decode(line)
@@ -35,7 +36,7 @@ final class ObservationHelperTests: XCTestCase {
             JSONSerialization.jsonObject(with: data) as? [String: Any]
         )
 
-        XCTAssertEqual(object["protocolVersion"] as? Int, 1)
+        XCTAssertEqual(object["protocolVersion"] as? Int, 2)
         XCTAssertEqual(object["type"] as? String, "ready")
         XCTAssertEqual(object["processIdentifier"] as? Int, 42)
         XCTAssertEqual(data.last, 0x0A)
@@ -116,13 +117,53 @@ final class ObservationHelperTests: XCTestCase {
             processIdentifier: processIdentifier,
             bundleIdentifier: "com.example.Editor",
             applicationName: "Editor",
-            from: windows
+            from: windows,
+            configuration: testObservationConfiguration.windowSelection
         )
 
         XCTAssertEqual(window?.windowIdentifier, 2)
         XCTAssertEqual(window?.title, "Document")
         XCTAssertEqual(window?.frame?.x, 100)
         XCTAssertEqual(window?.frame?.height, 800)
+    }
+
+    func testWindowResolverUsesConfiguredNormalWindowThresholds() {
+        let processIdentifier: pid_t = 42
+        let windows: [[String: Any]] = [
+            [
+                kCGWindowOwnerPID as String: processIdentifier,
+                kCGWindowLayer as String: 0,
+                kCGWindowNumber as String: CGWindowID(1),
+                kCGWindowBounds as String: [
+                    "Width": CGFloat(200),
+                    "Height": CGFloat(200),
+                ],
+            ],
+            [
+                kCGWindowOwnerPID as String: processIdentifier,
+                kCGWindowLayer as String: 0,
+                kCGWindowNumber as String: CGWindowID(2),
+                kCGWindowBounds as String: [
+                    "Width": CGFloat(1200),
+                    "Height": CGFloat(800),
+                ],
+            ],
+        ]
+        let strictSelection = NativeObservationConfiguration.WindowSelection(
+            minimumWidth: 1300,
+            minimumHeight: 120,
+            maximumAspectRatio: 4
+        )
+
+        let window = WindowResolver.selectWindow(
+            processIdentifier: processIdentifier,
+            bundleIdentifier: nil,
+            applicationName: "Editor",
+            from: windows,
+            configuration: strictSelection
+        )
+
+        XCTAssertEqual(window?.windowIdentifier, 1)
     }
 
     func testVisualSignatureDownsamplesBGRAFramesToGrayscale() {
@@ -160,3 +201,26 @@ final class ObservationHelperTests: XCTestCase {
         XCTAssertEqual(budget.nodeCount, 2)
     }
 }
+
+private let testObservationConfiguration = NativeObservationConfiguration(
+    accessibility: .init(
+        maxDepth: 40,
+        maxNodes: 5_000,
+        timeoutMilliseconds: 2_000,
+        maxTextLength: 8_192
+    ),
+    screenshot: .init(maxWidth: 1_920, jpegQuality: 0.85),
+    visualMonitoring: .init(
+        maxWidth: 320,
+        sampleIntervalMilliseconds: 500,
+        queueDepth: 2,
+        changeThreshold: 0.015,
+        signatureWidth: 32,
+        signatureHeight: 18
+    ),
+    windowSelection: .init(
+        minimumWidth: 160,
+        minimumHeight: 120,
+        maximumAspectRatio: 4
+    )
+)

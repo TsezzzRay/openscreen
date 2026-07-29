@@ -61,9 +61,9 @@ async function run() {
     "sessions",
   );
   const lines = createInterface({ input: process.stdin, crlfDelay: Infinity });
-  const observationRuntime = process.env.OPENSCREEN_OBSERVATION_HELPER_PATH === undefined
-    ? undefined
-    : new ScreenObservationRuntime();
+  const observationRuntime = config.screenObservation.enabled
+    ? new ScreenObservationRuntime({ config: config.screenObservation })
+    : undefined;
   void observationRuntime?.start().catch((error) => {
     process.stderr.write(
       `OpenScreen observation unavailable: ${

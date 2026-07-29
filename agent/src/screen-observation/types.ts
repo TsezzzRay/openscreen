@@ -9,6 +9,62 @@ export type NativeActivityKind =
   | "spaceChanged"
   | "wake";
 
+export type ScreenObservationConfig = {
+  enabled: boolean;
+  scheduling: {
+    tickIntervalMilliseconds: number;
+    ordinaryCaptureGapMilliseconds: number;
+    delaysMilliseconds: {
+      mouseClick: number;
+      focusedElementChanged: number;
+      keyActivity: number;
+      accessibilityChanged: number;
+      visualChanged: number;
+    };
+    capsMilliseconds: {
+      keyActivity: number;
+      visualChanged: number;
+    };
+  };
+  deduplication: {
+    visualDifferenceThreshold: number;
+  };
+  helperLifecycle: {
+    maxRestarts: number;
+    restartDelayMilliseconds: number;
+    configurationTimeoutMilliseconds: number;
+    shutdownTimeoutMilliseconds: number;
+  };
+  accessibility: {
+    maxDepth: number;
+    maxNodes: number;
+    timeoutMilliseconds: number;
+    maxTextLength: number;
+  };
+  screenshot: {
+    maxWidth: number;
+    jpegQuality: number;
+  };
+  visualMonitoring: {
+    maxWidth: number;
+    sampleIntervalMilliseconds: number;
+    queueDepth: number;
+    changeThreshold: number;
+    signatureWidth: number;
+    signatureHeight: number;
+  };
+  windowSelection: {
+    minimumWidth: number;
+    minimumHeight: number;
+    maximumAspectRatio: number;
+  };
+};
+
+export type NativeHelperConfiguration = Pick<
+  ScreenObservationConfig,
+  "accessibility" | "screenshot" | "visualMonitoring" | "windowSelection"
+>;
+
 export type WindowFrame = {
   x: number;
   y: number;

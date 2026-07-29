@@ -2,6 +2,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { loadEnvFile } from "node:process";
 
+import type { ScreenObservationConfig } from "./screen-observation/types.js";
+
 export type RuntimeConfig = {
   apiKey: string;
   model: string;
@@ -27,6 +29,7 @@ export type RuntimeConfig = {
     maxInputTokens: number;
     maxOutputTokens: number;
   };
+  screenObservation: ScreenObservationConfig;
 };
 
 const contextOverrides = {
@@ -88,6 +91,258 @@ function numericSection(
       positiveInteger(env[envName] ?? file[setting], `${name}.${setting}`),
     ]),
   );
+}
+
+function nonNegativeInteger(value: unknown, name: string) {
+  if (
+    typeof value !== "number" ||
+    !Number.isSafeInteger(value) ||
+    value < 0
+  ) {
+    throw new Error(`${name} must be a non-negative integer`);
+  }
+  return value;
+}
+
+function positiveJSONInteger(value: unknown, name: string) {
+  if (
+    typeof value !== "number" ||
+    !Number.isSafeInteger(value) ||
+    value <= 0
+  ) {
+    throw new Error(`${name} must be a positive integer`);
+  }
+  return value;
+}
+
+function jsonIntegerInRange(
+  value: unknown,
+  name: string,
+  minimum: number,
+  maximum: number,
+) {
+  if (
+    typeof value !== "number" ||
+    !Number.isSafeInteger(value) ||
+    value < minimum ||
+    value > maximum
+  ) {
+    throw new Error(`${name} must be between ${minimum} and ${maximum}`);
+  }
+  return value;
+}
+
+function boolean(value: unknown, name: string) {
+  if (typeof value !== "boolean") {
+    throw new Error(`${name} must be a boolean`);
+  }
+  return value;
+}
+
+function numberInRange(
+  value: unknown,
+  name: string,
+  minimum: number,
+  maximum: number,
+) {
+  if (
+    typeof value !== "number" ||
+    !Number.isFinite(value) ||
+    value < minimum ||
+    value > maximum
+  ) {
+    throw new Error(`${name} must be between ${minimum} and ${maximum}`);
+  }
+  return value;
+}
+
+function numberAtLeast(value: unknown, name: string, minimum: number) {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < minimum) {
+    throw new Error(`${name} must be at least ${minimum}`);
+  }
+  return value;
+}
+
+function loadScreenObservationConfig(value: unknown): ScreenObservationConfig {
+  const root = object(value, "screenObservation");
+  const scheduling = object(root.scheduling, "screenObservation.scheduling");
+  const delays = object(
+    scheduling.delaysMilliseconds,
+    "screenObservation.scheduling.delaysMilliseconds",
+  );
+  const caps = object(
+    scheduling.capsMilliseconds,
+    "screenObservation.scheduling.capsMilliseconds",
+  );
+  const deduplication = object(
+    root.deduplication,
+    "screenObservation.deduplication",
+  );
+  const helperLifecycle = object(
+    root.helperLifecycle,
+    "screenObservation.helperLifecycle",
+  );
+  const accessibility = object(root.accessibility, "screenObservation.accessibility");
+  const screenshot = object(root.screenshot, "screenObservation.screenshot");
+  const visualMonitoring = object(
+    root.visualMonitoring,
+    "screenObservation.visualMonitoring",
+  );
+  const windowSelection = object(
+    root.windowSelection,
+    "screenObservation.windowSelection",
+  );
+
+  return {
+    enabled: boolean(root.enabled, "screenObservation.enabled"),
+    scheduling: {
+      tickIntervalMilliseconds: positiveJSONInteger(
+        scheduling.tickIntervalMilliseconds,
+        "screenObservation.scheduling.tickIntervalMilliseconds",
+      ),
+      ordinaryCaptureGapMilliseconds: nonNegativeInteger(
+        scheduling.ordinaryCaptureGapMilliseconds,
+        "screenObservation.scheduling.ordinaryCaptureGapMilliseconds",
+      ),
+      delaysMilliseconds: {
+        mouseClick: nonNegativeInteger(
+          delays.mouseClick,
+          "screenObservation.scheduling.delaysMilliseconds.mouseClick",
+        ),
+        focusedElementChanged: nonNegativeInteger(
+          delays.focusedElementChanged,
+          "screenObservation.scheduling.delaysMilliseconds.focusedElementChanged",
+        ),
+        keyActivity: nonNegativeInteger(
+          delays.keyActivity,
+          "screenObservation.scheduling.delaysMilliseconds.keyActivity",
+        ),
+        accessibilityChanged: nonNegativeInteger(
+          delays.accessibilityChanged,
+          "screenObservation.scheduling.delaysMilliseconds.accessibilityChanged",
+        ),
+        visualChanged: nonNegativeInteger(
+          delays.visualChanged,
+          "screenObservation.scheduling.delaysMilliseconds.visualChanged",
+        ),
+      },
+      capsMilliseconds: {
+        keyActivity: positiveJSONInteger(
+          caps.keyActivity,
+          "screenObservation.scheduling.capsMilliseconds.keyActivity",
+        ),
+        visualChanged: positiveJSONInteger(
+          caps.visualChanged,
+          "screenObservation.scheduling.capsMilliseconds.visualChanged",
+        ),
+      },
+    },
+    deduplication: {
+      visualDifferenceThreshold: numberInRange(
+        deduplication.visualDifferenceThreshold,
+        "screenObservation.deduplication.visualDifferenceThreshold",
+        0,
+        1,
+      ),
+    },
+    helperLifecycle: {
+      maxRestarts: nonNegativeInteger(
+        helperLifecycle.maxRestarts,
+        "screenObservation.helperLifecycle.maxRestarts",
+      ),
+      restartDelayMilliseconds: nonNegativeInteger(
+        helperLifecycle.restartDelayMilliseconds,
+        "screenObservation.helperLifecycle.restartDelayMilliseconds",
+      ),
+      configurationTimeoutMilliseconds: positiveJSONInteger(
+        helperLifecycle.configurationTimeoutMilliseconds,
+        "screenObservation.helperLifecycle.configurationTimeoutMilliseconds",
+      ),
+      shutdownTimeoutMilliseconds: positiveJSONInteger(
+        helperLifecycle.shutdownTimeoutMilliseconds,
+        "screenObservation.helperLifecycle.shutdownTimeoutMilliseconds",
+      ),
+    },
+    accessibility: {
+      maxDepth: nonNegativeInteger(
+        accessibility.maxDepth,
+        "screenObservation.accessibility.maxDepth",
+      ),
+      maxNodes: positiveJSONInteger(
+        accessibility.maxNodes,
+        "screenObservation.accessibility.maxNodes",
+      ),
+      timeoutMilliseconds: positiveJSONInteger(
+        accessibility.timeoutMilliseconds,
+        "screenObservation.accessibility.timeoutMilliseconds",
+      ),
+      maxTextLength: positiveJSONInteger(
+        accessibility.maxTextLength,
+        "screenObservation.accessibility.maxTextLength",
+      ),
+    },
+    screenshot: {
+      maxWidth: positiveJSONInteger(
+        screenshot.maxWidth,
+        "screenObservation.screenshot.maxWidth",
+      ),
+      jpegQuality: numberInRange(
+        screenshot.jpegQuality,
+        "screenObservation.screenshot.jpegQuality",
+        0,
+        1,
+      ),
+    },
+    visualMonitoring: {
+      maxWidth: positiveJSONInteger(
+        visualMonitoring.maxWidth,
+        "screenObservation.visualMonitoring.maxWidth",
+      ),
+      sampleIntervalMilliseconds: positiveJSONInteger(
+        visualMonitoring.sampleIntervalMilliseconds,
+        "screenObservation.visualMonitoring.sampleIntervalMilliseconds",
+      ),
+      queueDepth: jsonIntegerInRange(
+        visualMonitoring.queueDepth,
+        "screenObservation.visualMonitoring.queueDepth",
+        1,
+        8,
+      ),
+      changeThreshold: numberInRange(
+        visualMonitoring.changeThreshold,
+        "screenObservation.visualMonitoring.changeThreshold",
+        0,
+        1,
+      ),
+      signatureWidth: jsonIntegerInRange(
+        visualMonitoring.signatureWidth,
+        "screenObservation.visualMonitoring.signatureWidth",
+        1,
+        256,
+      ),
+      signatureHeight: jsonIntegerInRange(
+        visualMonitoring.signatureHeight,
+        "screenObservation.visualMonitoring.signatureHeight",
+        1,
+        256,
+      ),
+    },
+    windowSelection: {
+      minimumWidth: positiveJSONInteger(
+        windowSelection.minimumWidth,
+        "screenObservation.windowSelection.minimumWidth",
+      ),
+      minimumHeight: positiveJSONInteger(
+        windowSelection.minimumHeight,
+        "screenObservation.windowSelection.minimumHeight",
+      ),
+      maximumAspectRatio: numberAtLeast(
+        windowSelection.maximumAspectRatio,
+        "screenObservation.windowSelection.maximumAspectRatio",
+        1,
+      ),
+    },
+  };
 }
 
 export function loadRuntimeConfig(
@@ -167,5 +422,6 @@ export function loadRuntimeConfig(
     session,
     timeline,
     memory,
+    screenObservation: loadScreenObservationConfig(file.screenObservation),
   };
 }

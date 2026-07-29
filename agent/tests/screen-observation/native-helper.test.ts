@@ -5,7 +5,36 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { NativeHelperClient } from "../../src/screen-observation/native-helper.js";
-import type { NativeActivitySignal } from "../../src/screen-observation/types.js";
+import type {
+  NativeActivitySignal,
+  NativeHelperConfiguration,
+} from "../../src/screen-observation/types.js";
+
+const configuration = {
+  accessibility: {
+    maxDepth: 40,
+    maxNodes: 5_000,
+    timeoutMilliseconds: 2_000,
+    maxTextLength: 8_192,
+  },
+  screenshot: {
+    maxWidth: 1_920,
+    jpegQuality: 0.85,
+  },
+  visualMonitoring: {
+    maxWidth: 320,
+    sampleIntervalMilliseconds: 500,
+    queueDepth: 2,
+    changeThreshold: 0.015,
+    signatureWidth: 32,
+    signatureHeight: 18,
+  },
+  windowSelection: {
+    minimumWidth: 160,
+    minimumHeight: 120,
+    maximumAspectRatio: 4,
+  },
+} satisfies NativeHelperConfiguration;
 
 const testSignal: NativeActivitySignal = {
   kind: "focusedWindowChanged",
@@ -22,7 +51,7 @@ const testSignal: NativeActivitySignal = {
 const helperSource = `
 import { createInterface } from "node:readline";
 process.stdout.write(JSON.stringify({
-  protocolVersion: 1,
+  protocolVersion: 2,
   type: "ready",
   processIdentifier: process.pid,
 }) + "\\n");
@@ -30,20 +59,21 @@ const lines = createInterface({ input: process.stdin, crlfDelay: Infinity });
 for await (const line of lines) {
   const command = JSON.parse(line);
   if (command.type === "configure") {
+    if (command.configuration.accessibility.maxDepth !== 40) process.exit(2);
     process.stdout.write(JSON.stringify({
-      protocolVersion: 1,
+      protocolVersion: 2,
       requestId: command.requestId,
       type: "configured",
     }) + "\\n");
     process.stdout.write(JSON.stringify({
-      protocolVersion: 1,
+      protocolVersion: 2,
       type: "signal",
       signal: ${JSON.stringify(testSignal)},
     }) + "\\n");
   }
   if (command.type === "capture") {
     process.stdout.write(JSON.stringify({
-      protocolVersion: 1,
+      protocolVersion: 2,
       requestId: command.requestId,
       type: "captureResult",
       result: {
@@ -86,6 +116,11 @@ test("starts, configures, captures, forwards signals, and stops a helper process
     arguments: [helperPath],
     excludedProcessIdentifiers: [10, 20],
     excludedBundleIdentifiers: ["com.openscreen.app"],
+    configuration,
+    maxRestarts: 3,
+    restartDelayMilliseconds: 500,
+    configurationTimeoutMilliseconds: 2_000,
+    shutdownTimeoutMilliseconds: 500,
     onSignal: (signal) => signals.push(signal),
     onLifecycle: (state) => states.push(state),
   });
@@ -115,14 +150,14 @@ test("restarts a crashed helper only up to the configured limit", async (t) => {
     try { count = Number(readFileSync(path, "utf8")); } catch {}
     writeFileSync(path, String(count + 1));
     process.stdout.write(JSON.stringify({
-      protocolVersion: 1,
+      protocolVersion: 2,
       type: "ready",
       processIdentifier: process.pid,
     }) + "\\n");
     process.stdin.once("data", (data) => {
       const command = JSON.parse(String(data).trim());
       process.stdout.write(JSON.stringify({
-        protocolVersion: 1,
+        protocolVersion: 2,
         requestId: command.requestId,
         type: "configured",
       }) + "\\n");
@@ -136,8 +171,11 @@ test("restarts a crashed helper only up to the configured limit", async (t) => {
     environment: { ...process.env, HELPER_COUNT_PATH: countPath },
     excludedProcessIdentifiers: [],
     excludedBundleIdentifiers: [],
+    configuration,
     maxRestarts: 2,
     restartDelayMilliseconds: 1,
+    configurationTimeoutMilliseconds: 2_000,
+    shutdownTimeoutMilliseconds: 500,
     onSignal: () => {},
     onLifecycle: (state) => states.push(state),
   });
@@ -150,6 +188,93 @@ test("restarts a crashed helper only up to the configured limit", async (t) => {
   assert.equal(await readFile(countPath, "utf8"), "3");
   assert.equal(states.filter((state) => state === "restarting").length, 2);
   assert.equal(client.running, false);
+});
+
+test("rejects startup when the helper rejects configuration", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "openscreen-helper-config-error-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const helperPath = join(directory, "rejecting-helper.mjs");
+  await writeFile(helperPath, `
+    import { createInterface } from "node:readline";
+    process.stdout.write(JSON.stringify({
+      protocolVersion: 2,
+      type: "ready",
+      processIdentifier: process.pid,
+    }) + "\\n");
+    const lines = createInterface({ input: process.stdin, crlfDelay: Infinity });
+    for await (const line of lines) {
+      const command = JSON.parse(line);
+      process.stdout.write(JSON.stringify({
+        protocolVersion: 2,
+        type: "error",
+        requestId: command.requestId,
+        code: "invalid_configuration",
+        message: "Configuration rejected",
+      }) + "\\n");
+    }
+  `);
+  const client = new NativeHelperClient({
+    command: process.execPath,
+    arguments: [helperPath],
+    excludedProcessIdentifiers: [],
+    excludedBundleIdentifiers: [],
+    configuration,
+    maxRestarts: 0,
+    restartDelayMilliseconds: 1,
+    configurationTimeoutMilliseconds: 200,
+    shutdownTimeoutMilliseconds: 100,
+    onSignal: () => {},
+  });
+  t.after(() => client.stop());
+
+  await assert.rejects(
+    Promise.race([
+      client.start(),
+      new Promise<void>((_, reject) => setTimeout(
+        () => reject(new Error("Test timed out waiting for configuration rejection")),
+        2_000,
+      )),
+    ]),
+    /invalid_configuration: Configuration rejected/,
+  );
+});
+
+test("times out a helper that never acknowledges configuration", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "openscreen-helper-config-timeout-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const helperPath = join(directory, "silent-helper.mjs");
+  await writeFile(helperPath, `
+    process.stdout.write(JSON.stringify({
+      protocolVersion: 2,
+      type: "ready",
+      processIdentifier: process.pid,
+    }) + "\\n");
+    process.stdin.resume();
+  `);
+  const client = new NativeHelperClient({
+    command: process.execPath,
+    arguments: [helperPath],
+    excludedProcessIdentifiers: [],
+    excludedBundleIdentifiers: [],
+    configuration,
+    maxRestarts: 0,
+    restartDelayMilliseconds: 1,
+    configurationTimeoutMilliseconds: 20,
+    shutdownTimeoutMilliseconds: 100,
+    onSignal: () => {},
+  });
+  t.after(() => client.stop());
+
+  await assert.rejects(
+    Promise.race([
+      client.start(),
+      new Promise<void>((_, reject) => setTimeout(
+        () => reject(new Error("Test timed out waiting for helper timeout")),
+        2_000,
+      )),
+    ]),
+    /configuration timed out/,
+  );
 });
 
 async function waitFor(check: () => boolean | Promise<boolean>) {

@@ -3,16 +3,13 @@ import CoreVideo
 import Foundation
 
 enum VisualSignature {
-    static let width = 32
-    static let height = 18
-
     static func make(
         bgraBytes: [UInt8],
         width: Int,
         height: Int,
         bytesPerRow: Int,
-        outputWidth: Int = width,
-        outputHeight: Int = height
+        outputWidth: Int,
+        outputHeight: Int
     ) -> [UInt8] {
         guard
             width > 0,
@@ -41,7 +38,12 @@ enum VisualSignature {
         return output
     }
 
-    static func make(from image: CGImage) -> [UInt8] {
+    static func make(
+        from image: CGImage,
+        configuration: NativeObservationConfiguration.VisualMonitoring
+    ) -> [UInt8] {
+        let width = configuration.signatureWidth
+        let height = configuration.signatureHeight
         let bytesPerRow = width * 4
         var bytes = [UInt8](repeating: 0, count: bytesPerRow * height)
         guard let context = CGContext(
@@ -62,11 +64,16 @@ enum VisualSignature {
             bgraBytes: bytes,
             width: width,
             height: height,
-            bytesPerRow: bytesPerRow
+            bytesPerRow: bytesPerRow,
+            outputWidth: width,
+            outputHeight: height
         )
     }
 
-    static func make(from pixelBuffer: CVPixelBuffer) -> [UInt8] {
+    static func make(
+        from pixelBuffer: CVPixelBuffer,
+        configuration: NativeObservationConfiguration.VisualMonitoring
+    ) -> [UInt8] {
         CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
         defer {
             CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly)
@@ -89,8 +96,8 @@ enum VisualSignature {
             width: sourceWidth,
             height: sourceHeight,
             bytesPerRow: sourceBytesPerRow,
-            outputWidth: width,
-            outputHeight: height
+            outputWidth: configuration.signatureWidth,
+            outputHeight: configuration.signatureHeight
         )
     }
 

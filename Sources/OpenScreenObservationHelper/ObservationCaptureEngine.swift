@@ -17,15 +17,26 @@ enum ObservationCaptureEngine {
     @MainActor
     static func capture(
         signal: NativeActivitySignal,
-        excluding filter: SelfCaptureFilter
+        excluding filter: SelfCaptureFilter,
+        configuration: NativeObservationConfiguration
     ) async throws -> NativeCaptureResult {
-        guard let window = WindowResolver.currentWindow(excluding: filter) else {
+        guard let window = WindowResolver.currentWindow(
+            excluding: filter,
+            configuration: configuration.windowSelection
+        ) else {
             throw ObservationCaptureError.noExternalFrontmostWindow
         }
 
-        async let screenshotResult = captureScreenshot(window: window)
+        async let screenshotResult = captureScreenshot(
+            window: window,
+            screenshotConfiguration: configuration.screenshot,
+            visualConfiguration: configuration.visualMonitoring
+        )
         async let accessibilityResult = Task.detached(priority: .utility) {
-            AccessibilitySnapshotter.capture(window: window)
+            AccessibilitySnapshotter.capture(
+                window: window,
+                configuration: configuration.accessibility
+            )
         }.value
         let (screenshot, visualSignature) = await screenshotResult
         let accessibility = await accessibilityResult
@@ -40,7 +51,9 @@ enum ObservationCaptureEngine {
     }
 
     private static func captureScreenshot(
-        window: WindowMetadata
+        window: WindowMetadata,
+        screenshotConfiguration: NativeObservationConfiguration.Screenshot,
+        visualConfiguration: NativeObservationConfiguration.VisualMonitoring
     ) async -> (ScreenshotCapture, [UInt8]?) {
         let startedAt = Date()
         guard CGPreflightScreenCaptureAccess() else {
@@ -91,7 +104,11 @@ enum ObservationCaptureEngine {
                 )
             }
             let configuration = SCStreamConfiguration()
-            let scale = min(1, 1_920 / max(1, captureWindow.frame.width))
+            let scale = min(
+                1,
+                CGFloat(screenshotConfiguration.maxWidth)
+                    / max(1, captureWindow.frame.width)
+            )
             configuration.width = max(
                 1,
                 Int((captureWindow.frame.width * scale).rounded())
@@ -108,7 +125,9 @@ enum ObservationCaptureEngine {
             )
             guard let jpeg = NSBitmapImageRep(cgImage: image).representation(
                 using: .jpeg,
-                properties: [.compressionFactor: 0.85]
+                properties: [
+                    .compressionFactor: screenshotConfiguration.jpegQuality
+                ]
             ) else {
                 throw CocoaError(.fileWriteUnknown)
             }
@@ -121,7 +140,10 @@ enum ObservationCaptureEngine {
                     width: image.width,
                     height: image.height
                 ),
-                VisualSignature.make(from: image)
+                VisualSignature.make(
+                    from: image,
+                    configuration: visualConfiguration
+                )
             )
         } catch {
             FileHandle.standardError.write(

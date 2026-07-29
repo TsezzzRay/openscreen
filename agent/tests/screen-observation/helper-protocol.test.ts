@@ -5,23 +5,50 @@ import {
   encodeHelperCommand,
   parseHelperOutput,
 } from "../../src/screen-observation/helper-protocol.js";
+import type { NativeHelperConfiguration } from "../../src/screen-observation/types.js";
+
+const configuration = {
+  accessibility: {
+    maxDepth: 40,
+    maxNodes: 5_000,
+    timeoutMilliseconds: 2_000,
+    maxTextLength: 8_192,
+  },
+  screenshot: {
+    maxWidth: 1_920,
+    jpegQuality: 0.85,
+  },
+  visualMonitoring: {
+    maxWidth: 320,
+    sampleIntervalMilliseconds: 500,
+    queueDepth: 2,
+    changeThreshold: 0.015,
+    signatureWidth: 32,
+    signatureHeight: 18,
+  },
+  windowSelection: {
+    minimumWidth: 160,
+    minimumHeight: 120,
+    maximumAspectRatio: 4,
+  },
+} satisfies NativeHelperConfiguration;
 
 test("parses helper readiness and activity signals", () => {
   assert.deepEqual(
     parseHelperOutput(JSON.stringify({
-      protocolVersion: 1,
+      protocolVersion: 2,
       type: "ready",
       processIdentifier: 42,
     })),
     {
-      protocolVersion: 1,
+      protocolVersion: 2,
       type: "ready",
       processIdentifier: 42,
     },
   );
 
   const output = parseHelperOutput(JSON.stringify({
-    protocolVersion: 1,
+    protocolVersion: 2,
     type: "signal",
     signal: {
       kind: "focusedWindowChanged",
@@ -46,7 +73,7 @@ test("parses helper readiness and activity signals", () => {
 
 test("parses partial capture results without treating missing artifacts as success", () => {
   const output = parseHelperOutput(JSON.stringify({
-    protocolVersion: 1,
+    protocolVersion: 2,
     requestId: "capture-1",
     type: "captureResult",
     result: {
@@ -84,7 +111,7 @@ test("parses partial capture results without treating missing artifacts as succe
 
 test("normalizes empty optional AX strings from real applications", () => {
   const output = parseHelperOutput(JSON.stringify({
-    protocolVersion: 1,
+    protocolVersion: 2,
     requestId: "capture-1",
     type: "captureResult",
     result: {
@@ -127,26 +154,28 @@ test("normalizes empty optional AX strings from real applications", () => {
 
 test("encodes configuration and capture commands as newline-delimited JSON", () => {
   const configured = encodeHelperCommand({
-    protocolVersion: 1,
+    protocolVersion: 2,
     requestId: "configure-1",
     type: "configure",
     excludedProcessIdentifiers: [10, 20],
     excludedBundleIdentifiers: ["com.openscreen.app"],
+    configuration,
   });
   assert.equal(configured.endsWith("\n"), true);
   assert.deepEqual(JSON.parse(configured), {
-    protocolVersion: 1,
+    protocolVersion: 2,
     requestId: "configure-1",
     type: "configure",
     excludedProcessIdentifiers: [10, 20],
     excludedBundleIdentifiers: ["com.openscreen.app"],
+    configuration,
   });
 });
 
 test("rejects unsupported versions and malformed helper messages", () => {
   assert.throws(
     () => parseHelperOutput(JSON.stringify({
-      protocolVersion: 2,
+      protocolVersion: 1,
       type: "ready",
       processIdentifier: 42,
     })),
@@ -154,7 +183,7 @@ test("rejects unsupported versions and malformed helper messages", () => {
   );
   assert.throws(
     () => parseHelperOutput(JSON.stringify({
-      protocolVersion: 1,
+      protocolVersion: 2,
       type: "signal",
       signal: { kind: "keyActivity" },
     })),

@@ -21,5 +21,55 @@
     "processingIntervalMinutes": 1440,
     "maxInputTokens": 244800,
     "maxOutputTokens": 4096
+  },
+  "screenObservation": {
+    "enabled": true,
+    "scheduling": {
+      "tickIntervalMilliseconds": 100,
+      "ordinaryCaptureGapMilliseconds": 2000,
+      "delaysMilliseconds": {
+        "mouseClick": 400,
+        "focusedElementChanged": 500,
+        "keyActivity": 1500,
+        "accessibilityChanged": 3000,
+        "visualChanged": 750
+      },
+      "capsMilliseconds": {
+        "keyActivity": 30000,
+        "visualChanged": 10000
+      }
+    },
+    "deduplication": {
+      "visualDifferenceThreshold": 0.08
+    },
+    "helperLifecycle": {
+      "maxRestarts": 3,
+      "restartDelayMilliseconds": 500,
+      "configurationTimeoutMilliseconds": 2000,
+      "shutdownTimeoutMilliseconds": 500
+    },
+    "accessibility": {
+      "maxDepth": 40,
+      "maxNodes": 5000,
+      "timeoutMilliseconds": 2000,
+      "maxTextLength": 8192
+    },
+    "screenshot": {
+      "maxWidth": 1920,
+      "jpegQuality": 0.85
+    },
+    "visualMonitoring": {
+      "maxWidth": 320,
+      "sampleIntervalMilliseconds": 500,
+      "queueDepth": 2,
+      "changeThreshold": 0.015,
+      "signatureWidth": 32,
+      "signatureHeight": 18
+    },
+    "windowSelection": {
+      "minimumWidth": 160,
+      "minimumHeight": 120,
+      "maximumAspectRatio": 4
+    }
   }
 }

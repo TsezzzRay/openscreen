@@ -10,8 +10,25 @@ import {
 import type {
   NativeActivitySignal,
   ObservationContentSignature,
+  ScreenObservationConfig,
   WindowMetadata,
 } from "../../src/screen-observation/types.js";
+
+const scheduling = {
+  tickIntervalMilliseconds: 100,
+  ordinaryCaptureGapMilliseconds: 2_000,
+  delaysMilliseconds: {
+    mouseClick: 400,
+    focusedElementChanged: 500,
+    keyActivity: 1_500,
+    accessibilityChanged: 3_000,
+    visualChanged: 750,
+  },
+  capsMilliseconds: {
+    keyActivity: 30_000,
+    visualChanged: 10_000,
+  },
+} satisfies ScreenObservationConfig["scheduling"];
 
 const windowA: WindowMetadata = {
   processIdentifier: 101,
@@ -34,7 +51,7 @@ function signal(
 }
 
 test("a window boundary supersedes delayed activity and is immediately due", () => {
-  const planner = new CapturePlanner();
+  const planner = new CapturePlanner(scheduling);
   planner.push(signal("mouseClick", 0), 0);
   planner.push(signal("focusedWindowChanged", 100), 100);
 
@@ -46,7 +63,7 @@ test("a window boundary supersedes delayed activity and is immediately due", () 
 });
 
 test("keyboard activity uses a trailing delay with a thirty second cap", () => {
-  const planner = new CapturePlanner();
+  const planner = new CapturePlanner(scheduling);
   planner.push(signal("keyActivity", 0), 0);
   planner.push(signal("keyActivity", 1_000), 1_000);
 
@@ -56,7 +73,7 @@ test("keyboard activity uses a trailing delay with a thirty second cap", () => {
     ["keyActivity"],
   );
 
-  const continuous = new CapturePlanner();
+  const continuous = new CapturePlanner(scheduling);
   for (let now = 0; now < 30_000; now += 1_000) {
     continuous.push(signal("keyActivity", now), now);
   }
@@ -68,7 +85,7 @@ test("keyboard activity uses a trailing delay with a thirty second cap", () => {
 });
 
 test("continuous visual changes settle normally but are capped at ten seconds", () => {
-  const planner = new CapturePlanner();
+  const planner = new CapturePlanner(scheduling);
   for (let now = 0; now < 10_000; now += 500) {
     planner.push(signal("visualChanged", now), now);
   }
@@ -77,6 +94,28 @@ test("continuous visual changes settle normally but are capped at ten seconds", 
   assert.deepEqual(
     planner.takeDue(10_000).map((capture) => capture.signal.kind),
     ["visualChanged"],
+  );
+});
+
+test("uses capture delays and caps supplied by startup configuration", () => {
+  const planner = new CapturePlanner({
+    ...scheduling,
+    delaysMilliseconds: {
+      ...scheduling.delaysMilliseconds,
+      keyActivity: 10,
+    },
+    capsMilliseconds: {
+      ...scheduling.capsMilliseconds,
+      keyActivity: 20,
+    },
+  });
+
+  planner.push(signal("keyActivity", 0), 0);
+  planner.push(signal("keyActivity", 15), 15);
+  assert.deepEqual(planner.takeDue(19), []);
+  assert.deepEqual(
+    planner.takeDue(20).map((capture) => capture.signal.kind),
+    ["keyActivity"],
   );
 });
 
@@ -102,18 +141,23 @@ test("content dedup keeps boundaries and meaningful AX or visual changes", () =>
     visualSignature: [0, 0, 0, 0],
   };
 
-  assert.equal(shouldEmitObservation(previous, previous, false), false);
-  assert.equal(shouldEmitObservation(previous, previous, true), true);
+  assert.equal(shouldEmitObservation(previous, previous, false, 0.08), false);
+  assert.equal(shouldEmitObservation(previous, previous, true, 0.08), true);
   assert.equal(
-    shouldEmitObservation(previous, { ...previous, accessibilityHash: "changed" }, false),
+    shouldEmitObservation(previous, { ...previous, accessibilityHash: "changed" }, false, 0.08),
     true,
   );
   assert.equal(
-    shouldEmitObservation(previous, { ...previous, visualSignature: [255, 255, 255, 255] }, false),
+    shouldEmitObservation(
+      previous,
+      { ...previous, visualSignature: [255, 255, 255, 255] },
+      false,
+      0.08,
+    ),
     true,
   );
   assert.equal(
-    shouldEmitObservation(previous, { ...previous, windowKey: "202:9" }, false),
+    shouldEmitObservation(previous, { ...previous, windowKey: "202:9" }, false, 0.08),
     true,
   );
 });

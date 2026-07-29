@@ -2,13 +2,17 @@ import { join } from "node:path";
 
 import { NativeHelperClient } from "./native-helper.js";
 import { ScreenObservationService } from "./service.js";
-import type { ScreenObservation } from "./types.js";
+import type {
+  NativeHelperConfiguration,
+  ScreenObservation,
+  ScreenObservationConfig,
+} from "./types.js";
 
 type ScreenObservationRuntimeOptions = {
+  config: ScreenObservationConfig;
   helperCommand?: string;
   helperArguments?: string[];
   helperEnvironment?: NodeJS.ProcessEnv;
-  tickIntervalMilliseconds?: number;
   onObservation?: (observation: ScreenObservation) => void;
 };
 
@@ -20,10 +24,11 @@ export class ScreenObservationRuntime {
 
   latestObservation?: ScreenObservation;
 
-  constructor(options: ScreenObservationRuntimeOptions = {}) {
-    this.tickIntervalMilliseconds = options.tickIntervalMilliseconds ?? 100;
+  constructor(options: ScreenObservationRuntimeOptions) {
+    this.tickIntervalMilliseconds = options.config.scheduling.tickIntervalMilliseconds;
     let helper!: NativeHelperClient;
     this.service = new ScreenObservationService({
+      config: options.config,
       capture: (signal) => helper.capture(signal),
       onObservation: (observation) => {
         this.latestObservation = observation;
@@ -41,6 +46,12 @@ export class ScreenObservationRuntime {
       currentDirectory: process.cwd(),
       excludedProcessIdentifiers: [process.pid, process.ppid],
       excludedBundleIdentifiers: bundleIdentifier === undefined ? [] : [bundleIdentifier],
+      configuration: nativeConfiguration(options.config),
+      maxRestarts: options.config.helperLifecycle.maxRestarts,
+      restartDelayMilliseconds: options.config.helperLifecycle.restartDelayMilliseconds,
+      configurationTimeoutMilliseconds:
+        options.config.helperLifecycle.configurationTimeoutMilliseconds,
+      shutdownTimeoutMilliseconds: options.config.helperLifecycle.shutdownTimeoutMilliseconds,
       onSignal: (signal) => this.service.push(signal),
       onLifecycle: (state) => {
         if (state === "degraded") {
@@ -72,4 +83,15 @@ export class ScreenObservationRuntime {
     }
     await this.helper.stop();
   }
+}
+
+function nativeConfiguration(
+  config: ScreenObservationConfig,
+): NativeHelperConfiguration {
+  return {
+    accessibility: config.accessibility,
+    screenshot: config.screenshot,
+    visualMonitoring: config.visualMonitoring,
+    windowSelection: config.windowSelection,
+  };
 }

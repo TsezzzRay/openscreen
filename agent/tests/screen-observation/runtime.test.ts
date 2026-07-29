@@ -5,6 +5,58 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { ScreenObservationRuntime } from "../../src/screen-observation/runtime.js";
+import type { ScreenObservationConfig } from "../../src/screen-observation/types.js";
+
+const config = {
+  enabled: true,
+  scheduling: {
+    tickIntervalMilliseconds: 5,
+    ordinaryCaptureGapMilliseconds: 2_000,
+    delaysMilliseconds: {
+      mouseClick: 400,
+      focusedElementChanged: 500,
+      keyActivity: 1_500,
+      accessibilityChanged: 3_000,
+      visualChanged: 750,
+    },
+    capsMilliseconds: {
+      keyActivity: 30_000,
+      visualChanged: 10_000,
+    },
+  },
+  deduplication: {
+    visualDifferenceThreshold: 0.08,
+  },
+  helperLifecycle: {
+    maxRestarts: 3,
+    restartDelayMilliseconds: 500,
+    configurationTimeoutMilliseconds: 2_000,
+    shutdownTimeoutMilliseconds: 500,
+  },
+  accessibility: {
+    maxDepth: 40,
+    maxNodes: 5_000,
+    timeoutMilliseconds: 2_000,
+    maxTextLength: 8_192,
+  },
+  screenshot: {
+    maxWidth: 1_920,
+    jpegQuality: 0.85,
+  },
+  visualMonitoring: {
+    maxWidth: 320,
+    sampleIntervalMilliseconds: 500,
+    queueDepth: 2,
+    changeThreshold: 0.015,
+    signatureWidth: 32,
+    signatureHeight: 18,
+  },
+  windowSelection: {
+    minimumWidth: 160,
+    minimumHeight: 120,
+    maximumAspectRatio: 4,
+  },
+} satisfies ScreenObservationConfig;
 
 test("turns helper signals into an in-memory latest observation", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "openscreen-observation-runtime-"));
@@ -20,7 +72,7 @@ test("turns helper signals into an in-memory latest observation", async (t) => {
       title: "Document",
     };
     process.stdout.write(JSON.stringify({
-      protocolVersion: 1,
+      protocolVersion: 2,
       type: "ready",
       processIdentifier: process.pid,
     }) + "\\n");
@@ -28,13 +80,16 @@ test("turns helper signals into an in-memory latest observation", async (t) => {
     for await (const line of lines) {
       const command = JSON.parse(line);
       if (command.type === "configure") {
+        if (command.configuration.accessibility.maxDepth !== 40) {
+          throw new Error("Native configuration was not forwarded");
+        }
         process.stdout.write(JSON.stringify({
-          protocolVersion: 1,
+          protocolVersion: 2,
           requestId: command.requestId,
           type: "configured",
         }) + "\\n");
         process.stdout.write(JSON.stringify({
-          protocolVersion: 1,
+          protocolVersion: 2,
           type: "signal",
           signal: {
             kind: "focusedWindowChanged",
@@ -45,7 +100,7 @@ test("turns helper signals into an in-memory latest observation", async (t) => {
       }
       if (command.type === "capture") {
         process.stdout.write(JSON.stringify({
-          protocolVersion: 1,
+          protocolVersion: 2,
           requestId: command.requestId,
           type: "captureResult",
           result: {
@@ -72,9 +127,9 @@ test("turns helper signals into an in-memory latest observation", async (t) => {
   `);
 
   const runtime = new ScreenObservationRuntime({
+    config,
     helperCommand: process.execPath,
     helperArguments: [helperPath],
-    tickIntervalMilliseconds: 5,
   });
   t.after(() => runtime.stop());
 

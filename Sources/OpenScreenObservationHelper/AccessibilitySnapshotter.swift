@@ -2,12 +2,10 @@ import ApplicationServices
 import Foundation
 
 enum AccessibilitySnapshotter {
-    private static let maximumDepth = 40
-    private static let maximumNodes = 5_000
-    private static let timeout: TimeInterval = 2
-    private static let maximumTextLength = 8_192
-
-    static func capture(window: WindowMetadata) -> AccessibilityCapture {
+    static func capture(
+        window: WindowMetadata,
+        configuration: NativeObservationConfiguration.Accessibility
+    ) -> AccessibilityCapture {
         let startedAt = Date()
         guard AXIsProcessTrusted() else {
             return AccessibilityCapture(
@@ -18,11 +16,12 @@ enum AccessibilitySnapshotter {
         }
 
         let application = AXUIElementCreateApplication(window.processIdentifier)
+        let timeout = TimeInterval(configuration.timeoutMilliseconds) / 1_000
         AXUIElementSetMessagingTimeout(application, Float(timeout))
         let root = focusedWindow(of: application) ?? application
         var budget = SnapshotBudget(
-            maxDepth: maximumDepth,
-            maxNodes: maximumNodes,
+            maxDepth: configuration.maxDepth,
+            maxNodes: configuration.maxNodes,
             deadline: startedAt.addingTimeInterval(timeout)
         )
         var visited = Set<CFHashCode>()
@@ -30,7 +29,8 @@ enum AccessibilitySnapshotter {
             element: root,
             depth: 0,
             budget: &budget,
-            visited: &visited
+            visited: &visited,
+            maximumTextLength: configuration.maxTextLength
         ) else {
             return AccessibilityCapture(
                 status: budget.timedOut ? .timedOut : .failed,
@@ -53,7 +53,8 @@ enum AccessibilitySnapshotter {
         element: AXUIElement,
         depth: Int,
         budget: inout SnapshotBudget,
-        visited: inout Set<CFHashCode>
+        visited: inout Set<CFHashCode>,
+        maximumTextLength: Int
     ) -> AccessibilityNode? {
         guard budget.consume(depth: depth) else {
             return nil
@@ -63,9 +64,21 @@ enum AccessibilitySnapshotter {
             return nil
         }
 
-        let role = stringAttribute(element, kAXRoleAttribute) ?? "AXUnknown"
-        let subrole = stringAttribute(element, kAXSubroleAttribute)
-        let rawValue = textAttribute(element, kAXValueAttribute)
+        let role = stringAttribute(
+            element,
+            kAXRoleAttribute,
+            maximumTextLength: maximumTextLength
+        ) ?? "AXUnknown"
+        let subrole = stringAttribute(
+            element,
+            kAXSubroleAttribute,
+            maximumTextLength: maximumTextLength
+        )
+        let rawValue = textAttribute(
+            element,
+            kAXValueAttribute,
+            maximumTextLength: maximumTextLength
+        )
         let value = sanitizeAccessibilityValue(rawValue, role: role, subrole: subrole)
         var childNodes = [AccessibilityNode]()
         for child in children(of: element) {
@@ -73,7 +86,8 @@ enum AccessibilitySnapshotter {
                 element: child,
                 depth: depth + 1,
                 budget: &budget,
-                visited: &visited
+                visited: &visited,
+                maximumTextLength: maximumTextLength
             ) {
                 childNodes.append(childNode)
             }
@@ -85,10 +99,22 @@ enum AccessibilitySnapshotter {
         return AccessibilityNode(
             role: role,
             subrole: subrole,
-            title: stringAttribute(element, kAXTitleAttribute),
+            title: stringAttribute(
+                element,
+                kAXTitleAttribute,
+                maximumTextLength: maximumTextLength
+            ),
             value: value,
-            identifier: stringAttribute(element, kAXIdentifierAttribute),
-            elementDescription: stringAttribute(element, kAXDescriptionAttribute),
+            identifier: stringAttribute(
+                element,
+                kAXIdentifierAttribute,
+                maximumTextLength: maximumTextLength
+            ),
+            elementDescription: stringAttribute(
+                element,
+                kAXDescriptionAttribute,
+                maximumTextLength: maximumTextLength
+            ),
             frame: frame(of: element),
             focused: boolAttribute(element, kAXFocusedAttribute),
             enabled: boolAttribute(element, kAXEnabledAttribute),
@@ -116,23 +142,29 @@ enum AccessibilitySnapshotter {
 
     private static func stringAttribute(
         _ element: AXUIElement,
-        _ name: String
+        _ name: String,
+        maximumTextLength: Int
     ) -> String? {
         guard let value = attribute(element, name) as? String else {
             return nil
         }
-        return normalizeAccessibilityText(truncate(value))
+        return normalizeAccessibilityText(
+            truncate(value, maximumTextLength: maximumTextLength)
+        )
     }
 
     private static func textAttribute(
         _ element: AXUIElement,
-        _ name: String
+        _ name: String,
+        maximumTextLength: Int
     ) -> String? {
         guard let value = attribute(element, name) else {
             return nil
         }
         if let text = value as? String {
-            return normalizeAccessibilityText(truncate(text))
+            return normalizeAccessibilityText(
+                truncate(text, maximumTextLength: maximumTextLength)
+            )
         }
         if let number = value as? NSNumber {
             return number.stringValue
@@ -198,7 +230,10 @@ enum AccessibilitySnapshotter {
         return value
     }
 
-    private static func truncate(_ value: String) -> String {
+    private static func truncate(
+        _ value: String,
+        maximumTextLength: Int
+    ) -> String {
         guard value.count > maximumTextLength else {
             return value
         }

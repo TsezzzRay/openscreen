@@ -5,8 +5,60 @@ import { ScreenObservationService } from "../../src/screen-observation/service.j
 import type {
   NativeActivitySignal,
   NativeCaptureResult,
+  ScreenObservationConfig,
   ScreenObservation,
 } from "../../src/screen-observation/types.js";
+
+const config = {
+  enabled: true,
+  scheduling: {
+    tickIntervalMilliseconds: 100,
+    ordinaryCaptureGapMilliseconds: 2_000,
+    delaysMilliseconds: {
+      mouseClick: 400,
+      focusedElementChanged: 500,
+      keyActivity: 1_500,
+      accessibilityChanged: 3_000,
+      visualChanged: 750,
+    },
+    capsMilliseconds: {
+      keyActivity: 30_000,
+      visualChanged: 10_000,
+    },
+  },
+  deduplication: {
+    visualDifferenceThreshold: 0.08,
+  },
+  helperLifecycle: {
+    maxRestarts: 3,
+    restartDelayMilliseconds: 500,
+    configurationTimeoutMilliseconds: 2_000,
+    shutdownTimeoutMilliseconds: 500,
+  },
+  accessibility: {
+    maxDepth: 40,
+    maxNodes: 5_000,
+    timeoutMilliseconds: 2_000,
+    maxTextLength: 8_192,
+  },
+  screenshot: {
+    maxWidth: 1_920,
+    jpegQuality: 0.85,
+  },
+  visualMonitoring: {
+    maxWidth: 320,
+    sampleIntervalMilliseconds: 500,
+    queueDepth: 2,
+    changeThreshold: 0.015,
+    signatureWidth: 32,
+    signatureHeight: 18,
+  },
+  windowSelection: {
+    minimumWidth: 160,
+    minimumHeight: 120,
+    maximumAspectRatio: 4,
+  },
+} satisfies ScreenObservationConfig;
 
 const windowA = {
   processIdentifier: 100,
@@ -79,6 +131,7 @@ function result(
 test("builds a normalized observation without persisting it", async () => {
   const observations: ScreenObservation[] = [];
   const service = new ScreenObservationService({
+    config,
     capture: async () => result(),
     onObservation: (observation) => observations.push(observation),
   });
@@ -100,6 +153,7 @@ test("drops unchanged ordinary observations but retains a real window boundary",
   const observations: ScreenObservation[] = [];
   const captures = [result(), result(), result(windowB, "Other")];
   const service = new ScreenObservationService({
+    config,
     capture: async () => captures.shift()!,
     onObservation: (observation) => observations.push(observation),
   });
@@ -120,6 +174,7 @@ test("drops unchanged ordinary observations but retains a real window boundary",
 test("enforces the ordinary two second capture gap without dropping the latest signal", async () => {
   let captureCount = 0;
   const service = new ScreenObservationService({
+    config,
     capture: async () => {
       captureCount += 1;
       return result(windowA, `Capture ${captureCount}`, [captureCount, 0, 0, 0]);
@@ -141,6 +196,7 @@ test("enforces the ordinary two second capture gap without dropping the latest s
 test("discards a capture when the helper returns a different foreground window", async () => {
   const observations: ScreenObservation[] = [];
   const service = new ScreenObservationService({
+    config,
     capture: async () => result(windowB, "Other"),
     onObservation: (observation) => observations.push(observation),
   });
@@ -149,4 +205,29 @@ test("discards a capture when the helper returns a different foreground window",
   await service.tick(400);
 
   assert.deepEqual(observations, []);
+});
+
+test("uses the ordinary capture gap supplied by startup configuration", async () => {
+  let captureCount = 0;
+  const service = new ScreenObservationService({
+    config: {
+      ...config,
+      scheduling: {
+        ...config.scheduling,
+        ordinaryCaptureGapMilliseconds: 100,
+      },
+    },
+    capture: async () => {
+      captureCount += 1;
+      return result(windowA, `Capture ${captureCount}`, [captureCount, 0, 0, 0]);
+    },
+    onObservation: () => {},
+  });
+
+  service.push(signal("mouseClick"), 0);
+  await service.tick(400);
+  service.push(signal("mouseClick", windowA, 500), 500);
+  await service.tick(900);
+
+  assert.equal(captureCount, 2);
 });

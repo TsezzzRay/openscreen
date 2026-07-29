@@ -48,31 +48,30 @@ For MiniMax M3, set `model` to `MiniMax-M3` and `baseURL` to `https://api.minima
 
 OpenScreen sends `reasoning.summary: "auto"` to other Responses API providers and `reasoning.effort: "minimal"` to MiniMax M3.
 
-`config.json` contains the non-secret defaults for context, sessions, timeline processing, and long-term memory. Process environment variables can override these values, but `.env.example` intentionally lists only the three common provider variables. The API key is never read from JSON. See the [Agent configuration reference](agent/README.md#runtime-configuration) for the ownership and validation rules.
+`config.json` contains the non-secret defaults for context, sessions, timeline
+processing, long-term memory, and screen observation. Process environment
+variables can override supported values, but `.env.example` intentionally lists
+only the three common provider variables. Screen observation settings are read
+from the `screenObservation` block at startup. The API key is never read from
+JSON. See the [Agent configuration reference](agent/README.md#runtime-configuration)
+for the ownership and validation rules.
 
 On first launch, macOS will request Screen Recording and Accessibility access.
-Input Monitoring is also needed for click and keyboard-activity signals. A denied
-permission degrades only the corresponding signal or capture source: OpenScreen
-continues using the sources that remain available. After granting permission,
-press `Option + Space`, enter a question, and press `Enter`. Use `Shift + Enter`
-to insert a newline. Stop OpenScreen with `Control + C` in the launching terminal.
+Input Monitoring is also needed for click and keyboard-activity signals. After
+granting permission, press `Option + Space`, enter a question, and press `Enter`.
+Use `Shift + Enter` to insert a newline. Stop OpenScreen with `Control + C` in
+the launching terminal.
 
 ## Privacy
 
-OpenScreen observes only the foreground window. A low-resolution
-ScreenCaptureKit stream detects visual changes; full observations are produced
-after application/window changes, clicks, settled keyboard or Accessibility
-activity, and meaningful visual changes. Continuous animation or video is
-sampled at most once every 10 seconds, while a static window produces no
-heartbeat observations. Raw keys and typed key values are never recorded by the
-event tap, and secure Accessibility fields are replaced with `[REDACTED]`.
-
-Each automatic `ScreenObservation` contains foreground-window metadata, a
-bounded Accessibility snapshot, normalized visible text, and an in-memory JPEG
-screenshot. These observations are deduplicated in the Node process and are not
-currently persisted, added to long-term memory, or sent to a model. OpenScreen
-and its helper processes are excluded by PID and bundle identity so the panel
-cannot create a capture loop.
+Automatic screen observation is limited to the foreground window. It does not
+record raw keys or typed key values, redacts secure Accessibility fields, and
+excludes OpenScreen's own processes to prevent capture loops. Observations are
+currently kept in memory and are not persisted, added to long-term memory, or
+sent to a model. See the
+[native observation helper documentation](Sources/OpenScreenObservationHelper/README.md)
+for capture behavior, permission degradation, and implementation-level privacy
+controls.
 
 Conversation state is stored locally as one append-only JSONL file per session
 under `~/Library/Application Support/OpenScreen/sessions/`. The first line

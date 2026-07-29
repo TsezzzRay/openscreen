@@ -12,26 +12,27 @@ import type {
   NativeActivitySignal,
   NativeCaptureResult,
   ObservationContentSignature,
+  ScreenObservationConfig,
   ScreenObservation,
   WindowMetadata,
 } from "./types.js";
 
 type ScreenObservationServiceOptions = {
+  config: ScreenObservationConfig;
   capture: (signal: NativeActivitySignal) => Promise<NativeCaptureResult>;
   onObservation: (observation: ScreenObservation) => void;
-  visualThreshold?: number;
 };
 
-const ORDINARY_CAPTURE_GAP_MILLISECONDS = 2_000;
-
 export class ScreenObservationService {
-  private readonly planner = new CapturePlanner();
+  private readonly planner: CapturePlanner;
   private previousSignature?: ObservationContentSignature;
   private deferredSignal?: NativeActivitySignal;
   private lastCaptureAtMilliseconds = Number.NEGATIVE_INFINITY;
   private capturing = false;
 
-  constructor(private readonly options: ScreenObservationServiceOptions) {}
+  constructor(private readonly options: ScreenObservationServiceOptions) {
+    this.planner = new CapturePlanner(options.config.scheduling);
+  }
 
   push(signal: NativeActivitySignal, nowMilliseconds = Date.now()) {
     if (isBoundaryKind(signal.kind)) this.deferredSignal = undefined;
@@ -54,7 +55,8 @@ export class ScreenObservationService {
       this.previousSignature?.windowKey !== windowKey(signal.window);
     if (
       !boundaryRequested &&
-      nowMilliseconds - this.lastCaptureAtMilliseconds < ORDINARY_CAPTURE_GAP_MILLISECONDS
+      nowMilliseconds - this.lastCaptureAtMilliseconds <
+        this.options.config.scheduling.ordinaryCaptureGapMilliseconds
     ) return;
 
     this.deferredSignal = undefined;
@@ -68,7 +70,7 @@ export class ScreenObservationService {
         this.previousSignature,
         signature,
         boundaryRequested,
-        this.options.visualThreshold,
+        this.options.config.deduplication.visualDifferenceThreshold,
       )) return;
       this.previousSignature = signature;
       await this.options.onObservation(buildObservation(signal, result));

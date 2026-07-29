@@ -7,7 +7,10 @@ let package = Package(
     platforms: [.macOS(.v15)],
     targets: [
         .executableTarget(name: "OpenScreen"),
-        .executableTarget(name: "OpenScreenObservationHelper"),
+        .executableTarget(
+            name: "OpenScreenObservationHelper",
+            exclude: ["README.md"]
+        ),
         .testTarget(
             name: "OpenScreenTests",
             dependencies: ["OpenScreen", "OpenScreenObservationHelper"]

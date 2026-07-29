@@ -30,6 +30,56 @@ const fileConfig = {
     maxInputTokens: 244_800,
     maxOutputTokens: 4_096,
   },
+  screenObservation: {
+    enabled: true,
+    scheduling: {
+      tickIntervalMilliseconds: 100,
+      ordinaryCaptureGapMilliseconds: 2_000,
+      delaysMilliseconds: {
+        mouseClick: 400,
+        focusedElementChanged: 500,
+        keyActivity: 1_500,
+        accessibilityChanged: 3_000,
+        visualChanged: 750,
+      },
+      capsMilliseconds: {
+        keyActivity: 30_000,
+        visualChanged: 10_000,
+      },
+    },
+    deduplication: {
+      visualDifferenceThreshold: 0.08,
+    },
+    helperLifecycle: {
+      maxRestarts: 3,
+      restartDelayMilliseconds: 500,
+      configurationTimeoutMilliseconds: 2_000,
+      shutdownTimeoutMilliseconds: 500,
+    },
+    accessibility: {
+      maxDepth: 40,
+      maxNodes: 5_000,
+      timeoutMilliseconds: 2_000,
+      maxTextLength: 8_192,
+    },
+    screenshot: {
+      maxWidth: 1_920,
+      jpegQuality: 0.85,
+    },
+    visualMonitoring: {
+      maxWidth: 320,
+      sampleIntervalMilliseconds: 500,
+      queueDepth: 2,
+      changeThreshold: 0.015,
+      signatureWidth: 32,
+      signatureHeight: 18,
+    },
+    windowSelection: {
+      minimumWidth: 160,
+      minimumHeight: 120,
+      maximumAspectRatio: 4,
+    },
+  },
 };
 
 function withConfig(
@@ -97,6 +147,7 @@ test("overrides every JSON setting from environment variables", (t) => {
       maxInputTokens: 80_000,
       maxOutputTokens: 1_500,
     },
+    screenObservation: fileConfig.screenObservation,
   });
 });
 
@@ -197,5 +248,65 @@ test("rejects invalid harness limits", (t) => {
   assert.throws(
     () => loadRuntimeConfig(invalidTimelineBudget.path, { OPENAI_API_KEY: "secret" }),
     /timeline token budget exceeds context.windowTokens/,
+  );
+});
+
+test("rejects invalid screen observation settings", (t) => {
+  const invalidQuality = withConfig(t, {
+    ...fileConfig,
+    screenObservation: {
+      ...fileConfig.screenObservation,
+      screenshot: {
+        ...fileConfig.screenObservation.screenshot,
+        jpegQuality: 2,
+      },
+    },
+  });
+
+  assert.throws(
+    () => loadRuntimeConfig(invalidQuality.path, { OPENAI_API_KEY: "secret" }),
+    /screenObservation.screenshot.jpegQuality must be between 0 and 1/,
+  );
+
+  const missingObservation = withConfig(t, {
+    model: fileConfig.model,
+    baseURL: fileConfig.baseURL,
+    context: fileConfig.context,
+  });
+  assert.throws(
+    () => loadRuntimeConfig(missingObservation.path, { OPENAI_API_KEY: "secret" }),
+    /screenObservation must be an object/,
+  );
+
+  const coercedIntegers = withConfig(t, {
+    ...fileConfig,
+    screenObservation: {
+      ...fileConfig.screenObservation,
+      accessibility: {
+        ...fileConfig.screenObservation.accessibility,
+        maxDepth: null,
+        maxNodes: true,
+      },
+    },
+  });
+  assert.throws(
+    () => loadRuntimeConfig(coercedIntegers.path, { OPENAI_API_KEY: "secret" }),
+    /screenObservation.accessibility.maxDepth must be a non-negative integer/,
+  );
+
+  const excessiveNativeBuffers = withConfig(t, {
+    ...fileConfig,
+    screenObservation: {
+      ...fileConfig.screenObservation,
+      visualMonitoring: {
+        ...fileConfig.screenObservation.visualMonitoring,
+        queueDepth: 9,
+        signatureWidth: 257,
+      },
+    },
+  });
+  assert.throws(
+    () => loadRuntimeConfig(excessiveNativeBuffers.path, { OPENAI_API_KEY: "secret" }),
+    /screenObservation.visualMonitoring.queueDepth must be between 1 and 8/,
   );
 });
