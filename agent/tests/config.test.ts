@@ -50,11 +50,15 @@ const fileConfig = {
     deduplication: {
       visualDifferenceThreshold: 0.08,
     },
+    capture: {
+      requestTimeoutMilliseconds: 10_000,
+    },
     helperLifecycle: {
-      maxRestarts: 3,
-      restartDelayMilliseconds: 500,
       configurationTimeoutMilliseconds: 2_000,
       shutdownTimeoutMilliseconds: 500,
+    },
+    activityMonitoring: {
+      coalescingIntervalMilliseconds: 250,
     },
     accessibility: {
       maxDepth: 40,
@@ -308,5 +312,35 @@ test("rejects invalid screen observation settings", (t) => {
   assert.throws(
     () => loadRuntimeConfig(excessiveNativeBuffers.path, { OPENAI_API_KEY: "secret" }),
     /screenObservation.visualMonitoring.queueDepth must be between 1 and 8/,
+  );
+
+  const invalidCaptureTimeout = withConfig(t, {
+    ...fileConfig,
+    screenObservation: {
+      ...fileConfig.screenObservation,
+      capture: {
+        requestTimeoutMilliseconds: 0,
+      },
+    },
+  });
+  assert.throws(
+    () => loadRuntimeConfig(invalidCaptureTimeout.path, { OPENAI_API_KEY: "secret" }),
+    /screenObservation.capture.requestTimeoutMilliseconds must be a positive integer/,
+  );
+
+  const invalidCoalescingInterval = withConfig(t, {
+    ...fileConfig,
+    screenObservation: {
+      ...fileConfig.screenObservation,
+      activityMonitoring: {
+        coalescingIntervalMilliseconds: 0,
+      },
+    },
+  });
+  assert.throws(
+    () => loadRuntimeConfig(invalidCoalescingInterval.path, {
+      OPENAI_API_KEY: "secret",
+    }),
+    /screenObservation.activityMonitoring.coalescingIntervalMilliseconds must be a positive integer/,
   );
 });

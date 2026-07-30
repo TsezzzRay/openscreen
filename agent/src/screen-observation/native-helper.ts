@@ -5,6 +5,8 @@ import { createInterface, type Interface } from "node:readline";
 
 import {
   HELPER_PROTOCOL_VERSION,
+  InvalidCaptureResultError,
+  NonJSONHelperOutputError,
   encodeHelperCommand,
   parseHelperOutput,
   type HelperOutput,
@@ -15,7 +17,8 @@ import type {
   NativeHelperConfiguration,
 } from "./types.js";
 
-export type HelperLifecycle = "starting" | "ready" | "restarting" | "degraded" | "stopped";
+export type HelperLifecycle = "starting" | "ready" | "failed" | "stopped";
+export type HelperComponentStatus = Extract<HelperOutput, { type: "status" }>;
 
 type NativeHelperOptions = {
   command: string;
@@ -25,17 +28,19 @@ type NativeHelperOptions = {
   excludedProcessIdentifiers: number[];
   excludedBundleIdentifiers: string[];
   configuration: NativeHelperConfiguration;
-  maxRestarts: number;
-  restartDelayMilliseconds: number;
   configurationTimeoutMilliseconds: number;
+  captureTimeoutMilliseconds: number;
   shutdownTimeoutMilliseconds: number;
   onSignal: (signal: NativeActivitySignal) => void;
   onLifecycle?: (state: HelperLifecycle) => void;
+  onComponentStatus?: (status: HelperComponentStatus) => void;
+  onFatalError?: (error: Error) => void;
 };
 
 type PendingCapture = {
   resolve: (result: NativeCaptureResult) => void;
   reject: (error: Error) => void;
+  timer: NodeJS.Timeout;
 };
 
 export class NativeHelperClient {
@@ -44,8 +49,6 @@ export class NativeHelperClient {
   private readonly pendingCaptures = new Map<string, PendingCapture>();
   private configured = false;
   private desiredRunning = false;
-  private restartCount = 0;
-  private restartTimer?: NodeJS.Timeout;
   private configurationRequestId?: string;
   private configurationTimer?: NodeJS.Timeout;
   private lifecycle?: HelperLifecycle;
@@ -65,7 +68,7 @@ export class NativeHelperClient {
     this.startPromise = new Promise<void>((resolve, reject) => {
       this.resolveFirstStart = resolve;
       this.rejectFirstStart = reject;
-      this.launch("starting");
+      this.launch();
     });
     return this.startPromise;
   }
@@ -76,7 +79,11 @@ export class NativeHelperClient {
     }
     const requestId = randomUUID();
     const result = new Promise<NativeCaptureResult>((resolve, reject) => {
-      this.pendingCaptures.set(requestId, { resolve, reject });
+      const timer = setTimeout(() => {
+        const pending = this.takePendingCapture(requestId);
+        pending?.reject(new Error("Observation helper capture timed out"));
+      }, this.options.captureTimeoutMilliseconds);
+      this.pendingCaptures.set(requestId, { resolve, reject, timer });
     });
     this.child.stdin.write(encodeHelperCommand({
       protocolVersion: HELPER_PROTOCOL_VERSION,
@@ -85,8 +92,7 @@ export class NativeHelperClient {
       signal,
     }), (error) => {
       if (!error) return;
-      const pending = this.pendingCaptures.get(requestId);
-      this.pendingCaptures.delete(requestId);
+      const pending = this.takePendingCapture(requestId);
       pending?.reject(error);
     });
     return result;
@@ -94,10 +100,6 @@ export class NativeHelperClient {
 
   async stop() {
     this.desiredRunning = false;
-    if (this.restartTimer !== undefined) {
-      clearTimeout(this.restartTimer);
-      this.restartTimer = undefined;
-    }
     const child = this.child;
     if (child === undefined || child.exitCode !== null) {
       this.finishStopped();
@@ -121,11 +123,11 @@ export class NativeHelperClient {
     this.finishStopped();
   }
 
-  private launch(state: HelperLifecycle) {
+  private launch() {
     if (!this.desiredRunning) return;
     this.clearConfigurationHandshake();
     this.configured = false;
-    this.notifyLifecycle(state);
+    this.notifyLifecycle("starting");
     const child = spawn(this.options.command, this.options.arguments ?? [], {
       cwd: this.options.currentDirectory,
       env: this.options.environment ?? process.env,
@@ -155,10 +157,22 @@ export class NativeHelperClient {
     try {
       output = parseHelperOutput(line);
     } catch (error) {
+      if (error instanceof NonJSONHelperOutputError) {
+        process.stderr.write("Ignored non-JSON observation helper output\n");
+        return;
+      }
+      if (error instanceof InvalidCaptureResultError) {
+        const pending = this.takePendingCapture(error.requestId);
+        pending?.reject(error);
+        return;
+      }
       process.stderr.write(
         `Invalid observation helper output: ${error instanceof Error ? error.message : "unknown"}\n`,
       );
-      child.kill();
+      this.failChild(
+        child,
+        error instanceof Error ? error : new Error("Invalid observation helper output"),
+      );
       return;
     }
     if (output.type === "ready") {
@@ -196,10 +210,13 @@ export class NativeHelperClient {
       this.options.onSignal(output.signal);
       return;
     }
+    if (output.type === "status") {
+      this.options.onComponentStatus?.(output);
+      return;
+    }
     if (output.type === "captureResult") {
-      const pending = this.pendingCaptures.get(output.requestId);
+      const pending = this.takePendingCapture(output.requestId);
       if (pending === undefined) return;
-      this.pendingCaptures.delete(output.requestId);
       pending.resolve(output.result);
       return;
     }
@@ -212,10 +229,13 @@ export class NativeHelperClient {
       return;
     }
     if (output.type === "error" && output.requestId !== undefined) {
-      const pending = this.pendingCaptures.get(output.requestId);
+      const pending = this.takePendingCapture(output.requestId);
       if (pending === undefined) return;
-      this.pendingCaptures.delete(output.requestId);
       pending.reject(new Error(`${output.code}: ${output.message}`));
+      return;
+    }
+    if (output.type === "error") {
+      this.failChild(child, new Error(`${output.code}: ${output.message}`));
     }
   }
 
@@ -226,29 +246,16 @@ export class NativeHelperClient {
     this.outputLines = undefined;
     this.child = undefined;
     this.configured = false;
-    for (const pending of this.pendingCaptures.values()) pending.reject(error);
-    this.pendingCaptures.clear();
+    this.rejectPendingCaptures(error);
     if (!this.desiredRunning) {
       this.finishStopped();
       return;
     }
-    if (this.restartCount >= this.options.maxRestarts) {
-      this.desiredRunning = false;
-      this.notifyLifecycle("degraded");
-      this.rejectFirstStart?.(error);
-      this.resolveFirstStart = undefined;
-      this.rejectFirstStart = undefined;
-      return;
-    }
-    this.restartCount += 1;
-    this.notifyLifecycle("restarting");
-    this.restartTimer = setTimeout(
-      () => {
-        this.restartTimer = undefined;
-        this.launch("starting");
-      },
-      this.options.restartDelayMilliseconds,
-    );
+    this.desiredRunning = false;
+    this.notifyLifecycle("failed");
+    this.rejectFirstStart?.(error);
+    this.clearStartAttempt();
+    this.options.onFatalError?.(error);
   }
 
   private finishStopped() {
@@ -258,8 +265,9 @@ export class NativeHelperClient {
     this.child = undefined;
     this.configured = false;
     const error = new Error("Observation helper stopped");
-    for (const pending of this.pendingCaptures.values()) pending.reject(error);
-    this.pendingCaptures.clear();
+    this.rejectPendingCaptures(error);
+    this.rejectFirstStart?.(error);
+    this.clearStartAttempt();
     this.notifyLifecycle("stopped");
   }
 
@@ -275,6 +283,26 @@ export class NativeHelperClient {
       this.configurationTimer = undefined;
     }
     this.configurationRequestId = undefined;
+  }
+
+  private clearStartAttempt() {
+    this.startPromise = undefined;
+    this.resolveFirstStart = undefined;
+    this.rejectFirstStart = undefined;
+  }
+
+  private takePendingCapture(requestId: string) {
+    const pending = this.pendingCaptures.get(requestId);
+    if (pending === undefined) return undefined;
+    this.pendingCaptures.delete(requestId);
+    clearTimeout(pending.timer);
+    return pending;
+  }
+
+  private rejectPendingCaptures(error: Error) {
+    for (const requestId of [...this.pendingCaptures.keys()]) {
+      this.takePendingCapture(requestId)?.reject(error);
+    }
   }
 
   private failChild(child: ChildProcessWithoutNullStreams, error: Error) {

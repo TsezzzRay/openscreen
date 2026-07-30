@@ -1,6 +1,6 @@
 import Foundation
 
-let helperProtocolVersion = 2
+let helperProtocolVersion = 3
 
 struct HelperCommand: Decodable, Sendable {
     enum CommandType: String, Decodable, Sendable {

@@ -21,7 +21,7 @@ integration responsibilities.
 ## Runtime flow
 
 1. The helper starts and writes a `ready` message.
-2. For each helper launch or restart, Node sends a `configure` command containing
+2. For each helper launch, Node sends a `configure` command containing
    self-exclusion identities and the native observation configuration loaded
    from the project `config.json`.
 3. The helper installs the available signal sources and replies with
@@ -30,15 +30,18 @@ integration responsibilities.
    raw key codes or typed key values.
 5. Node applies scheduling and deduplication policy. When a capture is due, it
    sends a `capture` command with the triggering signal.
-6. The helper resolves the foreground window again, captures the screenshot and
-   Accessibility snapshot concurrently, and replies with `captureResult`.
+6. The helper admits only one capture at a time, resolves the foreground window
+   again, captures the screenshot and Accessibility snapshot concurrently, and
+   replies with `captureResult`. A concurrent request receives `capture_busy`.
 7. Node sends `shutdown`, closes stdin, or terminates the process to stop it.
 
 Stdout is reserved for protocol messages. Diagnostics are written to stderr so
-they cannot corrupt the JSON Lines stream. The wire contract and validation on
-the Node side live in
+they cannot corrupt the JSON Lines stream. Node ignores an accidental non-JSON
+stdout line but treats an incompatible version or malformed structured protocol
+message as a fatal helper error. The wire contract and validation on the Node
+side live in
 `agent/src/screen-observation/helper-protocol.ts`. Configuration delivery is
-part of helper protocol version 2; mismatched binaries fail explicitly instead
+part of helper protocol version 3; mismatched binaries fail explicitly instead
 of running with a different set of capture defaults.
 
 ## Signal sources
@@ -51,6 +54,15 @@ of running with a different set of capture defaults.
   the current foreground application; and
 - a listen-only `CGEventTap` for mouse-button presses and non-command/control
   keyboard activity.
+
+The current foreground window is cached for high-frequency keyboard and AX
+signals. Keyboard and AX-content signals are independently coalesced using the
+configured interval, including one trailing signal after activity settles.
+Application, focused-window, Space, and wake boundaries refresh the window
+immediately and discard pending activity from the previous window. Mouse,
+keyboard, focused-element, and AX-content signals use that cached identity;
+a following focus boundary supersedes activity attributed to the previous
+window.
 
 `VisualStreamMonitor` runs a low-resolution ScreenCaptureKit stream for the
 current foreground window. It emits only a `visualChanged` signal when the
@@ -69,6 +81,7 @@ The native configuration groups are:
 
 | Group | Controls |
 | --- | --- |
+| `activityMonitoring` | Swift-side coalescing interval for high-frequency keyboard and AX signals |
 | `accessibility` | AX depth, node, timeout, and per-value text budgets |
 | `screenshot` | maximum captured width and JPEG quality |
 | `visualMonitoring` | stream width, sample interval, queue depth, change threshold, and signature dimensions |
@@ -76,9 +89,11 @@ The native configuration groups are:
 
 Node-only observation settings in `config.json` control whether observation is
 enabled, capture delays and caps, the ordinary capture gap, content
-deduplication, helper restart policy, configuration/shutdown timeouts, and
-scheduler tick frequency. Observation settings are not environment-variable
-overrides. The helper executable path remains a deployment concern supplied through
+deduplication, the per-request capture timeout, configuration/shutdown timeouts,
+and scheduler tick frequency. The default capture timeout is 10 seconds and
+releases only the timed-out Node request; it does not terminate or restart the
+helper. Observation settings are not environment-variable overrides. The helper
+executable path remains a deployment concern supplied through
 `OPENSCREEN_OBSERVATION_HELPER_PATH` when needed.
 
 Protocol versions, activity/status enums, secure-field redaction, foreground
@@ -101,6 +116,12 @@ does not fabricate a successful artifact:
 - Accessibility failures produce `permissionDenied`, `timedOut`, or `failed`.
 - Input Monitoring or visual-stream failures are reported with degraded
   component status while the remaining sources continue to run.
+
+Capture failures, malformed capture results, `capture_busy`, and capture
+timeouts fail only the affected request. They do not stop or restart the helper,
+so native activity monitoring remains available. A helper launch/configuration
+failure, incompatible protocol message, or process exit is reported as fatal
+and is not retried automatically.
 
 Artifacts remain in the `captureResult` message as in-memory data. This target
 does not write screenshots, snapshots, observations, or logs to application

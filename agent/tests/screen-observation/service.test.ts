@@ -29,11 +29,15 @@ const config = {
   deduplication: {
     visualDifferenceThreshold: 0.08,
   },
+  capture: {
+    requestTimeoutMilliseconds: 10_000,
+  },
   helperLifecycle: {
-    maxRestarts: 3,
-    restartDelayMilliseconds: 500,
     configurationTimeoutMilliseconds: 2_000,
     shutdownTimeoutMilliseconds: 500,
+  },
+  activityMonitoring: {
+    coalescingIntervalMilliseconds: 250,
   },
   accessibility: {
     maxDepth: 40,

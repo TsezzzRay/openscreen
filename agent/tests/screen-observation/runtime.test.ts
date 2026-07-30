@@ -27,11 +27,15 @@ const config = {
   deduplication: {
     visualDifferenceThreshold: 0.08,
   },
+  capture: {
+    requestTimeoutMilliseconds: 10_000,
+  },
   helperLifecycle: {
-    maxRestarts: 3,
-    restartDelayMilliseconds: 500,
     configurationTimeoutMilliseconds: 2_000,
     shutdownTimeoutMilliseconds: 500,
+  },
+  activityMonitoring: {
+    coalescingIntervalMilliseconds: 250,
   },
   accessibility: {
     maxDepth: 40,
@@ -72,7 +76,7 @@ test("turns helper signals into an in-memory latest observation", async (t) => {
       title: "Document",
     };
     process.stdout.write(JSON.stringify({
-      protocolVersion: 2,
+      protocolVersion: 3,
       type: "ready",
       processIdentifier: process.pid,
     }) + "\\n");
@@ -80,16 +84,26 @@ test("turns helper signals into an in-memory latest observation", async (t) => {
     for await (const line of lines) {
       const command = JSON.parse(line);
       if (command.type === "configure") {
-        if (command.configuration.accessibility.maxDepth !== 40) {
+        if (
+          command.configuration.accessibility.maxDepth !== 40 ||
+          command.configuration.activityMonitoring.coalescingIntervalMilliseconds !== 250
+        ) {
           throw new Error("Native configuration was not forwarded");
         }
         process.stdout.write(JSON.stringify({
-          protocolVersion: 2,
+          protocolVersion: 3,
           requestId: command.requestId,
           type: "configured",
         }) + "\\n");
         process.stdout.write(JSON.stringify({
-          protocolVersion: 2,
+          protocolVersion: 3,
+          type: "status",
+          component: "eventTap",
+          status: "degraded",
+          message: "Input Monitoring permission is unavailable",
+        }) + "\\n");
+        process.stdout.write(JSON.stringify({
+          protocolVersion: 3,
           type: "signal",
           signal: {
             kind: "focusedWindowChanged",
@@ -100,7 +114,7 @@ test("turns helper signals into an in-memory latest observation", async (t) => {
       }
       if (command.type === "capture") {
         process.stdout.write(JSON.stringify({
-          protocolVersion: 2,
+          protocolVersion: 3,
           requestId: command.requestId,
           type: "captureResult",
           result: {
@@ -126,10 +140,14 @@ test("turns helper signals into an in-memory latest observation", async (t) => {
     }
   `);
 
+  const statuses: string[] = [];
   const runtime = new ScreenObservationRuntime({
     config,
     helperCommand: process.execPath,
     helperArguments: [helperPath],
+    onComponentStatus: (status) => {
+      statuses.push(`${status.component}:${status.status}`);
+    },
   });
   t.after(() => runtime.stop());
 
@@ -139,6 +157,7 @@ test("turns helper signals into an in-memory latest observation", async (t) => {
   assert.equal(runtime.latestObservation?.window.windowIdentifier, 7);
   assert.equal(runtime.latestObservation?.visibleText, "Document");
   assert.equal(runtime.latestObservation?.screenshot.status, "permissionDenied");
+  assert.deepEqual(statuses, ["eventTap:degraded"]);
   await runtime.stop();
 });
 

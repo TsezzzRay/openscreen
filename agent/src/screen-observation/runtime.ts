@@ -1,6 +1,9 @@
 import { join } from "node:path";
 
-import { NativeHelperClient } from "./native-helper.js";
+import {
+  NativeHelperClient,
+  type HelperComponentStatus,
+} from "./native-helper.js";
 import { ScreenObservationService } from "./service.js";
 import type {
   NativeHelperConfiguration,
@@ -14,6 +17,8 @@ type ScreenObservationRuntimeOptions = {
   helperArguments?: string[];
   helperEnvironment?: NodeJS.ProcessEnv;
   onObservation?: (observation: ScreenObservation) => void;
+  onComponentStatus?: (status: HelperComponentStatus) => void;
+  onFatalError?: (error: Error) => void;
 };
 
 export class ScreenObservationRuntime {
@@ -47,16 +52,25 @@ export class ScreenObservationRuntime {
       excludedProcessIdentifiers: [process.pid, process.ppid],
       excludedBundleIdentifiers: bundleIdentifier === undefined ? [] : [bundleIdentifier],
       configuration: nativeConfiguration(options.config),
-      maxRestarts: options.config.helperLifecycle.maxRestarts,
-      restartDelayMilliseconds: options.config.helperLifecycle.restartDelayMilliseconds,
       configurationTimeoutMilliseconds:
         options.config.helperLifecycle.configurationTimeoutMilliseconds,
+      captureTimeoutMilliseconds: options.config.capture.requestTimeoutMilliseconds,
       shutdownTimeoutMilliseconds: options.config.helperLifecycle.shutdownTimeoutMilliseconds,
       onSignal: (signal) => this.service.push(signal),
-      onLifecycle: (state) => {
-        if (state === "degraded") {
-          process.stderr.write("OpenScreen observation helper is unavailable\n");
+      onComponentStatus: (status) => {
+        options.onComponentStatus?.(status);
+        if (status.status === "degraded") {
+          process.stderr.write(
+            `OpenScreen observation ${status.component} is degraded${
+              status.message === undefined ? "" : `: ${status.message}`
+            }\n`,
+          );
         }
+      },
+      onFatalError: (error) => {
+        this.clearTimer();
+        options.onFatalError?.(error);
+        process.stderr.write(`OpenScreen observation helper failed: ${error.message}\n`);
       },
     });
     this.helper = helper;
@@ -77,11 +91,14 @@ export class ScreenObservationRuntime {
   }
 
   async stop() {
-    if (this.timer !== undefined) {
-      clearInterval(this.timer);
-      this.timer = undefined;
-    }
+    this.clearTimer();
     await this.helper.stop();
+  }
+
+  private clearTimer() {
+    if (this.timer === undefined) return;
+    clearInterval(this.timer);
+    this.timer = undefined;
   }
 }
 
@@ -89,6 +106,7 @@ function nativeConfiguration(
   config: ScreenObservationConfig,
 ): NativeHelperConfiguration {
   return {
+    activityMonitoring: config.activityMonitoring,
     accessibility: config.accessibility,
     screenshot: config.screenshot,
     visualMonitoring: config.visualMonitoring,

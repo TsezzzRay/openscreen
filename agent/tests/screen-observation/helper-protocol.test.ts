@@ -2,12 +2,16 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  HELPER_PROTOCOL_VERSION,
   encodeHelperCommand,
   parseHelperOutput,
 } from "../../src/screen-observation/helper-protocol.js";
 import type { NativeHelperConfiguration } from "../../src/screen-observation/types.js";
 
 const configuration = {
+  activityMonitoring: {
+    coalescingIntervalMilliseconds: 250,
+  },
   accessibility: {
     maxDepth: 40,
     maxNodes: 5_000,
@@ -33,22 +37,26 @@ const configuration = {
   },
 } satisfies NativeHelperConfiguration;
 
+test("uses protocol version 3 for activity monitoring configuration", () => {
+  assert.equal(HELPER_PROTOCOL_VERSION, 3);
+});
+
 test("parses helper readiness and activity signals", () => {
   assert.deepEqual(
     parseHelperOutput(JSON.stringify({
-      protocolVersion: 2,
+      protocolVersion: 3,
       type: "ready",
       processIdentifier: 42,
     })),
     {
-      protocolVersion: 2,
+      protocolVersion: 3,
       type: "ready",
       processIdentifier: 42,
     },
   );
 
   const output = parseHelperOutput(JSON.stringify({
-    protocolVersion: 2,
+    protocolVersion: 3,
     type: "signal",
     signal: {
       kind: "focusedWindowChanged",
@@ -73,7 +81,7 @@ test("parses helper readiness and activity signals", () => {
 
 test("parses partial capture results without treating missing artifacts as success", () => {
   const output = parseHelperOutput(JSON.stringify({
-    protocolVersion: 2,
+    protocolVersion: 3,
     requestId: "capture-1",
     type: "captureResult",
     result: {
@@ -111,7 +119,7 @@ test("parses partial capture results without treating missing artifacts as succe
 
 test("normalizes empty optional AX strings from real applications", () => {
   const output = parseHelperOutput(JSON.stringify({
-    protocolVersion: 2,
+    protocolVersion: 3,
     requestId: "capture-1",
     type: "captureResult",
     result: {
@@ -154,7 +162,7 @@ test("normalizes empty optional AX strings from real applications", () => {
 
 test("encodes configuration and capture commands as newline-delimited JSON", () => {
   const configured = encodeHelperCommand({
-    protocolVersion: 2,
+    protocolVersion: 3,
     requestId: "configure-1",
     type: "configure",
     excludedProcessIdentifiers: [10, 20],
@@ -163,7 +171,7 @@ test("encodes configuration and capture commands as newline-delimited JSON", () 
   });
   assert.equal(configured.endsWith("\n"), true);
   assert.deepEqual(JSON.parse(configured), {
-    protocolVersion: 2,
+    protocolVersion: 3,
     requestId: "configure-1",
     type: "configure",
     excludedProcessIdentifiers: [10, 20],
@@ -183,7 +191,7 @@ test("rejects unsupported versions and malformed helper messages", () => {
   );
   assert.throws(
     () => parseHelperOutput(JSON.stringify({
-      protocolVersion: 2,
+      protocolVersion: 3,
       type: "signal",
       signal: { kind: "keyActivity" },
     })),

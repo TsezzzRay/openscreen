@@ -3,6 +3,51 @@ import ApplicationServices
 import CoreGraphics
 import Foundation
 
+struct ActivitySignalCoalescingState {
+    let intervalMilliseconds: Int64
+    private var lastEmissionMilliseconds: Int64?
+    private var lastActivityMilliseconds: Int64?
+    private var trailingDeadlineMilliseconds: Int64?
+
+    init(intervalMilliseconds: Int64) {
+        self.intervalMilliseconds = intervalMilliseconds
+    }
+
+    mutating func record(atMilliseconds now: Int64) -> Bool {
+        lastActivityMilliseconds = now
+        trailingDeadlineMilliseconds = now + intervalMilliseconds
+        guard
+            let lastEmissionMilliseconds,
+            now - lastEmissionMilliseconds < intervalMilliseconds
+        else {
+            self.lastEmissionMilliseconds = now
+            return true
+        }
+        return false
+    }
+
+    mutating func flush(atMilliseconds now: Int64) -> Bool {
+        guard
+            let trailingDeadlineMilliseconds,
+            now >= trailingDeadlineMilliseconds
+        else {
+            return false
+        }
+        self.trailingDeadlineMilliseconds = nil
+        guard lastActivityMilliseconds != lastEmissionMilliseconds else {
+            return false
+        }
+        lastEmissionMilliseconds = now
+        return true
+    }
+
+    mutating func reset() {
+        lastEmissionMilliseconds = nil
+        lastActivityMilliseconds = nil
+        trailingDeadlineMilliseconds = nil
+    }
+}
+
 @MainActor
 final class ActivityMonitor {
     private let writer: JSONLineWriter
@@ -12,6 +57,11 @@ final class ActivityMonitor {
         bundleIdentifiers: []
     )
     private var configuration: NativeObservationConfiguration?
+    private var currentWindow: WindowMetadata?
+    private var keyActivityCoalescingState: ActivitySignalCoalescingState?
+    private var accessibilityCoalescingState: ActivitySignalCoalescingState?
+    private var keyActivityFlushTask: Task<Void, Never>?
+    private var accessibilityFlushTask: Task<Void, Never>?
     private var workspaceObservers = [NSObjectProtocol]()
     private var accessibilityObserver: AXObserver?
     private var accessibilityApplication: AXUIElement?
@@ -31,6 +81,16 @@ final class ActivityMonitor {
     ) {
         self.filter = filter
         self.configuration = configuration
+        cancelCoalescedSignals()
+        let interval = Int64(
+            configuration.activityMonitoring.coalescingIntervalMilliseconds
+        )
+        keyActivityCoalescingState = ActivitySignalCoalescingState(
+            intervalMilliseconds: interval
+        )
+        accessibilityCoalescingState = ActivitySignalCoalescingState(
+            intervalMilliseconds: interval
+        )
         guard !started else {
             refresh(kind: .applicationActivated)
             return
@@ -51,6 +111,10 @@ final class ActivityMonitor {
             center.removeObserver(observer)
         }
         workspaceObservers.removeAll()
+        currentWindow = nil
+        cancelCoalescedSignals()
+        keyActivityCoalescingState = nil
+        accessibilityCoalescingState = nil
         removeAccessibilityObserver()
         visualMonitor.stop()
         if let eventTapSource {
@@ -71,9 +135,9 @@ final class ActivityMonitor {
         case kAXFocusedWindowChangedNotification:
             refresh(kind: .focusedWindowChanged)
         case kAXFocusedUIElementChangedNotification:
-            emitCurrent(kind: .focusedElementChanged)
+            emitCached(kind: .focusedElementChanged)
         case kAXValueChangedNotification, kAXTitleChangedNotification:
-            emitCurrent(kind: .accessibilityChanged)
+            emitCoalesced(kind: .accessibilityChanged)
         default:
             break
         }
@@ -86,7 +150,7 @@ final class ActivityMonitor {
                 CGEvent.tapEnable(tap: eventTap, enable: true)
             }
         case .leftMouseDown, .rightMouseDown, .otherMouseDown:
-            emitCurrent(kind: .mouseClick)
+            emitCached(kind: .mouseClick)
         case .keyDown:
             let flags = CGEventFlags(rawValue: flagsRawValue)
             guard
@@ -95,7 +159,7 @@ final class ActivityMonitor {
             else {
                 return
             }
-            emitCurrent(kind: .keyActivity)
+            emitCoalesced(kind: .keyActivity)
         default:
             break
         }
@@ -195,10 +259,12 @@ final class ActivityMonitor {
         guard let configuration else {
             return
         }
+        resetCoalescedSignals()
         let window = WindowResolver.currentWindow(
             excluding: filter,
             configuration: configuration.windowSelection
         )
+        currentWindow = window
         observeAccessibility(for: window)
         visualMonitor.restart(
             for: window,
@@ -218,16 +284,14 @@ final class ActivityMonitor {
         )
     }
 
-    private func emitCurrent(kind: NativeActivityKind) {
-        guard
-            let configuration,
-            let window = WindowResolver.currentWindow(
-                excluding: filter,
-                configuration: configuration.windowSelection
-            )
-        else {
+    private func emitCached(kind: NativeActivityKind) {
+        guard let window = currentWindow else {
             return
         }
+        emit(kind: kind, window: window)
+    }
+
+    private func emit(kind: NativeActivityKind, window: WindowMetadata) {
         writer.write(
             .activity(
                 NativeActivitySignal(
@@ -237,6 +301,99 @@ final class ActivityMonitor {
                 )
             )
         )
+    }
+
+    private func emitCoalesced(kind: NativeActivityKind) {
+        let now = monotonicMilliseconds()
+        let shouldEmit: Bool
+        let interval: Int64
+        switch kind {
+        case .keyActivity:
+            guard var state = keyActivityCoalescingState else {
+                return
+            }
+            shouldEmit = state.record(atMilliseconds: now)
+            interval = state.intervalMilliseconds
+            keyActivityCoalescingState = state
+            keyActivityFlushTask?.cancel()
+            keyActivityFlushTask = makeFlushTask(
+                kind: kind,
+                delayMilliseconds: interval
+            )
+        case .accessibilityChanged:
+            guard var state = accessibilityCoalescingState else {
+                return
+            }
+            shouldEmit = state.record(atMilliseconds: now)
+            interval = state.intervalMilliseconds
+            accessibilityCoalescingState = state
+            accessibilityFlushTask?.cancel()
+            accessibilityFlushTask = makeFlushTask(
+                kind: kind,
+                delayMilliseconds: interval
+            )
+        default:
+            emitCached(kind: kind)
+            return
+        }
+        if shouldEmit {
+            emitCached(kind: kind)
+        }
+    }
+
+    private func makeFlushTask(
+        kind: NativeActivityKind,
+        delayMilliseconds: Int64
+    ) -> Task<Void, Never> {
+        Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(
+                    for: .milliseconds(delayMilliseconds)
+                )
+            } catch {
+                return
+            }
+            self?.flushCoalesced(kind: kind)
+        }
+    }
+
+    private func flushCoalesced(kind: NativeActivityKind) {
+        let now = monotonicMilliseconds()
+        let shouldEmit: Bool
+        switch kind {
+        case .keyActivity:
+            guard var state = keyActivityCoalescingState else {
+                return
+            }
+            shouldEmit = state.flush(atMilliseconds: now)
+            keyActivityCoalescingState = state
+            keyActivityFlushTask = nil
+        case .accessibilityChanged:
+            guard var state = accessibilityCoalescingState else {
+                return
+            }
+            shouldEmit = state.flush(atMilliseconds: now)
+            accessibilityCoalescingState = state
+            accessibilityFlushTask = nil
+        default:
+            return
+        }
+        if shouldEmit {
+            emitCached(kind: kind)
+        }
+    }
+
+    private func cancelCoalescedSignals() {
+        keyActivityFlushTask?.cancel()
+        keyActivityFlushTask = nil
+        accessibilityFlushTask?.cancel()
+        accessibilityFlushTask = nil
+    }
+
+    private func resetCoalescedSignals() {
+        cancelCoalescedSignals()
+        keyActivityCoalescingState?.reset()
+        accessibilityCoalescingState?.reset()
     }
 
     private func observeAccessibility(for window: WindowMetadata?) {
@@ -318,6 +475,10 @@ final class ActivityMonitor {
         accessibilityApplication = nil
         observedProcessIdentifier = nil
     }
+}
+
+private func monotonicMilliseconds() -> Int64 {
+    Int64(DispatchTime.now().uptimeNanoseconds / 1_000_000)
 }
 
 private func observationAXCallback(

@@ -2,14 +2,46 @@ import XCTest
 @testable import OpenScreenObservationHelper
 
 final class ObservationHelperTests: XCTestCase {
+    func testHelperProtocolVersionIncludesActivityMonitoringConfiguration() {
+        XCTAssertEqual(helperProtocolVersion, 3)
+    }
+
+    func testCaptureAdmissionAllowsOnlyOneActiveRequest() {
+        var admission = CaptureAdmission()
+
+        XCTAssertTrue(admission.begin(requestIdentifier: "capture-1"))
+        XCTAssertFalse(admission.begin(requestIdentifier: "capture-2"))
+        admission.end(requestIdentifier: "capture-2")
+        XCTAssertFalse(admission.begin(requestIdentifier: "capture-3"))
+        admission.end(requestIdentifier: "capture-1")
+        XCTAssertTrue(admission.begin(requestIdentifier: "capture-4"))
+    }
+
+    func testActivitySignalCoalescingThrottlesAndFlushesTrailingActivity() {
+        var state = ActivitySignalCoalescingState(intervalMilliseconds: 250)
+
+        XCTAssertTrue(state.record(atMilliseconds: 0))
+        XCTAssertFalse(state.flush(atMilliseconds: 250))
+        XCTAssertTrue(state.record(atMilliseconds: 300))
+        XCTAssertFalse(state.record(atMilliseconds: 400))
+        XCTAssertFalse(state.flush(atMilliseconds: 649))
+        XCTAssertTrue(state.flush(atMilliseconds: 650))
+        XCTAssertFalse(state.flush(atMilliseconds: 900))
+        XCTAssertTrue(state.record(atMilliseconds: 901))
+        XCTAssertFalse(state.record(atMilliseconds: 1_000))
+        state.reset()
+        XCTAssertFalse(state.flush(atMilliseconds: 1_250))
+        XCTAssertTrue(state.record(atMilliseconds: 1_251))
+    }
+
     func testHelperCommandDecodesConfiguration() throws {
         let line = """
-        {"protocolVersion":2,"requestId":"configure-1","type":"configure","excludedProcessIdentifiers":[10,20],"excludedBundleIdentifiers":["com.openscreen.app"],"configuration":{"accessibility":{"maxDepth":40,"maxNodes":5000,"timeoutMilliseconds":2000,"maxTextLength":8192},"screenshot":{"maxWidth":1920,"jpegQuality":0.85},"visualMonitoring":{"maxWidth":320,"sampleIntervalMilliseconds":500,"queueDepth":2,"changeThreshold":0.015,"signatureWidth":32,"signatureHeight":18},"windowSelection":{"minimumWidth":160,"minimumHeight":120,"maximumAspectRatio":4}}}
+        {"protocolVersion":3,"requestId":"configure-1","type":"configure","excludedProcessIdentifiers":[10,20],"excludedBundleIdentifiers":["com.openscreen.app"],"configuration":{"activityMonitoring":{"coalescingIntervalMilliseconds":250},"accessibility":{"maxDepth":40,"maxNodes":5000,"timeoutMilliseconds":2000,"maxTextLength":8192},"screenshot":{"maxWidth":1920,"jpegQuality":0.85},"visualMonitoring":{"maxWidth":320,"sampleIntervalMilliseconds":500,"queueDepth":2,"changeThreshold":0.015,"signatureWidth":32,"signatureHeight":18},"windowSelection":{"minimumWidth":160,"minimumHeight":120,"maximumAspectRatio":4}}}
         """
 
         let command = try HelperCommand.decode(line)
 
-        XCTAssertEqual(command.protocolVersion, 2)
+        XCTAssertEqual(command.protocolVersion, 3)
         XCTAssertEqual(command.requestId, "configure-1")
         XCTAssertEqual(command.type, .configure)
         XCTAssertEqual(command.excludedProcessIdentifiers, [10, 20])
@@ -19,7 +51,7 @@ final class ObservationHelperTests: XCTestCase {
 
     func testHelperCommandDecodesCaptureSignal() throws {
         let line = """
-        {"protocolVersion":2,"requestId":"capture-1","type":"capture","signal":{"kind":"mouseClick","occurredAt":"2026-07-27T00:00:00.000Z","window":{"processIdentifier":100,"bundleIdentifier":"com.example.Editor","applicationName":"Editor","windowIdentifier":7,"title":"Document","frame":{"x":0,"y":0,"width":1200,"height":800}}}}
+        {"protocolVersion":3,"requestId":"capture-1","type":"capture","signal":{"kind":"mouseClick","occurredAt":"2026-07-27T00:00:00.000Z","window":{"processIdentifier":100,"bundleIdentifier":"com.example.Editor","applicationName":"Editor","windowIdentifier":7,"title":"Document","frame":{"x":0,"y":0,"width":1200,"height":800}}}}
         """
 
         let command = try HelperCommand.decode(line)
@@ -36,7 +68,7 @@ final class ObservationHelperTests: XCTestCase {
             JSONSerialization.jsonObject(with: data) as? [String: Any]
         )
 
-        XCTAssertEqual(object["protocolVersion"] as? Int, 2)
+        XCTAssertEqual(object["protocolVersion"] as? Int, 3)
         XCTAssertEqual(object["type"] as? String, "ready")
         XCTAssertEqual(object["processIdentifier"] as? Int, 42)
         XCTAssertEqual(data.last, 0x0A)
@@ -203,6 +235,7 @@ final class ObservationHelperTests: XCTestCase {
 }
 
 private let testObservationConfiguration = NativeObservationConfiguration(
+    activityMonitoring: .init(coalescingIntervalMilliseconds: 250),
     accessibility: .init(
         maxDepth: 40,
         maxNodes: 5_000,

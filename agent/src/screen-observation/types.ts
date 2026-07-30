@@ -29,11 +29,15 @@ export type ScreenObservationConfig = {
   deduplication: {
     visualDifferenceThreshold: number;
   };
+  capture: {
+    requestTimeoutMilliseconds: number;
+  };
   helperLifecycle: {
-    maxRestarts: number;
-    restartDelayMilliseconds: number;
     configurationTimeoutMilliseconds: number;
     shutdownTimeoutMilliseconds: number;
+  };
+  activityMonitoring: {
+    coalescingIntervalMilliseconds: number;
   };
   accessibility: {
     maxDepth: number;
@@ -62,7 +66,11 @@ export type ScreenObservationConfig = {
 
 export type NativeHelperConfiguration = Pick<
   ScreenObservationConfig,
-  "accessibility" | "screenshot" | "visualMonitoring" | "windowSelection"
+  | "activityMonitoring"
+  | "accessibility"
+  | "screenshot"
+  | "visualMonitoring"
+  | "windowSelection"
 >;
 
 export type WindowFrame = {

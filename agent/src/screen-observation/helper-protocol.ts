@@ -12,7 +12,7 @@ import type {
   WindowMetadata,
 } from "./types.js";
 
-export const HELPER_PROTOCOL_VERSION = 2 as const;
+export const HELPER_PROTOCOL_VERSION = 3 as const;
 const ACTIVITY_KINDS = new Set<NativeActivityKind>([
   "applicationActivated",
   "focusedWindowChanged",
@@ -31,6 +31,20 @@ const CAPTURE_STATUSES = new Set<CaptureStatus>([
   "unsupported",
   "failed",
 ]);
+
+export class NonJSONHelperOutputError extends Error {
+  constructor() {
+    super("Non-JSON helper output");
+    this.name = "NonJSONHelperOutputError";
+  }
+}
+
+export class InvalidCaptureResultError extends Error {
+  constructor(readonly requestId: string) {
+    super("Invalid helper capture result");
+    this.name = "InvalidCaptureResultError";
+  }
+}
 
 export type HelperCommand = {
   protocolVersion: typeof HELPER_PROTOCOL_VERSION;
@@ -250,12 +264,13 @@ function captureResult(value: unknown): NativeCaptureResult {
 }
 
 export function parseHelperOutput(line: string): HelperOutput {
-  let value: Record<string, unknown>;
+  let parsed: unknown;
   try {
-    value = record(JSON.parse(line));
+    parsed = JSON.parse(line);
   } catch {
-    return invalid();
+    throw new NonJSONHelperOutputError();
   }
+  const value = record(parsed);
   if (integer(value.protocolVersion) !== HELPER_PROTOCOL_VERSION) {
     throw new Error("Unsupported helper protocol version");
   }
@@ -282,11 +297,18 @@ export function parseHelperOutput(line: string): HelperOutput {
     };
   }
   if (type === "captureResult") {
+    const requestId = text(value.requestId);
+    let result: NativeCaptureResult;
+    try {
+      result = captureResult(value.result);
+    } catch {
+      throw new InvalidCaptureResultError(requestId);
+    }
     return {
       protocolVersion: HELPER_PROTOCOL_VERSION,
       type,
-      requestId: text(value.requestId),
-      result: captureResult(value.result),
+      requestId,
+      result,
     };
   }
   if (type === "status") {

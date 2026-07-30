@@ -178,9 +178,14 @@ function loadScreenObservationConfig(value: unknown): ScreenObservationConfig {
     root.deduplication,
     "screenObservation.deduplication",
   );
+  const capture = object(root.capture, "screenObservation.capture");
   const helperLifecycle = object(
     root.helperLifecycle,
     "screenObservation.helperLifecycle",
+  );
+  const activityMonitoring = object(
+    root.activityMonitoring,
+    "screenObservation.activityMonitoring",
   );
   const accessibility = object(root.accessibility, "screenObservation.accessibility");
   const screenshot = object(root.screenshot, "screenObservation.screenshot");
@@ -245,15 +250,13 @@ function loadScreenObservationConfig(value: unknown): ScreenObservationConfig {
         1,
       ),
     },
+    capture: {
+      requestTimeoutMilliseconds: positiveJSONInteger(
+        capture.requestTimeoutMilliseconds,
+        "screenObservation.capture.requestTimeoutMilliseconds",
+      ),
+    },
     helperLifecycle: {
-      maxRestarts: nonNegativeInteger(
-        helperLifecycle.maxRestarts,
-        "screenObservation.helperLifecycle.maxRestarts",
-      ),
-      restartDelayMilliseconds: nonNegativeInteger(
-        helperLifecycle.restartDelayMilliseconds,
-        "screenObservation.helperLifecycle.restartDelayMilliseconds",
-      ),
       configurationTimeoutMilliseconds: positiveJSONInteger(
         helperLifecycle.configurationTimeoutMilliseconds,
         "screenObservation.helperLifecycle.configurationTimeoutMilliseconds",
@@ -261,6 +264,12 @@ function loadScreenObservationConfig(value: unknown): ScreenObservationConfig {
       shutdownTimeoutMilliseconds: positiveJSONInteger(
         helperLifecycle.shutdownTimeoutMilliseconds,
         "screenObservation.helperLifecycle.shutdownTimeoutMilliseconds",
+      ),
+    },
+    activityMonitoring: {
+      coalescingIntervalMilliseconds: positiveJSONInteger(
+        activityMonitoring.coalescingIntervalMilliseconds,
+        "screenObservation.activityMonitoring.coalescingIntervalMilliseconds",
       ),
     },
     accessibility: {

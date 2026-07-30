@@ -14,6 +14,10 @@ enum NativeActivityKind: String, Codable, Sendable {
 }
 
 struct NativeObservationConfiguration: Codable, Equatable, Sendable {
+    struct ActivityMonitoring: Codable, Equatable, Sendable {
+        let coalescingIntervalMilliseconds: Int
+    }
+
     struct Accessibility: Codable, Equatable, Sendable {
         let maxDepth: Int
         let maxNodes: Int
@@ -41,6 +45,7 @@ struct NativeObservationConfiguration: Codable, Equatable, Sendable {
         let maximumAspectRatio: Double
     }
 
+    let activityMonitoring: ActivityMonitoring
     let accessibility: Accessibility
     let screenshot: Screenshot
     let visualMonitoring: VisualMonitoring

@@ -1,5 +1,24 @@
 import Foundation
 
+struct CaptureAdmission {
+    private var activeRequestIdentifier: String?
+
+    mutating func begin(requestIdentifier: String) -> Bool {
+        guard activeRequestIdentifier == nil else {
+            return false
+        }
+        activeRequestIdentifier = requestIdentifier
+        return true
+    }
+
+    mutating func end(requestIdentifier: String) {
+        guard activeRequestIdentifier == requestIdentifier else {
+            return
+        }
+        activeRequestIdentifier = nil
+    }
+}
+
 final class JSONLineReader: @unchecked Sendable {
     private let handle: FileHandle
     private let onLine: @Sendable (String) -> Void
@@ -70,6 +89,7 @@ final class HelperRuntime {
     private var reader: JSONLineReader?
     private var filter: SelfCaptureFilter?
     private var configuration: NativeObservationConfiguration?
+    private var captureAdmission = CaptureAdmission()
     private var signalSources = [DispatchSourceSignal]()
     private var stopped = false
 
@@ -175,7 +195,20 @@ final class HelperRuntime {
             )
             return
         }
-        Task { @MainActor [writer] in
+        guard captureAdmission.begin(requestIdentifier: command.requestId) else {
+            writer.write(
+                .error(
+                    requestId: command.requestId,
+                    code: "capture_busy",
+                    message: "Another observation capture is still running"
+                )
+            )
+            return
+        }
+        Task { @MainActor [writer, self] in
+            defer {
+                captureAdmission.end(requestIdentifier: command.requestId)
+            }
             do {
                 let result = try await ObservationCaptureEngine.capture(
                     signal: signal,
