@@ -277,7 +277,7 @@ test("serializes concurrent processing of the same timeline source", async (t) =
   assert.equal((await readTimelineEntries(root)).length, 1);
 });
 
-test("rejects sensitive model output before writing a timeline", async (t) => {
+test("persists structurally valid timeline output without classifying it", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "openscreen-activity-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const client = {
@@ -295,13 +295,17 @@ test("rejects sensitive model output before writing a timeline", async (t) => {
     },
   } as unknown as OpenAI;
 
-  await assert.rejects(processTimelineSource({
+  const result = await processTimelineSource({
     root,
     client,
     model: "vision-model",
     source: screen,
     maxInputTokens: 1000,
     maxOutputTokens: 4096,
-  }), /sensitive/i);
-  assert.deepEqual(await readTimelineEntries(root), []);
+  });
+  assert.equal(result.status, "created");
+  assert.deepEqual(
+    (await readTimelineEntries(root))[0]?.verbatimEvidence,
+    ["OPENAI_API_KEY=sk-12345678901234567890"],
+  );
 });

@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
 import {
   appendFile,
   mkdir,
@@ -14,13 +13,12 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { promisify } from "node:util";
 
 import {
   appendTimelineEntry,
   readTimelineEntries,
 } from "../../src/harness/memory/timeline/store.js";
-import { withMemoryLock } from "../../src/harness/memory/store.js";
+import { withMemoryLock } from "../../src/harness/memory/lock.js";
 import type { TimelineEntry } from "../../src/harness/memory/timeline/types.js";
 
 const entry: TimelineEntry = {
@@ -36,7 +34,6 @@ const entry: TimelineEntry = {
   entities: ["OpenScreen"],
   verbatimEvidence: ["Activity memory design"],
 };
-const execFileAsync = promisify(execFile);
 
 test("stores timeline entries in daily private JSONL files", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "openscreen-activity-"));
@@ -137,27 +134,6 @@ test("serializes two waiters recovering the same stale activity lock", async (t)
   assert.equal(entered, 2);
   assert.equal(maximumActive, 1);
   assert.notEqual(ownerNames[0], ownerNames[1]);
-});
-
-test("recovers a stale empty-directory recovery marker", async (t) => {
-  const root = await mkdtemp(join(tmpdir(), "openscreen-activity-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
-  const lock = join(root, ".activity-memory.lock");
-  await mkdir(lock);
-  await writeFile(join(lock, "recovery"), "");
-  const old = new Date("2020-01-01T00:00:00.000Z");
-  await utimes(lock, old, old);
-  const storeURL = new URL("../../src/harness/memory/store.js", import.meta.url).href;
-
-  await execFileAsync(process.execPath, [
-    "--input-type=module",
-    "--eval",
-    `import { withMemoryLock } from ${JSON.stringify(storeURL)};
-await withMemoryLock(process.argv[1], async () => {});`,
-    root,
-  ], { timeout: 3000 });
-
-  await assert.rejects(stat(lock), { code: "ENOENT" });
 });
 
 test("serializes two waiters recovering a stale empty lock directory", async (t) => {

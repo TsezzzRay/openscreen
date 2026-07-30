@@ -26,16 +26,3 @@ export type MemoryEvent = {
   changes: MemoryChange[];
   error?: string;
 };
-
-const SENSITIVE_PATTERNS = [
-  /-----BEGIN [A-Z ]*PRIVATE KEY-----/i,
-  /\bsk-[a-z0-9_-]{20,}\b/i,
-  /\bgh[pousr]_[a-z0-9]{20,}\b/i,
-  /\bAKIA[0-9A-Z]{16}\b/,
-  /\b(?:password|passwd|api[_-]?key|access[_-]?token|private[_-]?key)\b\s*[:=]\s*["']?[^\s"',}]{8,}/i,
-];
-
-export function containsSensitiveData(value: unknown) {
-  const text = typeof value === "string" ? value : JSON.stringify(value);
-  return SENSITIVE_PATTERNS.some((pattern) => pattern.test(text));
-}

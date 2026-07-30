@@ -9,25 +9,34 @@ product setup, requirements, privacy, and current limitations.
 
 ```text
 src/
-├── process.ts                 process entry point and JSONL dispatch
+├── process.ts                 JSONL transport, dispatch, and concurrency
 ├── loop.ts                    model and tool execution loop
-├── types.ts                   Agent Loop types
+├── types.ts                   shared Agent Loop and stream types
 ├── config.ts                  runtime configuration loading and validation
-├── protocol.ts                Swift-to-Agent protocol parsing
+├── protocol.ts                wire request parsing and response serialization
 └── harness/
-    ├── session/               session execution, context, storage, and locks
+    ├── session/
+    │   ├── runner.ts          one chat command lifecycle
+    │   ├── context.ts         model context construction
+    │   ├── events.ts          persisted events, validation, and replay
+    │   ├── store.ts           session file operations
+    │   ├── lock.ts            per-session concurrency lock
+    │   └── types.ts           session domain types
     ├── compaction/            retained-context compaction and summaries
     └── memory/
         ├── processor.ts       long-term memory processing
         ├── store.ts           long-term memory event storage
+        ├── lock.ts            shared activity-memory lock
+        ├── types.ts           long-term memory types
         └── timeline/          activity normalization and timeline storage
 ```
 
 `process.ts` communicates with the Swift process through JSON Lines on
-standard input and output. Chat requests enter `session/runner.ts`, which
-builds model context and invokes `loop.ts`. Timeline and long-term memory
-processing are separate harness capabilities and are not yet connected to
-the production tool registry.
+standard input and output. `protocol.ts` owns that wire format; harness code
+does not depend on it. Chat requests are mapped to session commands before
+entering `session/runner.ts`, which builds model context and invokes
+`loop.ts`. Timeline and long-term memory processing are separate harness
+capabilities and are not yet connected to the production tool registry.
 
 ## Runtime configuration
 
@@ -52,7 +61,8 @@ error.
 
 ## Persistence
 
-Sessions are stored as one append-only JSONL file per session. The header
+Sessions are stored as one append-only JSONL file per session. `store.ts`
+owns file I/O, while `events.ts` owns event validation and replay. The header
 contains session metadata; subsequent records represent turn lifecycle
 events, streamed text, Agent Run steps, tool results, and compaction.
 
@@ -62,8 +72,7 @@ use append-only records and recover complete lines after an interrupted
 write.
 
 Generated timeline summaries and memories use English. User text, code,
-errors, URLs, paths, and proper nouns remain verbatim. Recognizable
-credentials are rejected before timeline or memory persistence.
+errors, URLs, paths, and proper nouns remain verbatim.
 
 ## Tests
 

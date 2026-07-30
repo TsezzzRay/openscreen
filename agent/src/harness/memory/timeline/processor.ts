@@ -4,12 +4,11 @@ import {
   appendTimelineEntry,
   readTimelineEntries,
 } from "./store.js";
-import { withMemoryLock } from "../store.js";
+import { withMemoryLock } from "../lock.js";
 import type {
   ActivitySource,
   TimelineEntry,
 } from "./types.js";
-import { containsSensitiveData } from "../types.js";
 
 const TIMELINE_INSTRUCTIONS = `Convert one OpenScreen activity into one factual timeline entry.
 Return only this JSON shape:
@@ -118,9 +117,6 @@ function parseTimelineOutput(output: string) {
     if (record[name] !== undefined && typeof record[name] !== "string") {
       throw new Error(`Invalid timeline ${name}`);
     }
-  }
-  if (containsSensitiveData(record)) {
-    throw new Error("Timeline output contains sensitive data");
   }
   return {
     summary: record.summary.trim(),

@@ -12,6 +12,10 @@ import {
   renameSession,
 } from "../../src/harness/session/store.js";
 
+function systemImages(path: string) {
+  return [{ id: "system", source: "system_capture" as const, path }];
+}
+
 test("stores metadata on the first line and replays completed turns and compaction", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "openscreen-sessions-"));
   t.after(() => rm(directory, { force: true, recursive: true }));
@@ -22,7 +26,7 @@ test("stores metadata on the first line and replays completed turns and compacti
       turn: {
         id: "turn-1",
         user: "Question",
-        screenshotPath: "/tmp/screen.png",
+        images: systemImages("/tmp/screen.png"),
         startedAt: "2026-07-19T00:00:01.000Z",
       },
     },
@@ -35,7 +39,7 @@ test("stores metadata on the first line and replays completed turns and compacti
         user: "Question",
         assistant: "Answer",
         reasoning: "Checked the screen",
-        screenshotPath: "/tmp/screen.png",
+        images: systemImages("/tmp/screen.png"),
       },
     },
     { type: "context_compacted", summary: "Earlier facts", firstKeptTurnIndex: 1 },
@@ -58,7 +62,7 @@ test("stores metadata on the first line and replays completed turns and compacti
     user: "Question",
     assistant: "Answer",
     reasoning: "Checked the screen",
-    screenshotPath: "/tmp/screen.png",
+    images: systemImages("/tmp/screen.png"),
   }]);
   assert.equal(loaded.visibleTurns[0]?.status, "completed");
 });
@@ -250,7 +254,7 @@ test("restores an unfinished turn as interrupted without adding it to model cont
       turn: {
         id: "turn-1",
         user: "Question",
-        screenshotPath: "/tmp/screen.png",
+        images: systemImages("/tmp/screen.png"),
         startedAt: "2026-07-19T00:00:01.000Z",
       },
     },
@@ -279,7 +283,7 @@ test("restores failed and cancelled turns into model context with their status",
       turn: {
         id: "failed-turn",
         user: "Why did this fail?",
-        screenshotPath: "/tmp/failure.png",
+        images: systemImages("/tmp/failure.png"),
         startedAt: "2026-07-19T00:00:01.000Z",
       },
     },
@@ -308,7 +312,7 @@ test("restores failed and cancelled turns into model context with their status",
       user: "Why did this fail?",
       assistant: "Partial answer",
       reasoning: "",
-      screenshotPath: "/tmp/failure.png",
+      images: systemImages("/tmp/failure.png"),
       status: "failed",
     },
     {
@@ -322,26 +326,24 @@ test("restores failed and cancelled turns into model context with their status",
   assert.deepEqual(loaded.visibleTurns.map(({ status }) => status), ["failed", "cancelled"]);
 });
 
-test("keeps legacy failed turns visible without shifting model context", async (t) => {
+test("rejects session events that use screenshotPath", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "openscreen-sessions-"));
   t.after(() => rm(directory, { force: true, recursive: true }));
   const session = await createSession(directory);
-  await appendSessionEvents(directory, session.id, [
-    {
-      type: "turn_started",
-      turn: {
-        id: "legacy-failure",
-        user: "Old failure",
-        screenshotPath: "/tmp/old.png",
-        startedAt: "2026-07-18T00:00:00.000Z",
-      },
+  await appendFile(join(directory, `${session.id}.jsonl`), `${JSON.stringify({
+    type: "turn_started",
+    turn: {
+      id: "old-turn",
+      user: "Old request",
+      screenshotPath: "/tmp/old.png",
+      startedAt: "2026-07-18T00:00:00.000Z",
     },
-    { type: "turn_failed", turnId: "legacy-failure", message: "Old error" },
-  ]);
+  })}\n`);
 
-  const loaded = await loadSession(directory, session.id);
-  assert.equal(loaded.visibleTurns[0]?.status, "failed");
-  assert.deepEqual(loaded.turns, []);
+  await assert.rejects(
+    loadSession(directory, session.id),
+    /Invalid session event/,
+  );
 });
 
 test("ignores an unterminated final fragment but rejects a corrupt complete line", async (t) => {
@@ -357,7 +359,7 @@ test("ignores an unterminated final fragment but rejects a corrupt complete line
     turn: {
       id: "turn-after-crash",
       user: "Recovered",
-      screenshotPath: "/tmp/recovered.png",
+      images: systemImages("/tmp/recovered.png"),
       startedAt: "2026-07-19T00:00:02.000Z",
     },
   }]);

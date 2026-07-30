@@ -17,6 +17,10 @@ import {
 
 const loadScreenshot = async (path: string) => Buffer.from(path).toString("base64");
 
+function systemImages(path: string) {
+  return [{ id: "system", source: "system_capture" as const, path }];
+}
+
 test("builds a streaming Responses API request with system and user screenshots in order", async () => {
   const request = await makeRequest(
     "vision-model",
@@ -25,7 +29,7 @@ test("builds a streaming Responses API request with system and user screenshots 
       { id: "system", source: "system_capture", path: "current.png" },
       { id: "upload-1", source: "user_upload", path: "one.png" },
       { id: "upload-2", source: "user_upload", path: "two.png" },
-    ] as any,
+    ],
     21_760,
     undefined,
     loadScreenshot,
@@ -61,7 +65,7 @@ test("builds a MiniMax M3 streaming screenshot request", async () => {
   const request = await makeRequest(
     "MiniMax-M3",
     "What is on screen?",
-    "current.png",
+    systemImages("current.png"),
     21_760,
     undefined,
     loadScreenshot,
@@ -85,15 +89,22 @@ test("builds a MiniMax M3 streaming screenshot request", async () => {
 });
 
 test("includes every retained screenshot before the current request", async () => {
-  const request = await makeRequest("vision-model", "Current question", "current.png", 21_760, {
-    turns: [
-      { user: "First question", assistant: "First answer", screenshotPath: "first.png" },
-      { user: "Second question", assistant: "Second answer", screenshotPath: "second.png" },
-      { user: "Third question", assistant: "Third answer", screenshotPath: "third.png" },
-    ],
-    summary: "Earlier context",
-    firstKeptTurnIndex: 1,
-  }, loadScreenshot);
+  const request = await makeRequest(
+    "vision-model",
+    "Current question",
+    systemImages("current.png"),
+    21_760,
+    {
+      turns: [
+        { user: "First question", assistant: "First answer", images: systemImages("first.png") },
+        { user: "Second question", assistant: "Second answer", images: systemImages("second.png") },
+        { user: "Third question", assistant: "Third answer", images: systemImages("third.png") },
+      ],
+      summary: "Earlier context",
+      firstKeptTurnIndex: 1,
+    },
+    loadScreenshot,
+  );
 
   assert.deepEqual(request.input?.slice(0, -1), [
     { role: "developer", content: "Conversation summary:\nEarlier context" },
@@ -136,23 +147,30 @@ test("includes every retained screenshot before the current request", async () =
 });
 
 test("marks failed and cancelled turns in model context", async () => {
-  const request = await makeRequest("vision-model", "Try again", "current.png", 21_760, {
-    turns: [
-      {
-        user: "Failed question",
-        assistant: "Partial answer",
-        reasoning: "Partial reasoning",
-        screenshotPath: "failed.png",
-        status: "failed",
-      },
-      {
-        user: "Cancelled before capture",
-        assistant: "",
-        status: "cancelled",
-      },
-    ],
-    firstKeptTurnIndex: 0,
-  }, loadScreenshot);
+  const request = await makeRequest(
+    "vision-model",
+    "Try again",
+    systemImages("current.png"),
+    21_760,
+    {
+      turns: [
+        {
+          user: "Failed question",
+          assistant: "Partial answer",
+          reasoning: "Partial reasoning",
+          images: systemImages("failed.png"),
+          status: "failed",
+        },
+        {
+          user: "Cancelled before capture",
+          assistant: "",
+          status: "cancelled",
+        },
+      ],
+      firstKeptTurnIndex: 0,
+    },
+    loadScreenshot,
+  );
 
   assert.deepEqual(request.input?.slice(0, -1), [
     {
@@ -198,15 +216,22 @@ test("preserves prior response output items for the next model turn", async () =
       content: [{ type: "output_text" as const, text: "First answer", annotations: [] }],
     },
   ];
-  const request = await makeRequest("MiniMax-M3", "Follow up", "current.png", 21_760, {
-    turns: [{
-      user: "First question",
-      assistant: "First answer",
-      screenshotPath: "first.png",
-      outputItems,
-    }],
-    firstKeptTurnIndex: 0,
-  }, loadScreenshot);
+  const request = await makeRequest(
+    "MiniMax-M3",
+    "Follow up",
+    systemImages("current.png"),
+    21_760,
+    {
+      turns: [{
+        user: "First question",
+        assistant: "First answer",
+        images: systemImages("first.png"),
+        outputItems,
+      }],
+      firstKeptTurnIndex: 0,
+    },
+    loadScreenshot,
+  );
 
   assert.deepEqual(request.input?.slice(1, 3), outputItems);
   assert(Array.isArray(request.input));
@@ -227,8 +252,8 @@ test("counts retained turn text and screenshots together", async () => {
   } as unknown as OpenAI;
 
   const tokens = await countTurns(client, "vision-model", [
-    { user: "Question 1", assistant: "Answer 1", screenshotPath: "first.png" },
-    { user: "Question 2", assistant: "Answer 2", screenshotPath: "second.png" },
+    { user: "Question 1", assistant: "Answer 1", images: systemImages("first.png") },
+    { user: "Question 2", assistant: "Answer 2", images: systemImages("second.png") },
   ], loadScreenshot);
 
   assert.equal(tokens, 123);
@@ -326,7 +351,7 @@ test("summarizes old screenshots as plain facts without internal references", as
     [{
       user: "Why did this fail?",
       assistant: "The form reports an authentication error.",
-      screenshotPath: "error-screen.png",
+      images: systemImages("error-screen.png"),
     }],
     4_096,
     loadScreenshot,

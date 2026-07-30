@@ -3,7 +3,7 @@ import OpenAI from "openai";
 import type {
   AgentRunEvent,
   AgentTool,
-  ChatStreamEvent,
+  AgentStreamEvent,
   ConversationOutputItem,
   ModelOutputItem,
 } from "./types.js";
@@ -22,7 +22,7 @@ export type ModelEvent = {
 
 export function mapEvent(
   event: ModelEvent,
-): ChatStreamEvent | undefined {
+): AgentStreamEvent | undefined {
   switch (event.type) {
     case "response.reasoning_summary_text.delta":
     case "response.reasoning_text.delta":
@@ -45,7 +45,7 @@ export function mapEvent(
 
 export async function relayStream(
   stream: AsyncIterable<ModelEvent>,
-  send: (event: ChatStreamEvent) => void,
+  send: (event: AgentStreamEvent) => void,
 ): Promise<{
   output: string;
   reasoning: string;
@@ -121,7 +121,7 @@ export async function runAgentLoop(
   client: OpenAI,
   buildRequest: BuildAgentRequest,
   tools: AgentTool[],
-  send: (event: ChatStreamEvent) => void,
+  send: (event: AgentStreamEvent) => void,
   record: (event: AgentRunEvent) => Promise<void>,
   signal: AbortSignal,
 ): Promise<{

@@ -7,15 +7,18 @@ import type {
   ConversationOutputItem,
 } from "../../types.js";
 import type { RuntimeConfig } from "../../config.js";
-import type { InputEnvelope, OutputEnvelope } from "../../protocol.js";
 import {
   appendSessionEvents,
   loadSession,
   renameSession,
-  type SessionEvent,
 } from "./store.js";
+import type { SessionEvent } from "./events.js";
 import { compactIfNeeded, compactSession } from "../compaction/compact.js";
 import { summarizeTurns } from "../compaction/summary.js";
+import type {
+  ChatCommand,
+  SessionRunEvent,
+} from "./types.js";
 import {
   countRequestTokens,
   countTurns,
@@ -24,7 +27,9 @@ import {
 
 const REQUEST_FAILED_MESSAGE = "Request failed. Please retry.";
 
-type Emit = (event: OutputEnvelope & { sessionId: string }) => void;
+type Emit = (
+  event: SessionRunEvent & { requestId: string; sessionId: string },
+) => void;
 
 function automaticTitle(text: string) {
   return text.replace(/\s+/g, " ").trim().slice(0, 60) || "New Chat";
@@ -84,7 +89,7 @@ class EventBatcher {
 }
 
 export async function runChat(
-  envelope: Extract<InputEnvelope, { type: "chat" }>,
+  command: ChatCommand,
   sessionsDirectory: string,
   client: OpenAI,
   model: string,
@@ -94,7 +99,7 @@ export async function runChat(
   signal: AbortSignal,
   tools: AgentTool[] = [],
 ) {
-  const { requestId, sessionId, input } = envelope;
+  const { requestId, sessionId, input } = command;
   let turnStarted = false;
   let terminalStarted = false;
   let failureEmitted = false;

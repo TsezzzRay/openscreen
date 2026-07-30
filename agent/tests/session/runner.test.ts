@@ -49,7 +49,6 @@ test("cancels an agent run while a tool is executing", async (t) => {
   const running = runChat(
     {
       requestId: "turn-1",
-      type: "chat",
       sessionId: session.id,
       input: {
         text: "Find context",
@@ -143,7 +142,6 @@ test("fails duplicate tool call IDs without corrupting the session", async (t) =
   await runChat(
     {
       requestId: "turn-1",
-      type: "chat",
       sessionId: session.id,
       input: {
         text: "Find context",
@@ -377,7 +375,14 @@ test("rebuilds the agent process context after turn-end compaction", async (t) =
     return request({
       type: "chat",
       sessionId: targetSessionId,
-      input: { text, image },
+      input: {
+        text,
+        images: [{
+          id: `system-${turnNumber}`,
+          source: "system_capture",
+          path: image,
+        }],
+      },
     });
   }
 
@@ -430,7 +435,14 @@ test("rebuilds the agent process context after turn-end compaction", async (t) =
     await request({
       type: "chat",
       sessionId: targetSessionId,
-      input: { text, image },
+      input: {
+        text,
+        images: [{
+          id: `system-${requestNumber + 1}`,
+          source: "system_capture",
+          path: image,
+        }],
+      },
     });
     return text;
   }
@@ -479,7 +491,14 @@ test("rebuilds the agent process context after turn-end compaction", async (t) =
   const cancelled = startRequest({
     type: "chat",
     sessionId,
-    input: { text: "cancel me", image: cancelImage },
+    input: {
+      text: "cancel me",
+      images: [{
+        id: "system-cancel",
+        source: "system_capture",
+        path: cancelImage,
+      }],
+    },
   });
   await cancelDeltaReady;
   const unaffected = concurrentTurn("other survives cancellation", otherSessionId);
@@ -506,7 +525,7 @@ test("rebuilds the agent process context after turn-end compaction", async (t) =
   await request({
     type: "record_attempt",
     sessionId,
-    input: { text: "cancelled during capture" },
+    input: { text: "cancelled during capture", images: [] },
     status: "cancelled",
   });
   await concurrentTurn("after capture cancellation", sessionId);
@@ -517,7 +536,7 @@ test("rebuilds the agent process context after turn-end compaction", async (t) =
   await request({
     type: "record_attempt",
     sessionId,
-    input: { text: "capture failed" },
+    input: { text: "capture failed", images: [] },
     status: "failed",
   });
   await concurrentTurn("after capture failure", sessionId);

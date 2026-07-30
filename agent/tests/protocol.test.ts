@@ -49,18 +49,23 @@ test("parses an ordered system capture and any number of user uploads", () => {
   );
 });
 
-test("normalizes legacy single-image chat requests", () => {
-  const request = parseInputEnvelope(JSON.stringify({
+test("rejects chat requests without an images array", () => {
+  assert.throws(() => parseInputEnvelope(JSON.stringify({
     requestId: "request-1",
     type: "chat",
     sessionId: "session-1",
-    input: { text: "What is this?", image: "/tmp/legacy.png" },
-  }));
+    input: { text: "What is this?", image: "/tmp/old.png" },
+  })), /Invalid agent request/);
+});
 
-  assert.equal(request.type, "chat");
-  assert.deepEqual(request.input.images, [
-    { id: "legacy-system", source: "system_capture", path: "/tmp/legacy.png" },
-  ]);
+test("rejects record attempts without an images array", () => {
+  assert.throws(() => parseInputEnvelope(JSON.stringify({
+    requestId: "request-1",
+    type: "record_attempt",
+    sessionId: "session-1",
+    input: { text: "Capture failed" },
+    status: "failed",
+  })), /Invalid agent request/);
 });
 
 test("record attempts retain user uploads without requiring a system capture", () => {

@@ -1,7 +1,7 @@
-import type { ChatImage } from "./harness/session/types.js";
-import type { ChatStreamEvent } from "./types.js";
-
-export type { ChatImage } from "./harness/session/types.js";
+import type {
+  AgentStreamEvent,
+  ChatImage,
+} from "./types.js";
 
 export type InputEnvelope = {
   requestId: string;
@@ -36,9 +36,34 @@ export type InputEnvelope = {
   status: "failed" | "cancelled";
 };
 
+export type SessionSummaryPayload = {
+  id: string;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type SessionSnapshotPayload = SessionSummaryPayload & {
+  turns: Array<{
+    id: string;
+    user: string;
+    assistant: string;
+    reasoning?: string;
+    status: "completed" | "failed" | "cancelled" | "interrupted";
+    images?: ChatImage[];
+    error?: string;
+  }>;
+};
+
 export type OutputEnvelope = {
   requestId: string;
-} & (ChatStreamEvent | { type: "started" | "cancelled" });
+  sessionId?: string;
+} & (
+  AgentStreamEvent
+  | { type: "started" | "cancelled" }
+  | { type: "sessions"; sessions: SessionSummaryPayload[] }
+  | { type: "session"; session: SessionSnapshotPayload }
+);
 
 function invalid(): never {
   throw new Error("Invalid agent request");
@@ -91,9 +116,7 @@ export function parseInputEnvelope(line: string): InputEnvelope {
 
   const input = record(value.input);
   if (type === "chat") {
-    const images = "images" in input
-      ? chatImages(input.images)
-      : [{ id: "legacy-system", source: "system_capture" as const, path: text(input.image) }];
+    const images = chatImages(input.images);
     if (
       images.length === 0 || images[0]?.source !== "system_capture" ||
       images.filter((image) => image.source === "system_capture").length !== 1
@@ -106,7 +129,7 @@ export function parseInputEnvelope(line: string): InputEnvelope {
     };
   }
   if (type === "record_attempt" && (value.status === "failed" || value.status === "cancelled")) {
-    const images = "images" in input ? chatImages(input.images) : [];
+    const images = chatImages(input.images);
     if (images.some((image) => image.source !== "user_upload")) invalid();
     return {
       requestId,
@@ -117,4 +140,8 @@ export function parseInputEnvelope(line: string): InputEnvelope {
     };
   }
   return invalid();
+}
+
+export function serializeOutputEnvelope(envelope: OutputEnvelope) {
+  return JSON.stringify(envelope);
 }

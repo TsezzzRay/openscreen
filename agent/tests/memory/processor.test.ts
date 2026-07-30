@@ -371,7 +371,7 @@ test("records a failed memory attempt and waits until the next interval", async 
   assert.match(event?.error ?? "", /Provider unavailable/);
 });
 
-test("rejects sensitive memory content before writing an active memory", async (t) => {
+test("accepts structurally valid memory content without classifying it", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "openscreen-memory-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   await appendTimelineEntry(root, timeline);
@@ -402,9 +402,14 @@ test("rejects sensitive memory content before writing an active memory", async (
     now: () => new Date("2026-07-28T00:00:01.000Z"),
   });
 
-  assert.equal(result.status, "failed");
-  assert.deepEqual(await readActiveMemories(root), []);
-  assert.match((await readMemoryEvents(root))[0]?.error ?? "", /sensitive/i);
+  assert.equal(result.status, "processed");
+  assert.deepEqual(
+    (await readActiveMemories(root)).map(({ topic, content }) => ({ topic, content })),
+    [{
+      topic: "API key",
+      content: "OPENAI_API_KEY=sk-12345678901234567890",
+    }],
+  );
 });
 
 test("anchors the first memory interval to the earliest timeline creation time", async (t) => {
@@ -558,7 +563,7 @@ test("rejects multiple supersede decisions for the same active memory", async (t
   assert.deepEqual(await readActiveMemories(root), [oldMemory]);
 });
 
-test("does not persist credentials from a provider error", async (t) => {
+test("persists provider errors without content classification", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "openscreen-memory-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   await appendTimelineEntry(root, timeline);
@@ -584,6 +589,6 @@ test("does not persist credentials from a provider error", async (t) => {
 
   assert.equal(
     (await readMemoryEvents(root))[0]?.error,
-    "Memory processing failed",
+    "Provider rejected sk-12345678901234567890",
   );
 });

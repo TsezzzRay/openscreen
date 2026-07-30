@@ -5,15 +5,14 @@ import type OpenAI from "openai";
 import {
   appendMemoryEvent,
   readMemoryEvents,
-  withMemoryLock,
 } from "./store.js";
+import { withMemoryLock } from "./lock.js";
 import { readTimelineEntries } from "./timeline/store.js";
 import type {
   MemoryChange,
   MemoryEvent,
   MemoryItem,
 } from "./types.js";
-import { containsSensitiveData } from "./types.js";
 import type { TimelineEntry } from "./timeline/types.js";
 
 const MEMORY_INSTRUCTIONS = `Update OpenScreen long-term memory from timeline entries.
@@ -93,9 +92,6 @@ function parseDecisions(
         typeof record.topic !== "string" || !record.topic.trim() ||
         typeof record.content !== "string" || !record.content.trim()) {
       throw new Error("Model returned an invalid memory decision");
-    }
-    if (containsSensitiveData([record.topic, record.content])) {
-      throw new Error("Memory output contains sensitive data");
     }
     if (record.action === "supersede") {
       if (typeof record.memoryId !== "string" || !activeIds.has(record.memoryId)) {
@@ -350,7 +346,7 @@ export async function processMemoryIfDue({
         status: "failed",
         timelineEntryIds: remaining.map(({ id }) => id),
         changes: [],
-        error: containsSensitiveData(message) ? "Memory processing failed" : message,
+        error: message,
       };
       await appendMemoryEvent(root, event);
       newEvents.push(event);

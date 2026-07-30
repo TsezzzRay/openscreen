@@ -1,5 +1,11 @@
 import type OpenAI from "openai";
 
+export type ChatImage = {
+  id: string;
+  source: "system_capture" | "user_upload";
+  path: string;
+};
+
 export type ModelOutputItem =
   | OpenAI.Responses.ResponseReasoningItem
   | OpenAI.Responses.ResponseOutputMessage
@@ -32,29 +38,7 @@ export type AgentRunEvent = {
   status: "completed" | "failed";
 };
 
-export type AgentToolResult = {
-  callId: string;
-  name: string;
-  output: string;
-  status: "completed" | "failed";
-};
-
-export type AgentRunStep = {
-  step: number;
-  responseId?: string;
-  outputItems: ModelOutputItem[];
-  totalTokens?: number;
-  toolResults: AgentToolResult[];
-};
-
-export type AgentRun = {
-  id: string;
-  status: "completed" | "failed" | "cancelled" | "interrupted";
-  startedAt: string;
-  steps: AgentRunStep[];
-};
-
-export type ChatStreamEvent = {
+export type AgentStreamEvent = {
   type: "reasoning_delta" | "answer_delta";
   delta: string;
 } | {

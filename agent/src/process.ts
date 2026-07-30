@@ -13,44 +13,24 @@ import {
   listSessions,
   loadSession,
   renameSession,
-  type SessionSummary,
-  type StoredSession,
 } from "./harness/session/store.js";
+import type {
+  StoredSession,
+} from "./harness/session/types.js";
 import { withSessionLock } from "./harness/session/lock.js";
 import {
   parseInputEnvelope,
-  type ChatImage,
+  serializeOutputEnvelope,
   type InputEnvelope,
   type OutputEnvelope,
+  type SessionSnapshotPayload,
 } from "./protocol.js";
 
-type SessionSnapshot = SessionSummary & {
-  turns: Array<{
-    id: string;
-    user: string;
-    assistant: string;
-    reasoning?: string;
-    status: "completed" | "failed" | "cancelled" | "interrupted";
-    images?: ChatImage[];
-    error?: string;
-  }>;
-};
-
-type AgentOutput = (OutputEnvelope & { sessionId?: string }) | {
-  requestId: string;
-  type: "sessions";
-  sessions: SessionSummary[];
-} | {
-  requestId: string;
-  type: "session";
-  session: SessionSnapshot;
-};
-
-function emit(event: AgentOutput) {
-  process.stdout.write(`${JSON.stringify(event)}\n`);
+function emit(event: OutputEnvelope) {
+  process.stdout.write(`${serializeOutputEnvelope(event)}\n`);
 }
 
-function snapshot(session: StoredSession): SessionSnapshot {
+function snapshot(session: StoredSession): SessionSnapshotPayload {
   return {
     id: session.id,
     title: session.title,
@@ -142,7 +122,11 @@ async function run() {
         return;
       }
       await runChat(
-        envelope,
+        {
+          requestId: envelope.requestId,
+          sessionId: envelope.sessionId,
+          input: envelope.input,
+        },
         sessionsDirectory,
         client,
         model,
