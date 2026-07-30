@@ -15,6 +15,20 @@ const fileConfig = {
     keepRecentTokens: 20_000,
     maxOutputTokens: 21_760,
     summaryMaxOutputTokens: 4_096,
+    minimumRecentTurns: 2,
+  },
+  session: {
+    eventFlushBytes: 4_096,
+    eventFlushMilliseconds: 250,
+  },
+  timeline: {
+    maxInputTokens: 244_800,
+    maxOutputTokens: 4_096,
+  },
+  memory: {
+    processingIntervalMinutes: 1_440,
+    maxInputTokens: 244_800,
+    maxOutputTokens: 4_096,
   },
 };
 
@@ -50,6 +64,14 @@ test("overrides every JSON setting from environment variables", (t) => {
     OPENSCREEN_KEEP_RECENT_TOKENS: "12000",
     OPENSCREEN_MAX_OUTPUT_TOKENS: "20000",
     OPENSCREEN_SUMMARY_MAX_OUTPUT_TOKENS: "3000",
+    OPENSCREEN_MIN_RECENT_TURNS: "3",
+    OPENSCREEN_SESSION_EVENT_FLUSH_BYTES: "8192",
+    OPENSCREEN_SESSION_EVENT_FLUSH_MS: "100",
+    OPENSCREEN_TIMELINE_MAX_INPUT_TOKENS: "90000",
+    OPENSCREEN_TIMELINE_MAX_OUTPUT_TOKENS: "2000",
+    OPENSCREEN_MEMORY_PROCESSING_INTERVAL_MINUTES: "720",
+    OPENSCREEN_MEMORY_MAX_INPUT_TOKENS: "80000",
+    OPENSCREEN_MEMORY_MAX_OUTPUT_TOKENS: "1500",
   }), {
     apiKey: "secret",
     model: "override-model",
@@ -60,6 +82,20 @@ test("overrides every JSON setting from environment variables", (t) => {
       keepRecentTokens: 12_000,
       maxOutputTokens: 20_000,
       summaryMaxOutputTokens: 3_000,
+      minimumRecentTurns: 3,
+    },
+    session: {
+      eventFlushBytes: 8_192,
+      eventFlushMilliseconds: 100,
+    },
+    timeline: {
+      maxInputTokens: 90_000,
+      maxOutputTokens: 2_000,
+    },
+    memory: {
+      processingIntervalMinutes: 720,
+      maxInputTokens: 80_000,
+      maxOutputTokens: 1_500,
     },
   });
 });
@@ -135,5 +171,31 @@ test("rejects inconsistent context limits", (t) => {
   assert.throws(
     () => loadRuntimeConfig(path, { OPENAI_API_KEY: "secret" }),
     /compactAtTokens must be less than windowTokens/,
+  );
+});
+
+test("rejects invalid harness limits", (t) => {
+  const invalidInterval = withConfig(t, {
+    ...fileConfig,
+    memory: {
+      ...fileConfig.memory,
+      processingIntervalMinutes: 0,
+    },
+  });
+  assert.throws(
+    () => loadRuntimeConfig(invalidInterval.path, { OPENAI_API_KEY: "secret" }),
+    /memory.processingIntervalMinutes must be a positive integer/,
+  );
+
+  const invalidTimelineBudget = withConfig(t, {
+    ...fileConfig,
+    timeline: {
+      maxInputTokens: 270_000,
+      maxOutputTokens: 4_096,
+    },
+  });
+  assert.throws(
+    () => loadRuntimeConfig(invalidTimelineBudget.path, { OPENAI_API_KEY: "secret" }),
+    /timeline token budget exceeds context.windowTokens/,
   );
 });

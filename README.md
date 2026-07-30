@@ -40,13 +40,13 @@ cp .env.example .env
 npm run dev
 ```
 
-Set `OPENAI_API_KEY` in `.env`, then replace the `model` and `baseURL` placeholders in `config.json`. The configured provider and model must support the Responses API, image input, streaming, and `/responses/input_tokens`.
+Set `OPENAI_API_KEY` in `.env`, then replace the `model` and `baseURL` placeholders in `config.json`. `OPENAI_MODEL` and `OPENAI_BASE_URL` are optional environment overrides. The configured provider and model must support the Responses API, image input, streaming, and `/responses/input_tokens`.
 
 For MiniMax M3, set `model` to `MiniMax-M3` and `baseURL` to `https://api.minimax.io/v1` in `config.json`.
 
 OpenScreen sends `reasoning.summary: "auto"` to other Responses API providers and `reasoning.effort: "minimal"` to MiniMax M3.
 
-The JSON values can be overridden with `OPENAI_MODEL`, `OPENAI_BASE_URL`, `OPENSCREEN_CONTEXT_WINDOW_TOKENS`, `OPENSCREEN_COMPACT_AT_TOKENS`, `OPENSCREEN_KEEP_RECENT_TOKENS`, `OPENSCREEN_MAX_OUTPUT_TOKENS`, and `OPENSCREEN_SUMMARY_MAX_OUTPUT_TOKENS`. Existing process environment variables override `.env`, and `.env` overrides `config.json`. The API key is never read from JSON.
+`config.json` contains the non-secret defaults for context, sessions, timeline processing, and long-term memory. Process environment variables can override these values, but `.env.example` intentionally lists only the three common provider variables. The API key is never read from JSON. See the [Agent configuration reference](agent/README.md#runtime-configuration) for the ownership and validation rules.
 
 On first launch, macOS will request Screen Recording permission. After granting permission, press `Option + Space`, enter a question, and press `Enter`. Use `Shift + Enter` to insert a newline. Stop OpenScreen with `Control + C` in the launching terminal.
 
@@ -54,7 +54,7 @@ On first launch, macOS will request Screen Recording permission. After granting 
 
 OpenScreen does not capture the screen continuously. It captures the active window only after a question is submitted.
 
-Conversation state is stored locally as one append-only JSONL file per session under `~/Library/Application Support/OpenScreen/sessions/`. The first line contains session metadata; later lines record turn starts, batched streaming deltas, Agent Run model steps and tool results, completed, failed, or cancelled turns, and context compaction. Completed, failed, and cancelled turns are restored into model context; failed and cancelled responses are explicitly marked as incomplete. A turn interrupted by process exit remains visible but is excluded from future model requests. The selected session is restored when the app starts again.
+Conversation state is stored locally under `~/Library/Application Support/OpenScreen/sessions/`. Completed, failed, and cancelled turns are restored into model context, while a turn interrupted by process exit remains visible but is excluded from future model requests. The selected session is restored when the app starts again. The [Agent README](agent/README.md#persistence) describes the underlying persistence formats.
 
 Each screenshot is:
 
@@ -83,21 +83,11 @@ local agent (Node.js, TypeScript, OpenAI SDK)
 configured Responses API-compatible provider
 ```
 
-The macOS process owns the panel, shortcut, capture, selected-session UI, per-session streaming cache, and local screenshot files. The Node.js process owns durable per-session turn history, Agent Loop execution, tool dispatch, Agent Run records, cross-process session locks, screenshot paths, context compaction, runtime configuration, and model requests. Every chat event carries both `requestId` and `sessionId`; reasoning and final-answer text are rendered separately. Completed, failed, and cancelled turns are retained in model context, with unsuccessful responses marked as incomplete so they are not mistaken for finished answers. The production tool list stays empty until activity and memory retrieval are connected during integration. The default configuration compacts at 244,800 of 272,000 multimodal tokens, keeps about 20,000 tokens of recent turns in model context, and retains the full event history on disk.
+The macOS process owns the panel, shortcut, capture, UI state, and local screenshot files. The Node.js process owns sessions, Agent Loop execution, tool dispatch, context compaction, runtime configuration, persistence, and model requests. See the [Agent README](agent/README.md) for its internal structure and data flow.
 
 ## Activity memory core
 
-The Node agent includes an activity-memory core for integration with persisted screen observations and terminal turns:
-
-- `processTimelineSource` converts one `ScreenObservation` or one terminal turn into one factual timeline entry. A turn includes its Agent Run when present, so conversation and tool activity do not produce duplicate timeline entries.
-- A screen observation is sent as one Responses API JSON request containing the observation JSON and its Base64 screenshot as an `input_image`. The screenshot remains Base64 in the persisted observation; activity memory does not create a separate image file.
-- Input tokens are counted before generation. A single observation or turn at or above the configured input budget is discarded without fallback processing or persistence.
-- Timeline entries are append-only JSONL under `~/Library/Application Support/OpenScreen/timeline/YYYY-MM-DD.jsonl`.
-- `processMemoryIfDue` processes unhandled timeline entries every 24 hours. It creates, supersedes, or skips long-term memories, splitting one due run only when the model context requires multiple requests.
-- Memory events are append-only JSONL under `~/Library/Application Support/OpenScreen/memory/events.jsonl`. Processed timeline IDs and the latest attempt time are recovered from this log; there is no checkpoint file.
-- Generated summaries and memories are English, while quoted user text, code, errors, URLs, paths, and proper nouns remain verbatim. Outputs containing recognizable passwords, API tokens, or private keys are rejected before persistence.
-
-The core currently uses fixed test observations and turns. Live screen-observation and Agent Loop wiring, memory search, automatic recall, and model-context injection belong to the later integration phase.
+The Node Agent contains timeline and long-term-memory processing for later integration with live screen observations and terminal turns. Live observation wiring, memory search, automatic recall, and model-context injection are not connected yet. Implementation boundaries and persistence behavior are documented in the [Agent README](agent/README.md).
 
 ## Development
 

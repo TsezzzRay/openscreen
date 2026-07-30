@@ -29,7 +29,19 @@ const timeline: TimelineEntry = {
   verbatimEvidence: ["暂定每24小时请求"],
 };
 
-test("processes pending timeline entries after the 24-hour memory interval", async (t) => {
+type MemoryOptions = Parameters<typeof processMemoryIfDue>[0];
+
+function processMemory(
+  options: Omit<MemoryOptions, "processingIntervalMinutes"> &
+    Partial<Pick<MemoryOptions, "processingIntervalMinutes">>,
+) {
+  return processMemoryIfDue({
+    processingIntervalMinutes: 1_440,
+    ...options,
+  });
+}
+
+test("processes pending timeline entries after the configured memory interval", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "openscreen-memory-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   await appendTimelineEntry(root, timeline);
@@ -56,21 +68,23 @@ test("processes pending timeline entries after the 24-hour memory interval", asy
     },
   } as unknown as OpenAI;
 
-  const early = await processMemoryIfDue({
+  const early = await processMemory({
     root,
     client,
     model: "vision-model",
+    processingIntervalMinutes: 60,
     maxInputTokens: 1000,
     maxOutputTokens: 4096,
-    now: () => new Date("2026-07-28T00:00:00.000Z"),
+    now: () => new Date("2026-07-27T01:00:00.000Z"),
   });
-  const due = await processMemoryIfDue({
+  const due = await processMemory({
     root,
     client,
     model: "vision-model",
+    processingIntervalMinutes: 60,
     maxInputTokens: 1000,
     maxOutputTokens: 4096,
-    now: () => new Date("2026-07-28T00:00:01.000Z"),
+    now: () => new Date("2026-07-27T01:00:01.000Z"),
   });
 
   assert.equal(early.status, "not_due");
@@ -115,15 +129,15 @@ test("records an empty due cycle without calling the model", async (t) => {
     maxInputTokens: 1000,
     maxOutputTokens: 4096,
   };
-  await processMemoryIfDue({
+  await processMemory({
     ...options,
     now: () => new Date("2026-07-28T00:00:01.000Z"),
   });
-  const empty = await processMemoryIfDue({
+  const empty = await processMemory({
     ...options,
     now: () => new Date("2026-07-29T00:00:01.000Z"),
   });
-  const shortlyAfter = await processMemoryIfDue({
+  const shortlyAfter = await processMemory({
     ...options,
     now: () => new Date("2026-07-29T00:01:01.000Z"),
   });
@@ -157,7 +171,7 @@ test("marks skipped timeline entries as processed without creating memory", asyn
     },
   } as unknown as OpenAI;
 
-  const result = await processMemoryIfDue({
+  const result = await processMemory({
     root,
     client,
     model: "vision-model",
@@ -226,7 +240,7 @@ test("supersedes an active memory using new timeline evidence", async (t) => {
     maxOutputTokens: 4096,
   };
 
-  await processMemoryIfDue({
+  await processMemory({
     ...options,
     now: () => new Date("2026-07-28T00:00:01.000Z"),
   });
@@ -241,7 +255,7 @@ test("supersedes an active memory using new timeline evidence", async (t) => {
     verbatimEvidence: ["改成每12小时"],
   });
 
-  const result = await processMemoryIfDue({
+  const result = await processMemory({
     ...options,
     now: () => new Date("2026-07-29T00:00:01.000Z"),
   });
@@ -297,7 +311,7 @@ test("splits one due memory run when all pending timeline entries exceed context
     },
   } as unknown as OpenAI;
 
-  const result = await processMemoryIfDue({
+  const result = await processMemory({
     root,
     client,
     model: "vision-model",
@@ -339,11 +353,11 @@ test("records a failed memory attempt and waits until the next interval", async 
     maxOutputTokens: 4096,
   };
 
-  const failed = await processMemoryIfDue({
+  const failed = await processMemory({
     ...options,
     now: () => new Date("2026-07-28T00:00:01.000Z"),
   });
-  const shortlyAfter = await processMemoryIfDue({
+  const shortlyAfter = await processMemory({
     ...options,
     now: () => new Date("2026-07-28T00:01:01.000Z"),
   });
@@ -379,7 +393,7 @@ test("rejects sensitive memory content before writing an active memory", async (
     },
   } as unknown as OpenAI;
 
-  const result = await processMemoryIfDue({
+  const result = await processMemory({
     root,
     client,
     model: "vision-model",
@@ -422,7 +436,7 @@ test("anchors the first memory interval to the earliest timeline creation time",
     },
   } as unknown as OpenAI;
 
-  const result = await processMemoryIfDue({
+  const result = await processMemory({
     root,
     client,
     model: "vision-model",
@@ -462,7 +476,7 @@ test("rejects a memory change without timeline evidence", async (t) => {
     },
   } as unknown as OpenAI;
 
-  const result = await processMemoryIfDue({
+  const result = await processMemory({
     root,
     client,
     model: "vision-model",
@@ -531,7 +545,7 @@ test("rejects multiple supersede decisions for the same active memory", async (t
     },
   } as unknown as OpenAI;
 
-  const result = await processMemoryIfDue({
+  const result = await processMemory({
     root,
     client,
     model: "vision-model",
@@ -559,7 +573,7 @@ test("does not persist credentials from a provider error", async (t) => {
     },
   } as unknown as OpenAI;
 
-  await processMemoryIfDue({
+  await processMemory({
     root,
     client,
     model: "vision-model",

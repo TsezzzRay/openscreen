@@ -40,13 +40,19 @@ class EventBatcher {
   constructor(
     private readonly directory: string,
     private readonly sessionId: string,
+    private readonly config: RuntimeConfig["session"],
   ) {}
 
   add(event: SessionEvent) {
     this.events.push(event);
     this.bytes += Buffer.byteLength(JSON.stringify(event)) + 1;
-    if (this.bytes >= 4_096) this.flush();
-    else if (!this.timer) this.timer = setTimeout(() => this.flush(), 250);
+    if (this.bytes >= this.config.eventFlushBytes) this.flush();
+    else if (!this.timer) {
+      this.timer = setTimeout(
+        () => this.flush(),
+        this.config.eventFlushMilliseconds,
+      );
+    }
   }
 
   private flush() {
@@ -83,6 +89,7 @@ export async function runChat(
   client: OpenAI,
   model: string,
   context: RuntimeConfig["context"],
+  sessionConfig: RuntimeConfig["session"],
   emit: Emit,
   signal: AbortSignal,
   tools: AgentTool[] = [],
@@ -130,6 +137,7 @@ export async function runChat(
       const compacted = await compactSession(
         session,
         context.keepRecentTokens,
+        context.minimumRecentTurns,
         (turns) => countTurns(client, model, turns, undefined, signal),
         (previousSummary, turns) => summarizeTurns(
           client,
@@ -179,7 +187,11 @@ export async function runChat(
       );
       return request;
     };
-    const batcher = new EventBatcher(sessionsDirectory, sessionId);
+    const batcher = new EventBatcher(
+      sessionsDirectory,
+      sessionId,
+      sessionConfig,
+    );
     let result: Awaited<ReturnType<typeof runAgentLoop>>;
     try {
       result = await runAgentLoop(

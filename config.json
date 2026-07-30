@@ -6,6 +6,20 @@
     "compactAtTokens": 244800,
     "keepRecentTokens": 20000,
     "maxOutputTokens": 21760,
-    "summaryMaxOutputTokens": 4096
+    "summaryMaxOutputTokens": 4096,
+    "minimumRecentTurns": 2
+  },
+  "session": {
+    "eventFlushBytes": 4096,
+    "eventFlushMilliseconds": 250
+  },
+  "timeline": {
+    "maxInputTokens": 244800,
+    "maxOutputTokens": 4096
+  },
+  "memory": {
+    "processingIntervalMinutes": 1440,
+    "maxInputTokens": 244800,
+    "maxOutputTokens": 4096
   }
 }

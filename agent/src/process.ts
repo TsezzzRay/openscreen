@@ -71,7 +71,7 @@ function snapshot(session: StoredSession): SessionSnapshot {
 async function run() {
   const config = loadRuntimeConfig();
   const client = new OpenAI({ apiKey: config.apiKey, baseURL: config.baseURL });
-  const { model, context } = config;
+  const { model, context, session } = config;
   const sessionsDirectory = process.env.OPENSCREEN_DATA_DIR ?? join(
     homedir(),
     "Library",
@@ -141,7 +141,16 @@ async function run() {
         emit({ requestId, sessionId: envelope.sessionId, type: "completed" });
         return;
       }
-      await runChat(envelope, sessionsDirectory, client, model, context, emit, signal!);
+      await runChat(
+        envelope,
+        sessionsDirectory,
+        client,
+        model,
+        context,
+        session,
+        emit,
+        signal!,
+      );
     } catch (error) {
       emit({
         requestId,

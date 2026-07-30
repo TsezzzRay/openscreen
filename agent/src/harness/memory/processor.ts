@@ -16,8 +16,6 @@ import type {
 import { containsSensitiveData } from "./types.js";
 import type { TimelineEntry } from "./timeline/types.js";
 
-const DAY_MILLISECONDS = 24 * 60 * 60 * 1000;
-
 const MEMORY_INSTRUCTIONS = `Update OpenScreen long-term memory from timeline entries.
 Return only JSON with a decisions array using these shapes:
 {"action":"create","topic":"...","content":"...","evidenceTimelineIds":["timeline id"]}
@@ -242,6 +240,7 @@ export async function processMemoryIfDue({
   root,
   client,
   model,
+  processingIntervalMinutes,
   maxInputTokens,
   maxOutputTokens,
   now = () => new Date(),
@@ -250,6 +249,7 @@ export async function processMemoryIfDue({
   root: string;
   client: OpenAI;
   model: string;
+  processingIntervalMinutes: number;
   maxInputTokens: number;
   maxOutputTokens: number;
   now?: () => Date;
@@ -276,7 +276,8 @@ export async function processMemoryIfDue({
     const dueAt = new Date(
       (lastAttempt
         ? new Date(lastAttempt)
-        : new Date(firstPendingAt)).valueOf() + DAY_MILLISECONDS,
+        : new Date(firstPendingAt)).valueOf() +
+        processingIntervalMinutes * 60_000,
     );
     if (timestamp < dueAt) {
       return { status: "not_due" as const, nextRunAt: dueAt.toISOString() };

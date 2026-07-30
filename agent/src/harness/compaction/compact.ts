@@ -1,16 +1,15 @@
 import type { SessionState, Turn } from "../session/types.js";
 
-const MIN_RECENT_TURNS = 2;
-
 export async function compactSession(
   session: SessionState,
   keepRecentTokens: number,
+  minimumRecentTurns: number,
   countTurns: (turns: Turn[]) => Promise<number>,
   summarize: (previousSummary: string | undefined, turns: Turn[]) => Promise<string>,
 ): Promise<boolean> {
   const latestFirstKeptTurnIndex = Math.max(
     session.firstKeptTurnIndex,
-    session.turns.length - MIN_RECENT_TURNS,
+    session.turns.length - minimumRecentTurns,
   );
   let firstKeptTurnIndex = latestFirstKeptTurnIndex;
 
