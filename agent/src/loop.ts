@@ -1,33 +1,12 @@
-import { readFile } from "node:fs/promises";
-
 import OpenAI from "openai";
 
-import {
-  turnImages,
-  type AgentRunEvent,
-  type AgentTool,
-  type ChatImage,
-  type ChatStreamEvent,
-  type ConversationOutputItem,
-  type ModelOutputItem,
-  type SessionState,
-  type Turn,
+import type {
+  AgentRunEvent,
+  AgentTool,
+  ChatStreamEvent,
+  ConversationOutputItem,
+  ModelOutputItem,
 } from "./types.js";
-
-const instructions = `You are OpenScreen, a screen-aware assistant.
-
-Answer the user's question using the attached screenshots.
-The first image is the current window captured by OpenScreen. Any remaining images were uploaded by the user.
-Reply in the same language as the user.
-Be direct and concise.
-If the answer cannot be determined from the screenshot, say so.
-Do not claim that you clicked, typed, changed, or executed anything.`;
-
-type LoadScreenshot = (path: string) => Promise<string>;
-
-const loadScreenshot: LoadScreenshot = async (path) => (
-  await readFile(path)
-).toString("base64");
 
 export type ModelEvent = {
   type: string;
@@ -40,102 +19,6 @@ export type ModelEvent = {
     usage?: { total_tokens?: number } | null;
   };
 };
-
-function imagePart(
-  model: string,
-  imageBase64: string,
-): OpenAI.Responses.ResponseInputImage {
-  const imageURL = `data:image/png;base64,${imageBase64}`;
-  return (model.toLowerCase() === "minimax-m3"
-    ? {
-        type: "input_image",
-        image_url: { url: imageURL, detail: "default" },
-      }
-    : {
-        type: "input_image",
-        detail: "auto",
-        image_url: imageURL,
-      }) as unknown as OpenAI.Responses.ResponseInputImage;
-}
-
-async function userInput(
-  model: string,
-  text: string,
-  images: ChatImage[],
-  readScreenshot: LoadScreenshot,
-): Promise<OpenAI.Responses.ResponseInputItem> {
-  return {
-    role: "user",
-    content: [
-      { type: "input_text", text },
-      ...await Promise.all(images.map(async (image) => (
-        imagePart(model, await readScreenshot(image.path))
-      ))),
-    ],
-  };
-}
-
-async function turnsInput(
-  model: string,
-  turns: Turn[],
-  readScreenshot: LoadScreenshot,
-  preserveOutputItems = true,
-): Promise<OpenAI.Responses.ResponseInput> {
-  return (await Promise.all(turns.map(async (turn) => [
-    await userInput(model, turn.user, turnImages(turn), readScreenshot),
-    ...(preserveOutputItems && (turn.status ?? "completed") === "completed" &&
-        turn.outputItems?.length
-      ? turn.outputItems
-      : [{ role: "assistant" as const, content: turnOutput(turn) }]),
-  ]))).flat();
-}
-
-function turnOutput(turn: Turn) {
-  if (turn.status === "failed" || turn.status === "cancelled") {
-    return [
-      turn.status === "failed"
-        ? "[Request failed; response may be incomplete]"
-        : "[Request cancelled by user; response is incomplete]",
-      turn.reasoning ? `Partial reasoning:\n${turn.reasoning}` : "",
-      turn.assistant ? `Partial answer:\n${turn.assistant}` : "",
-    ].filter(Boolean).join("\n\n");
-  }
-  return turn.assistant;
-}
-
-export async function makeRequest(
-  model: string,
-  text: string,
-  images: ChatImage[] | string,
-  maxOutputTokens: number,
-  session: SessionState = { turns: [], firstKeptTurnIndex: 0 },
-  readScreenshot: LoadScreenshot = loadScreenshot,
-): Promise<OpenAI.Responses.ResponseCreateParamsStreaming> {
-  const isMiniMaxM3 = model.toLowerCase() === "minimax-m3";
-  const requestImages = typeof images === "string"
-    ? [{ id: "legacy-system", source: "system_capture" as const, path: images }]
-    : images;
-  const retainedInput = await turnsInput(
-    model,
-    session.turns.slice(session.firstKeptTurnIndex),
-    readScreenshot,
-  );
-
-  return {
-    model,
-    instructions,
-    input: [
-      ...(session.summary
-        ? [{ role: "developer" as const, content: `Conversation summary:\n${session.summary}` }]
-        : []),
-      ...retainedInput,
-      await userInput(model, text, requestImages, readScreenshot),
-    ],
-    reasoning: isMiniMaxM3 ? { effort: "minimal" } : { summary: "auto" },
-    max_output_tokens: maxOutputTokens,
-    stream: true,
-  };
-}
 
 export function mapEvent(
   event: ModelEvent,
@@ -332,60 +215,4 @@ export async function runAgentLoop(
       });
     }
   }
-}
-
-export async function countTurns(
-  client: OpenAI,
-  model: string,
-  turns: Turn[],
-  readScreenshot: LoadScreenshot = loadScreenshot,
-  signal?: AbortSignal,
-) {
-  return (
-    await client.responses.inputTokens.count({
-      model,
-      input: await turnsInput(model, turns, readScreenshot),
-    }, { signal })
-  ).input_tokens;
-}
-
-export async function countRequestTokens(
-  client: OpenAI,
-  request: OpenAI.Responses.ResponseCreateParamsStreaming,
-  signal?: AbortSignal,
-) {
-  return (
-    await client.responses.inputTokens.count({
-      model: request.model,
-      instructions: request.instructions,
-      input: request.input,
-      reasoning: request.reasoning,
-      tools: request.tools,
-    }, { signal })
-  ).input_tokens;
-}
-
-export async function summarizeTurns(
-  client: OpenAI,
-  model: string,
-  previousSummary: string | undefined,
-  turns: Turn[],
-  maxOutputTokens: number,
-  readScreenshot: LoadScreenshot = loadScreenshot,
-  signal?: AbortSignal,
-): Promise<string> {
-  const response = await client.responses.create({
-    model,
-    instructions: `Summarize the earlier conversation concisely. Preserve user intent, confirmed facts, decisions, failed or cancelled request status, unfinished requests, and important visual information such as errors, interface state, visible data, and the user's current work. Integrate visual information as plain facts. Do not output screenshot paths, filenames, turn IDs, internal reference markers such as screen:*, or phrases that refer to a screenshot or image. Do not describe the summarization process.`,
-    input: [
-      ...(previousSummary
-        ? [{ role: "developer" as const, content: `Previous summary:\n${previousSummary}` }]
-        : []),
-      ...await turnsInput(model, turns, readScreenshot, false),
-    ],
-    max_output_tokens: maxOutputTokens,
-  }, { signal });
-  const summary = response.output_text.trim();
-  if (!summary) throw new Error("Model returned an empty conversation summary");
-  return summary;
 }

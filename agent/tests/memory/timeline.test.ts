@@ -6,16 +6,16 @@ import test from "node:test";
 
 import OpenAI from "openai";
 
-import { readTimelineEntries } from "../../src/activity/store.js";
+import { readTimelineEntries } from "../../src/harness/memory/timeline/store.js";
 import {
   buildTimelineRequest,
   processTimelineSource,
   timelineSourceKey,
-} from "../../src/activity/timeline.js";
+} from "../../src/harness/memory/timeline/processor.js";
 import type {
   ScreenActivitySource,
   TurnActivitySource,
-} from "../../src/activity/types.js";
+} from "../../src/harness/memory/timeline/types.js";
 
 const screen: ScreenActivitySource = {
   type: "screen",

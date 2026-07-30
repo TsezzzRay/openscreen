@@ -12,14 +12,16 @@ import {
 import { join } from "node:path";
 
 import {
-  turnImages,
   type AgentRun,
   type AgentRunStep,
-  type ChatImage,
   type ModelOutputItem,
+} from "../../types.js";
+import {
+  turnImages,
+  type ChatImage,
   type SessionState,
   type Turn,
-} from "../chat/types.js";
+} from "./types.js";
 
 export type VisibleTurn = Pick<Turn, "id" | "user" | "assistant" | "reasoning"> & {
   id: string;

@@ -8,14 +8,14 @@ import OpenAI from "openai";
 
 import {
   appendMemoryEvent,
-  appendTimelineEntry,
   readMemoryEvents,
-} from "../../src/activity/store.js";
+} from "../../src/harness/memory/store.js";
+import { appendTimelineEntry } from "../../src/harness/memory/timeline/store.js";
 import {
   processMemoryIfDue,
   readActiveMemories,
-} from "../../src/activity/memory.js";
-import type { TimelineEntry } from "../../src/activity/types.js";
+} from "../../src/harness/memory/processor.js";
+import type { TimelineEntry } from "../../src/harness/memory/timeline/types.js";
 
 const timeline: TimelineEntry = {
   schemaVersion: 1,

@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import type { SessionState } from "../../src/chat/types.js";
-import { compactIfNeeded, compactSession } from "../../src/chat/compaction.js";
+import type { SessionState } from "../../src/harness/session/types.js";
+import {
+  compactIfNeeded,
+  compactSession,
+} from "../../src/harness/compaction/compact.js";
 
 test("compacts older turns while retaining 20K recent tokens", async () => {
   const session: SessionState = {

@@ -3,13 +3,13 @@ import type OpenAI from "openai";
 import {
   appendTimelineEntry,
   readTimelineEntries,
-  withActivityLock,
 } from "./store.js";
+import { withMemoryLock } from "../store.js";
 import type {
   ActivitySource,
   TimelineEntry,
 } from "./types.js";
-import { containsSensitiveData } from "./types.js";
+import { containsSensitiveData } from "../types.js";
 
 const TIMELINE_INSTRUCTIONS = `Convert one OpenScreen activity into one factual timeline entry.
 Return only this JSON shape:
@@ -150,7 +150,7 @@ export async function processTimelineSource({
   now?: () => Date;
   signal?: AbortSignal;
 }): Promise<TimelineProcessResult> {
-  return withActivityLock(root, async () => {
+  return withMemoryLock(root, async () => {
     const sourceKey = timelineSourceKey(source);
     if ((await readTimelineEntries(root)).some((entry) => entrySourceKey(entry) === sourceKey)) {
       return { status: "duplicate" };

@@ -1,6 +1,7 @@
-import type { ChatImage, ChatStreamEvent } from "./chat/types.js";
+import type { ChatImage } from "./harness/session/types.js";
+import type { ChatStreamEvent } from "./types.js";
 
-export type { ChatImage } from "./chat/types.js";
+export type { ChatImage } from "./harness/session/types.js";
 
 export type InputEnvelope = {
   requestId: string;

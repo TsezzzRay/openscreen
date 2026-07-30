@@ -19,9 +19,9 @@ import { promisify } from "node:util";
 import {
   appendTimelineEntry,
   readTimelineEntries,
-  withActivityLock,
-} from "../../src/activity/store.js";
-import type { TimelineEntry } from "../../src/activity/types.js";
+} from "../../src/harness/memory/timeline/store.js";
+import { withMemoryLock } from "../../src/harness/memory/store.js";
+import type { TimelineEntry } from "../../src/harness/memory/timeline/types.js";
 
 const entry: TimelineEntry = {
   schemaVersion: 1,
@@ -83,7 +83,7 @@ test("recovers a stale activity lock without deleting a new owner", async (t) =>
   await utimes(lock, old, old);
   let ran = false;
 
-  await withActivityLock(root, async () => {
+  await withMemoryLock(root, async () => {
     ran = true;
   });
 
@@ -127,8 +127,8 @@ test("serializes two waiters recovering the same stale activity lock", async (t)
     active -= 1;
   };
 
-  const first = withActivityLock(root, operation);
-  const second = withActivityLock(root, operation);
+  const first = withMemoryLock(root, operation);
+  const second = withMemoryLock(root, operation);
   await firstEntered;
   await new Promise((resolve) => setTimeout(resolve, 50));
   assert.equal(entered, 1);
@@ -147,13 +147,13 @@ test("recovers a stale empty-directory recovery marker", async (t) => {
   await writeFile(join(lock, "recovery"), "");
   const old = new Date("2020-01-01T00:00:00.000Z");
   await utimes(lock, old, old);
-  const storeURL = new URL("../../src/activity/store.js", import.meta.url).href;
+  const storeURL = new URL("../../src/harness/memory/store.js", import.meta.url).href;
 
   await execFileAsync(process.execPath, [
     "--input-type=module",
     "--eval",
-    `import { withActivityLock } from ${JSON.stringify(storeURL)};
-await withActivityLock(process.argv[1], async () => {});`,
+    `import { withMemoryLock } from ${JSON.stringify(storeURL)};
+await withMemoryLock(process.argv[1], async () => {});`,
     root,
   ], { timeout: 3000 });
 
@@ -189,8 +189,8 @@ test("serializes two waiters recovering a stale empty lock directory", async (t)
     active -= 1;
   };
 
-  const first = withActivityLock(root, operation);
-  const second = withActivityLock(root, operation);
+  const first = withMemoryLock(root, operation);
+  const second = withMemoryLock(root, operation);
   await firstEntered;
   await new Promise((resolve) => setTimeout(resolve, 50));
   assert.equal(entered, 1);

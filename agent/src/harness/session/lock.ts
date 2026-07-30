@@ -24,11 +24,11 @@ export async function withSessionLock<T>(
   operation: () => Promise<T>,
 ): Promise<T> {
   await mkdir(directory, { recursive: true });
-  const path = lockPath(directory, id);
+  const filePath = lockPath(directory, id);
   const token = randomUUID();
   while (true) {
     try {
-      const lock = await open(path, "wx", 0o600);
+      const lock = await open(filePath, "wx", 0o600);
       try {
         await lock.writeFile(JSON.stringify({ pid: process.pid, token }));
         await lock.sync();
@@ -39,22 +39,22 @@ export async function withSessionLock<T>(
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
       try {
-        const owner = JSON.parse(await readFile(path, "utf8")) as { pid?: unknown };
+        const owner = JSON.parse(await readFile(filePath, "utf8")) as { pid?: unknown };
         if (typeof owner.pid !== "number" || !processExists(owner.pid)) {
-          await rm(path, { force: true });
+          await rm(filePath, { force: true });
           continue;
         }
       } catch (readError) {
         if ((readError as NodeJS.ErrnoException).code === "ENOENT") continue;
         let age: number;
         try {
-          age = Date.now() - (await stat(path)).mtimeMs;
+          age = Date.now() - (await stat(filePath)).mtimeMs;
         } catch (statError) {
           if ((statError as NodeJS.ErrnoException).code === "ENOENT") continue;
           throw statError;
         }
         if (age >= 5_000) {
-          await rm(path, { force: true });
+          await rm(filePath, { force: true });
           continue;
         }
       }
@@ -66,8 +66,8 @@ export async function withSessionLock<T>(
     return await operation();
   } finally {
     try {
-      const owner = JSON.parse(await readFile(path, "utf8")) as { token?: unknown };
-      if (owner.token === token) await rm(path, { force: true });
+      const owner = JSON.parse(await readFile(filePath, "utf8")) as { token?: unknown };
+      if (owner.token === token) await rm(filePath, { force: true });
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }

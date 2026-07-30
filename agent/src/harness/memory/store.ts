@@ -11,16 +11,7 @@ import {
 } from "node:fs/promises";
 import { join } from "node:path";
 
-import type {
-  MemoryEvent,
-  TimelineEntry,
-} from "./types.js";
-
-function day(value: string) {
-  const date = new Date(value);
-  if (!Number.isFinite(date.valueOf())) throw new Error("Invalid activity timestamp");
-  return date.toISOString().slice(0, 10);
-}
+import type { MemoryEvent } from "./types.js";
 
 async function readCompleteLines(path: string) {
   const contents = await readFile(path, "utf8");
@@ -46,37 +37,6 @@ async function truncateIncompleteTail(file: FileHandle) {
     newline = buffer.subarray(0, length).lastIndexOf(0x0A);
   }
   await file.truncate(newline < 0 ? 0 : position + newline + 1);
-}
-
-export async function appendTimelineEntry(
-  root: string,
-  entry: TimelineEntry,
-) {
-  const directory = join(root, "timeline");
-  await mkdir(directory, { recursive: true });
-  const file = await open(join(directory, `${day(entry.occurredAt)}.jsonl`), "a+", 0o600);
-  try {
-    await truncateIncompleteTail(file);
-    await file.writeFile(`${JSON.stringify(entry)}\n`);
-    await file.sync();
-  } finally {
-    await file.close();
-  }
-}
-
-export async function readTimelineEntries(root: string): Promise<TimelineEntry[]> {
-  const directory = join(root, "timeline");
-  await mkdir(directory, { recursive: true });
-  const names = (await readdir(directory))
-    .filter((name) => /^\d{4}-\d{2}-\d{2}\.jsonl$/.test(name))
-    .sort();
-  const entries: TimelineEntry[] = [];
-  for (const name of names) {
-    for (const line of await readCompleteLines(join(directory, name))) {
-      entries.push(JSON.parse(line) as TimelineEntry);
-    }
-  }
-  return entries;
 }
 
 export async function appendMemoryEvent(root: string, event: MemoryEvent) {
@@ -115,7 +75,7 @@ function processExists(pid: number) {
   }
 }
 
-export async function withActivityLock<T>(
+export async function withMemoryLock<T>(
   root: string,
   operation: () => Promise<T>,
 ): Promise<T> {

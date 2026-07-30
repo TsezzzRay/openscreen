@@ -7,11 +7,13 @@ import {
   countRequestTokens,
   countTurns,
   makeRequest,
+} from "../src/harness/session/context.js";
+import { summarizeTurns } from "../src/harness/compaction/summary.js";
+import {
   mapEvent,
   relayStream,
   runAgentLoop,
-  summarizeTurns,
-} from "../../src/chat/model.js";
+} from "../src/loop.js";
 
 const loadScreenshot = async (path: string) => Buffer.from(path).toString("base64");
 
@@ -392,7 +394,7 @@ test("maps Responses API deltas to chat stream events", () => {
 test("completes only after a successful stream is exhausted", async () => {
   const events: object[] = [];
   let exhausted = false;
-  async function* stream(): AsyncGenerator<import("../../src/chat/model.js").ModelEvent> {
+  async function* stream(): AsyncGenerator<import("../src/loop.js").ModelEvent> {
     yield { type: "response.reasoning_summary_text.delta", delta: "Checked screen" };
     yield { type: "response.output_text.delta", delta: "Final answer" };
     yield {

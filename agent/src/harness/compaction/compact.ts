@@ -1,4 +1,4 @@
-import type { SessionState, Turn } from "./types.js";
+import type { SessionState, Turn } from "../session/types.js";
 
 const MIN_RECENT_TURNS = 2;
 

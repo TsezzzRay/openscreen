@@ -29,7 +29,7 @@ actor AgentClient {
 
     func start() throws {
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = ["node", "agent/dist/main.js"]
+        process.arguments = ["node", "agent/dist/process.js"]
         process.currentDirectoryURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
         process.standardInput = inputPipe
         process.standardOutput = outputPipe

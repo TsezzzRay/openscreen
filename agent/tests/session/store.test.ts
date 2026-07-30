@@ -10,7 +10,7 @@ import {
   listSessions,
   loadSession,
   renameSession,
-} from "../../src/session/store.js";
+} from "../../src/harness/session/store.js";
 
 test("stores metadata on the first line and replays completed turns and compaction", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "openscreen-sessions-"));

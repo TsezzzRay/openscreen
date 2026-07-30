@@ -1,26 +1,26 @@
 import OpenAI from "openai";
 
-import type { RuntimeConfig } from "../config.js";
-import type { InputEnvelope, OutputEnvelope } from "../protocol.js";
+import { runAgentLoop } from "../../loop.js";
+import type {
+  AgentRunEvent,
+  AgentTool,
+  ConversationOutputItem,
+} from "../../types.js";
+import type { RuntimeConfig } from "../../config.js";
+import type { InputEnvelope, OutputEnvelope } from "../../protocol.js";
 import {
   appendSessionEvents,
   loadSession,
   renameSession,
   type SessionEvent,
-} from "../session/store.js";
-import { compactIfNeeded, compactSession } from "./compaction.js";
+} from "./store.js";
+import { compactIfNeeded, compactSession } from "../compaction/compact.js";
+import { summarizeTurns } from "../compaction/summary.js";
 import {
   countRequestTokens,
   countTurns,
   makeRequest,
-  runAgentLoop,
-  summarizeTurns,
-} from "./model.js";
-import type {
-  AgentRunEvent,
-  AgentTool,
-  ConversationOutputItem,
-} from "./types.js";
+} from "./context.js";
 
 const REQUEST_FAILED_MESSAGE = "Request failed. Please retry.";
 

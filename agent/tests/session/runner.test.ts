@@ -10,8 +10,8 @@ import test from "node:test";
 
 import OpenAI from "openai";
 
-import { runChat } from "../../src/chat/runner.js";
-import { createSession, loadSession } from "../../src/session/store.js";
+import { runChat } from "../../src/harness/session/runner.js";
+import { createSession, loadSession } from "../../src/harness/session/store.js";
 
 test("cancels an agent run while a tool is executing", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "openscreen-agent-loop-"));
@@ -300,7 +300,7 @@ test("rebuilds the agent process context after turn-end compaction", async (t) =
   t.after(() => rm(directory, { force: true, recursive: true }));
   const sessionsDirectory = join(directory, "sessions");
 
-  const agent = spawn(process.execPath, ["agent/dist/main.js"], {
+  const agent = spawn(process.execPath, ["agent/dist/process.js"], {
     cwd: process.cwd(),
     env: {
       ...process.env,
@@ -530,7 +530,7 @@ test("rebuilds the agent process context after turn-end compaction", async (t) =
 
   agent.kill();
   await once(agent, "exit");
-  const restartedAgent = spawn(process.execPath, ["agent/dist/main.js"], {
+  const restartedAgent = spawn(process.execPath, ["agent/dist/process.js"], {
     cwd: process.cwd(),
     env: {
       ...process.env,

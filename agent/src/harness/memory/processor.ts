@@ -5,16 +5,16 @@ import type OpenAI from "openai";
 import {
   appendMemoryEvent,
   readMemoryEvents,
-  readTimelineEntries,
-  withActivityLock,
+  withMemoryLock,
 } from "./store.js";
+import { readTimelineEntries } from "./timeline/store.js";
 import type {
   MemoryChange,
   MemoryEvent,
   MemoryItem,
-  TimelineEntry,
 } from "./types.js";
 import { containsSensitiveData } from "./types.js";
+import type { TimelineEntry } from "./timeline/types.js";
 
 const DAY_MILLISECONDS = 24 * 60 * 60 * 1000;
 
@@ -255,7 +255,7 @@ export async function processMemoryIfDue({
   now?: () => Date;
   signal?: AbortSignal;
 }) {
-  return withActivityLock(root, async () => {
+  return withMemoryLock(root, async () => {
     const timeline = await readTimelineEntries(root);
     const events = await readMemoryEvents(root);
     let activeMemories = activeMemoriesFromEvents(events);

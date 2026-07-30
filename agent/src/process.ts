@@ -5,7 +5,7 @@ import { createInterface } from "node:readline";
 
 import OpenAI from "openai";
 
-import { runChat } from "./chat/runner.js";
+import { runChat } from "./harness/session/runner.js";
 import { loadRuntimeConfig } from "./config.js";
 import {
   createSession,
@@ -15,8 +15,8 @@ import {
   renameSession,
   type SessionSummary,
   type StoredSession,
-} from "./session/store.js";
-import { withSessionLock } from "./session/lock.js";
+} from "./harness/session/store.js";
+import { withSessionLock } from "./harness/session/lock.js";
 import {
   parseInputEnvelope,
   type ChatImage,
