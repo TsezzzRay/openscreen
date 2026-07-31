@@ -2,7 +2,7 @@ import CoreGraphics
 import CoreVideo
 import Foundation
 
-enum VisualSignature {
+enum Signature {
     static func make(
         bgraBytes: [UInt8],
         width: Int,
@@ -109,5 +109,26 @@ enum VisualSignature {
             partial + abs(Int(pixels.0) - Int(pixels.1))
         }
         return Double(difference) / Double(left.count * 255)
+    }
+}
+
+struct ChangeGate {
+    let threshold: Double
+    private var lastEmitted: [UInt8]?
+
+    init(threshold: Double) {
+        self.threshold = threshold
+    }
+
+    mutating func shouldEmit(_ signature: [UInt8]) -> Bool {
+        guard let lastEmitted else {
+            self.lastEmitted = signature
+            return false
+        }
+        guard Signature.distance(lastEmitted, signature) >= threshold else {
+            return false
+        }
+        self.lastEmitted = signature
+        return true
     }
 }

@@ -1,7 +1,7 @@
 import ApplicationServices
 import Foundation
 
-enum AccessibilitySnapshotter {
+enum AXSnapshot {
     static func capture(
         window: WindowMetadata,
         configuration: NativeObservationConfiguration.Accessibility
@@ -19,7 +19,7 @@ enum AccessibilitySnapshotter {
         let timeout = TimeInterval(configuration.timeoutMilliseconds) / 1_000
         AXUIElementSetMessagingTimeout(application, Float(timeout))
         let root = focusedWindow(of: application) ?? application
-        var budget = SnapshotBudget(
+        var budget = Budget(
             maxDepth: configuration.maxDepth,
             maxNodes: configuration.maxNodes,
             deadline: startedAt.addingTimeInterval(timeout)
@@ -52,7 +52,7 @@ enum AccessibilitySnapshotter {
     private static func snapshot(
         element: AXUIElement,
         depth: Int,
-        budget: inout SnapshotBudget,
+        budget: inout Budget,
         visited: inout Set<CFHashCode>,
         maximumTextLength: Int
     ) -> AccessibilityNode? {
@@ -79,7 +79,7 @@ enum AccessibilitySnapshotter {
             kAXValueAttribute,
             maximumTextLength: maximumTextLength
         )
-        let value = sanitizeAccessibilityValue(rawValue, role: role, subrole: subrole)
+        let value = sanitize(rawValue, role: role, subrole: subrole)
         var childNodes = [AccessibilityNode]()
         for child in children(of: element) {
             if let childNode = snapshot(
@@ -148,7 +148,7 @@ enum AccessibilitySnapshotter {
         guard let value = attribute(element, name) as? String else {
             return nil
         }
-        return normalizeAccessibilityText(
+        return normalize(
             truncate(value, maximumTextLength: maximumTextLength)
         )
     }
@@ -162,7 +162,7 @@ enum AccessibilitySnapshotter {
             return nil
         }
         if let text = value as? String {
-            return normalizeAccessibilityText(
+            return normalize(
                 truncate(text, maximumTextLength: maximumTextLength)
             )
         }
@@ -238,6 +238,30 @@ enum AccessibilitySnapshotter {
             return value
         }
         return String(value.prefix(maximumTextLength))
+    }
+
+    static func sanitize(
+        _ value: String?,
+        role: String?,
+        subrole: String?
+    ) -> String? {
+        guard let value = normalize(value) else {
+            return nil
+        }
+        if role == "AXSecureTextField" || subrole == "AXSecureTextField" {
+            return "[REDACTED]"
+        }
+        return value
+    }
+
+    static func normalize(_ value: String?) -> String? {
+        guard
+            let value,
+            !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else {
+            return nil
+        }
+        return value
     }
 }
 

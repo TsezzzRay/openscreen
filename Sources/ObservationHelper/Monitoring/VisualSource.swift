@@ -1,21 +1,27 @@
+import CaptureCore
 import CoreMedia
 import CoreVideo
 import Foundation
 import ScreenCaptureKit
 
 @MainActor
-final class VisualStreamMonitor {
-    private let writer: JSONLineWriter
+final class VisualSource {
+    private let onSignal: @Sendable (NativeActivitySignal) -> Void
+    private let onStatus: @Sendable (SourceStatus) -> Void
     private let sampleQueue = DispatchQueue(
-        label: "OpenScreenObservationHelper.visual",
+        label: "ObservationHelper.visual",
         qos: .utility
     )
     private var stream: SCStream?
     private var receiver: VisualFrameReceiver?
     private var generation = 0
 
-    init(writer: JSONLineWriter) {
-        self.writer = writer
+    init(
+        onSignal: @escaping @Sendable (NativeActivitySignal) -> Void,
+        onStatus: @escaping @Sendable (SourceStatus) -> Void
+    ) {
+        self.onSignal = onSignal
+        self.onStatus = onStatus
     }
 
     func restart(
@@ -34,32 +40,14 @@ final class VisualStreamMonitor {
                 return
             }
             do {
-                let content = try await SCShareableContent.excludingDesktopWindows(
-                    true,
-                    onScreenWindowsOnly: true
+                let target = try await Target.resolve(
+                    id: windowIdentifier,
+                    maxWidth: nativeConfiguration.maxWidth
                 )
-                guard
-                    expectedGeneration == generation,
-                    let captureWindow = content.windows.first(where: {
-                        $0.windowID == windowIdentifier
-                    })
-                else {
+                guard expectedGeneration == generation else {
                     return
                 }
-                let configuration = SCStreamConfiguration()
-                let scale = min(
-                    1,
-                    CGFloat(nativeConfiguration.maxWidth)
-                        / max(1, captureWindow.frame.width)
-                )
-                configuration.width = max(
-                    1,
-                    Int((captureWindow.frame.width * scale).rounded())
-                )
-                configuration.height = max(
-                    1,
-                    Int((captureWindow.frame.height * scale).rounded())
-                )
+                let configuration = target.configuration
                 configuration.minimumFrameInterval = CMTime(
                     value: Int64(nativeConfiguration.sampleIntervalMilliseconds),
                     timescale: 1_000
@@ -71,11 +59,11 @@ final class VisualStreamMonitor {
                 let receiver = VisualFrameReceiver(
                     window: window,
                     configuration: nativeConfiguration
-                ) { [writer] signal in
-                    writer.write(.activity(signal))
+                ) { [onSignal] signal in
+                    onSignal(signal)
                 }
                 let stream = SCStream(
-                    filter: SCContentFilter(desktopIndependentWindow: captureWindow),
+                    filter: target.filter,
                     configuration: configuration,
                     delegate: nil
                 )
@@ -91,12 +79,18 @@ final class VisualStreamMonitor {
                 }
                 self.receiver = receiver
                 self.stream = stream
-                writer.write(.status(component: "visualStream", status: "ready"))
+                onStatus(
+                    SourceStatus(
+                        component: .visualStream,
+                        state: .ready,
+                        message: nil
+                    )
+                )
             } catch {
-                writer.write(
-                    .status(
-                        component: "visualStream",
-                        status: "degraded",
+                onStatus(
+                    SourceStatus(
+                        component: .visualStream,
+                        state: .degraded,
                         message: error.localizedDescription
                     )
                 )
@@ -121,7 +115,7 @@ private final class VisualFrameReceiver: NSObject, SCStreamOutput, @unchecked Se
     private let window: WindowMetadata
     private let configuration: NativeObservationConfiguration.VisualMonitoring
     private let emit: @Sendable (NativeActivitySignal) -> Void
-    private var previousSignature: [UInt8]?
+    private var gate: ChangeGate
 
     init(
         window: WindowMetadata,
@@ -131,6 +125,7 @@ private final class VisualFrameReceiver: NSObject, SCStreamOutput, @unchecked Se
         self.window = window
         self.configuration = configuration
         self.emit = emit
+        self.gate = ChangeGate(threshold: configuration.changeThreshold)
     }
 
     func stream(
@@ -145,21 +140,14 @@ private final class VisualFrameReceiver: NSObject, SCStreamOutput, @unchecked Se
         else {
             return
         }
-        let signature = VisualSignature.make(
+        let signature = Signature.make(
             from: pixelBuffer,
             configuration: configuration
         )
         guard !signature.isEmpty else {
             return
         }
-        defer {
-            previousSignature = signature
-        }
-        guard
-            let previousSignature,
-            VisualSignature.distance(previousSignature, signature)
-                >= configuration.changeThreshold
-        else {
+        guard gate.shouldEmit(signature) else {
             return
         }
         emit(

@@ -4,8 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
+import type { ScreenObservationConfig } from "../../src/config.js";
 import { ScreenObservationRuntime } from "../../src/screen-observation/runtime.js";
-import type { ScreenObservationConfig } from "../../src/screen-observation/types.js";
+import type { ScreenObservation } from "../../src/screen-observation/types.js";
 
 const config = {
   enabled: true,
@@ -62,7 +63,7 @@ const config = {
   },
 } satisfies ScreenObservationConfig;
 
-test("turns helper signals into an in-memory latest observation", async (t) => {
+test("forwards helper observations without retaining image data", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "openscreen-observation-runtime-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const helperPath = join(directory, "helper.mjs");
@@ -76,7 +77,6 @@ test("turns helper signals into an in-memory latest observation", async (t) => {
       title: "Document",
     };
     process.stdout.write(JSON.stringify({
-      protocolVersion: 3,
       type: "ready",
       processIdentifier: process.pid,
     }) + "\\n");
@@ -91,19 +91,16 @@ test("turns helper signals into an in-memory latest observation", async (t) => {
           throw new Error("Native configuration was not forwarded");
         }
         process.stdout.write(JSON.stringify({
-          protocolVersion: 3,
           requestId: command.requestId,
           type: "configured",
         }) + "\\n");
         process.stdout.write(JSON.stringify({
-          protocolVersion: 3,
           type: "status",
           component: "eventTap",
           status: "degraded",
           message: "Input Monitoring permission is unavailable",
         }) + "\\n");
         process.stdout.write(JSON.stringify({
-          protocolVersion: 3,
           type: "signal",
           signal: {
             kind: "focusedWindowChanged",
@@ -114,7 +111,6 @@ test("turns helper signals into an in-memory latest observation", async (t) => {
       }
       if (command.type === "capture") {
         process.stdout.write(JSON.stringify({
-          protocolVersion: 3,
           requestId: command.requestId,
           type: "captureResult",
           result: {
@@ -141,10 +137,15 @@ test("turns helper signals into an in-memory latest observation", async (t) => {
   `);
 
   const statuses: string[] = [];
+  const observations: ScreenObservation[] = [];
   const runtime = new ScreenObservationRuntime({
     config,
     helperCommand: process.execPath,
     helperArguments: [helperPath],
+    helperCurrentDirectory: directory,
+    excludedProcessIdentifiers: [],
+    excludedBundleIdentifiers: [],
+    onObservation: (observation) => observations.push(observation),
     onComponentStatus: (status) => {
       statuses.push(`${status.component}:${status.status}`);
     },
@@ -152,12 +153,13 @@ test("turns helper signals into an in-memory latest observation", async (t) => {
   t.after(() => runtime.stop());
 
   await runtime.start();
-  await waitFor(() => runtime.latestObservation !== undefined);
+  await waitFor(() => observations.length === 1);
 
-  assert.equal(runtime.latestObservation?.window.windowIdentifier, 7);
-  assert.equal(runtime.latestObservation?.visibleText, "Document");
-  assert.equal(runtime.latestObservation?.screenshot.status, "permissionDenied");
+  assert.equal(observations[0]?.window.windowIdentifier, 7);
+  assert.equal(observations[0]?.visibleText, "Document");
+  assert.equal(observations[0]?.screenshot.status, "permissionDenied");
   assert.deepEqual(statuses, ["eventTap:degraded"]);
+  assert.equal("latestObservation" in runtime, false);
   await runtime.stop();
 });
 

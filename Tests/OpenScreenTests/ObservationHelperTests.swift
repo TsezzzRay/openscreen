@@ -1,13 +1,9 @@
 import XCTest
-@testable import OpenScreenObservationHelper
+@testable import ObservationHelper
 
 final class ObservationHelperTests: XCTestCase {
-    func testHelperProtocolVersionIncludesActivityMonitoringConfiguration() {
-        XCTAssertEqual(helperProtocolVersion, 3)
-    }
-
     func testCaptureAdmissionAllowsOnlyOneActiveRequest() {
-        var admission = CaptureAdmission()
+        var admission = CaptureGate()
 
         XCTAssertTrue(admission.begin(requestIdentifier: "capture-1"))
         XCTAssertFalse(admission.begin(requestIdentifier: "capture-2"))
@@ -18,7 +14,7 @@ final class ObservationHelperTests: XCTestCase {
     }
 
     func testActivitySignalCoalescingThrottlesAndFlushesTrailingActivity() {
-        var state = ActivitySignalCoalescingState(intervalMilliseconds: 250)
+        var state = Coalescer(intervalMilliseconds: 250)
 
         XCTAssertTrue(state.record(atMilliseconds: 0))
         XCTAssertFalse(state.flush(atMilliseconds: 250))
@@ -34,48 +30,66 @@ final class ObservationHelperTests: XCTestCase {
         XCTAssertTrue(state.record(atMilliseconds: 1_251))
     }
 
+    @MainActor
+    func testMonitorDoesNotDependOnProtocolTransport() {
+        let monitor = Monitor(
+            onSignal: { _ in },
+            onStatus: { _ in }
+        )
+
+        monitor.stop()
+    }
+
+    @MainActor
+    func testNativeSourcesExposeTypedCallbacks() {
+        _ = AXSource(onEvent: { _ in }, onStatus: { _ in })
+        _ = InputSource(onEvent: { _ in }, onStatus: { _ in })
+    }
+
     func testHelperCommandDecodesConfiguration() throws {
         let line = """
-        {"protocolVersion":3,"requestId":"configure-1","type":"configure","excludedProcessIdentifiers":[10,20],"excludedBundleIdentifiers":["com.openscreen.app"],"configuration":{"activityMonitoring":{"coalescingIntervalMilliseconds":250},"accessibility":{"maxDepth":40,"maxNodes":5000,"timeoutMilliseconds":2000,"maxTextLength":8192},"screenshot":{"maxWidth":1920,"jpegQuality":0.85},"visualMonitoring":{"maxWidth":320,"sampleIntervalMilliseconds":500,"queueDepth":2,"changeThreshold":0.015,"signatureWidth":32,"signatureHeight":18},"windowSelection":{"minimumWidth":160,"minimumHeight":120,"maximumAspectRatio":4}}}
+        {"requestId":"configure-1","type":"configure","excludedProcessIdentifiers":[10,20],"excludedBundleIdentifiers":["com.openscreen.app"],"configuration":{"activityMonitoring":{"coalescingIntervalMilliseconds":250},"accessibility":{"maxDepth":40,"maxNodes":5000,"timeoutMilliseconds":2000,"maxTextLength":8192},"screenshot":{"maxWidth":1920,"jpegQuality":0.85},"visualMonitoring":{"maxWidth":320,"sampleIntervalMilliseconds":500,"queueDepth":2,"changeThreshold":0.015,"signatureWidth":32,"signatureHeight":18},"windowSelection":{"minimumWidth":160,"minimumHeight":120,"maximumAspectRatio":4}}}
         """
 
-        let command = try HelperCommand.decode(line)
+        let command = try Wire.Command.decode(line)
 
-        XCTAssertEqual(command.protocolVersion, 3)
-        XCTAssertEqual(command.requestId, "configure-1")
-        XCTAssertEqual(command.type, .configure)
-        XCTAssertEqual(command.excludedProcessIdentifiers, [10, 20])
-        XCTAssertEqual(command.excludedBundleIdentifiers, ["com.openscreen.app"])
-        XCTAssertEqual(command.configuration, testObservationConfiguration)
+        guard case .configure(let request) = command else {
+            return XCTFail("Expected configure command")
+        }
+        XCTAssertEqual(request.requestId, "configure-1")
+        XCTAssertEqual(request.excludedProcessIdentifiers, [10, 20])
+        XCTAssertEqual(request.excludedBundleIdentifiers, ["com.openscreen.app"])
+        XCTAssertEqual(request.configuration, testObservationConfiguration)
     }
 
     func testHelperCommandDecodesCaptureSignal() throws {
         let line = """
-        {"protocolVersion":3,"requestId":"capture-1","type":"capture","signal":{"kind":"mouseClick","occurredAt":"2026-07-27T00:00:00.000Z","window":{"processIdentifier":100,"bundleIdentifier":"com.example.Editor","applicationName":"Editor","windowIdentifier":7,"title":"Document","frame":{"x":0,"y":0,"width":1200,"height":800}}}}
+        {"requestId":"capture-1","type":"capture","signal":{"kind":"mouseClick","occurredAt":"2026-07-27T00:00:00.000Z","window":{"processIdentifier":100,"bundleIdentifier":"com.example.Editor","applicationName":"Editor","windowIdentifier":7,"title":"Document","frame":{"x":0,"y":0,"width":1200,"height":800}}}}
         """
 
-        let command = try HelperCommand.decode(line)
+        let command = try Wire.Command.decode(line)
 
-        XCTAssertEqual(command.type, .capture)
-        XCTAssertEqual(command.signal?.kind, .mouseClick)
-        XCTAssertEqual(command.signal?.window.windowIdentifier, 7)
-        XCTAssertEqual(command.signal?.window.frame?.width, 1200)
+        guard case .capture(let request) = command else {
+            return XCTFail("Expected capture command")
+        }
+        XCTAssertEqual(request.signal.kind, .mouseClick)
+        XCTAssertEqual(request.signal.window.windowIdentifier, 7)
+        XCTAssertEqual(request.signal.window.frame?.width, 1200)
     }
 
     func testHelperOutputUsesNewlineDelimitedJSON() throws {
-        let data = try HelperOutput.ready(processIdentifier: 42).encodedLine()
+        let data = try Wire.Output.ready(processIdentifier: 42).encodedLine()
         let object = try XCTUnwrap(
             JSONSerialization.jsonObject(with: data) as? [String: Any]
         )
 
-        XCTAssertEqual(object["protocolVersion"] as? Int, 3)
         XCTAssertEqual(object["type"] as? String, "ready")
         XCTAssertEqual(object["processIdentifier"] as? Int, 42)
         XCTAssertEqual(data.last, 0x0A)
     }
 
-    func testSelfCaptureFilterExcludesKnownProcessesAndBundleIdentifiers() {
-        let filter = SelfCaptureFilter(
+    func testSelfFilterExcludesKnownProcessesAndBundleIdentifiers() {
+        let filter = SelfFilter(
             processIdentifiers: [42, 84],
             bundleIdentifiers: ["com.openscreen.app"]
         )
@@ -97,7 +111,7 @@ final class ObservationHelperTests: XCTestCase {
 
     func testSecureAccessibilityValuesAreRedacted() {
         XCTAssertEqual(
-            sanitizeAccessibilityValue(
+            AXSnapshot.sanitize(
                 "hunter2",
                 role: "AXTextField",
                 subrole: "AXSecureTextField"
@@ -105,15 +119,15 @@ final class ObservationHelperTests: XCTestCase {
             "[REDACTED]"
         )
         XCTAssertEqual(
-            sanitizeAccessibilityValue(
+            AXSnapshot.sanitize(
                 "ordinary text",
                 role: "AXTextField",
                 subrole: nil
             ),
             "ordinary text"
         )
-        XCTAssertNil(normalizeAccessibilityText(""))
-        XCTAssertNil(normalizeAccessibilityText("   \n"))
+        XCTAssertNil(AXSnapshot.normalize(""))
+        XCTAssertNil(AXSnapshot.normalize("   \n"))
     }
 
     func testWindowResolverSelectsTheNormalFrontWindowAndPreservesMetadata() {
@@ -198,8 +212,8 @@ final class ObservationHelperTests: XCTestCase {
         XCTAssertEqual(window?.windowIdentifier, 1)
     }
 
-    func testVisualSignatureDownsamplesBGRAFramesToGrayscale() {
-        let signature = VisualSignature.make(
+    func testSignatureDownsamplesBGRAFramesToGrayscale() {
+        let signature = Signature.make(
             bgraBytes: [
                 0, 0, 0, 255,
                 255, 255, 255, 255,
@@ -213,14 +227,14 @@ final class ObservationHelperTests: XCTestCase {
 
         XCTAssertEqual(signature, [0, 255])
         XCTAssertEqual(
-            VisualSignature.distance([0, 0], [255, 255]),
+            Signature.distance([0, 0], [255, 255]),
             1,
             accuracy: 0.0001
         )
     }
 
-    func testSnapshotBudgetStopsAtDepthAndNodeLimits() {
-        var budget = SnapshotBudget(
+    func testBudgetStopsAtDepthAndNodeLimits() {
+        var budget = Budget(
             maxDepth: 1,
             maxNodes: 2,
             deadline: Date().addingTimeInterval(10)
@@ -231,6 +245,16 @@ final class ObservationHelperTests: XCTestCase {
         XCTAssertFalse(budget.consume(depth: 2))
         XCTAssertTrue(budget.truncated)
         XCTAssertEqual(budget.nodeCount, 2)
+    }
+
+    func testChangeGateComparesAgainstTheLastEmittedFrame() {
+        var gate = ChangeGate(threshold: 0.1)
+
+        XCTAssertFalse(gate.shouldEmit([0]))
+        XCTAssertFalse(gate.shouldEmit([20]))
+        XCTAssertTrue(gate.shouldEmit([30]))
+        XCTAssertFalse(gate.shouldEmit([40]))
+        XCTAssertTrue(gate.shouldEmit([60]))
     }
 }
 

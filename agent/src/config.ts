@@ -2,7 +2,60 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { loadEnvFile } from "node:process";
 
-import type { ScreenObservationConfig } from "./screen-observation/types.js";
+export type ScreenObservationConfig = {
+  enabled: boolean;
+  scheduling: {
+    tickIntervalMilliseconds: number;
+    ordinaryCaptureGapMilliseconds: number;
+    delaysMilliseconds: {
+      mouseClick: number;
+      focusedElementChanged: number;
+      keyActivity: number;
+      accessibilityChanged: number;
+      visualChanged: number;
+    };
+    capsMilliseconds: {
+      keyActivity: number;
+      visualChanged: number;
+    };
+  };
+  deduplication: {
+    visualDifferenceThreshold: number;
+  };
+  capture: {
+    requestTimeoutMilliseconds: number;
+  };
+  helperLifecycle: {
+    configurationTimeoutMilliseconds: number;
+    shutdownTimeoutMilliseconds: number;
+  };
+  activityMonitoring: {
+    coalescingIntervalMilliseconds: number;
+  };
+  accessibility: {
+    maxDepth: number;
+    maxNodes: number;
+    timeoutMilliseconds: number;
+    maxTextLength: number;
+  };
+  screenshot: {
+    maxWidth: number;
+    jpegQuality: number;
+  };
+  visualMonitoring: {
+    maxWidth: number;
+    sampleIntervalMilliseconds: number;
+    queueDepth: number;
+    changeThreshold: number;
+    signatureWidth: number;
+    signatureHeight: number;
+  };
+  windowSelection: {
+    minimumWidth: number;
+    minimumHeight: number;
+    maximumAspectRatio: number;
+  };
+};
 
 export type RuntimeConfig = {
   apiKey: string;
@@ -198,7 +251,7 @@ function loadScreenObservationConfig(value: unknown): ScreenObservationConfig {
     "screenObservation.windowSelection",
   );
 
-  return {
+  const config: ScreenObservationConfig = {
     enabled: boolean(root.enabled, "screenObservation.enabled"),
     scheduling: {
       tickIntervalMilliseconds: positiveJSONInteger(
@@ -352,6 +405,16 @@ function loadScreenObservationConfig(value: unknown): ScreenObservationConfig {
       ),
     },
   };
+  if (
+    config.visualMonitoring.changeThreshold
+      > config.deduplication.visualDifferenceThreshold
+  ) {
+    throw new Error(
+      "screenObservation.visualMonitoring.changeThreshold must not exceed "
+        + "screenObservation.deduplication.visualDifferenceThreshold",
+    );
+  }
+  return config;
 }
 
 export function loadRuntimeConfig(

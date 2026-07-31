@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import type { ScreenObservationConfig } from "../../src/config.js";
 import { ScreenObservationService } from "../../src/screen-observation/service.js";
 import type {
   NativeActivitySignal,
   NativeCaptureResult,
-  ScreenObservationConfig,
+} from "../../src/screen-observation/protocol.js";
+import type {
   ScreenObservation,
 } from "../../src/screen-observation/types.js";
 

@@ -1,8 +1,9 @@
 import AppKit
+import CaptureCore
 import CoreGraphics
 import ScreenCaptureKit
 
-enum ObservationCaptureError: LocalizedError {
+enum CaptureError: LocalizedError {
     case noExternalFrontmostWindow
 
     var errorDescription: String? {
@@ -13,18 +14,18 @@ enum ObservationCaptureError: LocalizedError {
     }
 }
 
-enum ObservationCaptureEngine {
+enum CaptureEngine {
     @MainActor
     static func capture(
         signal: NativeActivitySignal,
-        excluding filter: SelfCaptureFilter,
+        excluding filter: SelfFilter,
         configuration: NativeObservationConfiguration
     ) async throws -> NativeCaptureResult {
         guard let window = WindowResolver.currentWindow(
             excluding: filter,
             configuration: configuration.windowSelection
         ) else {
-            throw ObservationCaptureError.noExternalFrontmostWindow
+            throw CaptureError.noExternalFrontmostWindow
         }
 
         async let screenshotResult = captureScreenshot(
@@ -33,7 +34,7 @@ enum ObservationCaptureEngine {
             visualConfiguration: configuration.visualMonitoring
         )
         async let accessibilityResult = Task.detached(priority: .utility) {
-            AccessibilitySnapshotter.capture(
+            AXSnapshot.capture(
                 window: window,
                 configuration: configuration.accessibility
             )
@@ -84,44 +85,13 @@ enum ObservationCaptureEngine {
         }
 
         do {
-            let content = try await SCShareableContent.excludingDesktopWindows(
-                true,
-                onScreenWindowsOnly: true
+            let target = try await Target.resolve(
+                id: windowIdentifier,
+                maxWidth: screenshotConfiguration.maxWidth
             )
-            guard let captureWindow = content.windows.first(where: {
-                $0.windowID == windowIdentifier
-            }) else {
-                return (
-                    ScreenshotCapture(
-                        status: .unsupported,
-                        durationMilliseconds: milliseconds(since: startedAt),
-                        mimeType: nil,
-                        dataBase64: nil,
-                        width: nil,
-                        height: nil
-                    ),
-                    nil
-                )
-            }
-            let configuration = SCStreamConfiguration()
-            let scale = min(
-                1,
-                CGFloat(screenshotConfiguration.maxWidth)
-                    / max(1, captureWindow.frame.width)
-            )
-            configuration.width = max(
-                1,
-                Int((captureWindow.frame.width * scale).rounded())
-            )
-            configuration.height = max(
-                1,
-                Int((captureWindow.frame.height * scale).rounded())
-            )
-            configuration.showsCursor = false
-            configuration.ignoreShadowsSingleWindow = true
             let image = try await SCScreenshotManager.captureImage(
-                contentFilter: SCContentFilter(desktopIndependentWindow: captureWindow),
-                configuration: configuration
+                contentFilter: target.filter,
+                configuration: target.configuration
             )
             guard let jpeg = NSBitmapImageRep(cgImage: image).representation(
                 using: .jpeg,
@@ -140,7 +110,7 @@ enum ObservationCaptureEngine {
                     width: image.width,
                     height: image.height
                 ),
-                VisualSignature.make(
+                Signature.make(
                     from: image,
                     configuration: visualConfiguration
                 )

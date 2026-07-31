@@ -1,12 +1,15 @@
-import { createHash } from "node:crypto";
-
+import type {
+  ScreenObservationConfig,
+} from "../config.js";
 import type {
   NativeActivityKind,
   NativeActivitySignal,
-  ObservationContentSignature,
-  PlannedCapture,
-  ScreenObservationConfig,
-} from "./types.js";
+} from "./protocol.js";
+
+type PlannedCapture = {
+  signal: NativeActivitySignal;
+  dueAtMilliseconds: number;
+};
 
 type PendingCapture = PlannedCapture & {
   firstAtMilliseconds: number;
@@ -74,48 +77,10 @@ export class CapturePlanner {
   nextDueAt(): number | undefined {
     let next: number | undefined;
     for (const capture of this.pending.values()) {
-      next = next === undefined ? capture.dueAtMilliseconds : Math.min(next, capture.dueAtMilliseconds);
+      next = next === undefined
+        ? capture.dueAtMilliseconds
+        : Math.min(next, capture.dueAtMilliseconds);
     }
     return next;
   }
-}
-
-function canonicalize(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(canonicalize);
-  if (value !== null && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>)
-        .sort(([left], [right]) => left.localeCompare(right))
-        .map(([key, child]) => [key, canonicalize(child)]),
-    );
-  }
-  return value;
-}
-
-export function axContentHash(snapshot: unknown) {
-  return createHash("sha256")
-    .update(JSON.stringify(canonicalize(snapshot)))
-    .digest("hex");
-}
-
-export function visualDistance(left?: number[], right?: number[]) {
-  if (left === undefined && right === undefined) return 0;
-  if (left === undefined || right === undefined || left.length !== right.length) return 1;
-  if (left.length === 0) return 0;
-  let difference = 0;
-  for (let index = 0; index < left.length; index += 1) {
-    difference += Math.abs(left[index]! - right[index]!);
-  }
-  return difference / (left.length * 255);
-}
-
-export function shouldEmitObservation(
-  previous: ObservationContentSignature | undefined,
-  current: ObservationContentSignature,
-  boundary: boolean,
-  visualThreshold: number,
-) {
-  if (previous === undefined || boundary || previous.windowKey !== current.windowKey) return true;
-  if (previous.accessibilityHash !== current.accessibilityHash) return true;
-  return visualDistance(previous.visualSignature, current.visualSignature) >= visualThreshold;
 }

@@ -69,7 +69,7 @@ record raw keys or typed key values, redacts secure Accessibility fields, and
 excludes OpenScreen's own processes to prevent capture loops. Observations are
 currently kept in memory and are not persisted, added to long-term memory, or
 sent to a model. See the
-[native observation helper documentation](Sources/OpenScreenObservationHelper/README.md)
+[native observation helper documentation](Sources/ObservationHelper/README.md)
 for capture behavior, permission degradation, and implementation-level privacy
 controls.
 

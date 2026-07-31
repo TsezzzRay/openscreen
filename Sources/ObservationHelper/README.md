@@ -1,10 +1,11 @@
-# OpenScreenObservationHelper
+# ObservationHelper
 
-`OpenScreenObservationHelper` is the native macOS data-collection process for
-screen observation. The Node agent starts it as a child process and communicates
-with it using newline-delimited JSON over stdin/stdout.
+`ObservationHelper` is the native macOS data-collection child process.
+Node communicates with it using newline-delimited JSON over stdin/stdout. The
+repository README describes the overall process topology; this file covers the
+helper boundary and implementation.
 
-The helper owns macOS-specific work:
+The helper owns:
 
 - detecting foreground application, window, Accessibility, input-activity, and
   visual-change signals;
@@ -14,9 +15,8 @@ The helper owns macOS-specific work:
 - reporting permission and component health; and
 - excluding OpenScreen processes and bundle identifiers from observation.
 
-It does not schedule captures, deduplicate observations, persist data, build
-long-term memory, call a model, or run an Agent Loop. Those are Node or later
-integration responsibilities.
+It does not schedule captures, deduplicate observations, persist data, call a
+model, or run an Agent Loop.
 
 ## Runtime flow
 
@@ -40,20 +40,21 @@ they cannot corrupt the JSON Lines stream. Node ignores an accidental non-JSON
 stdout line but treats an incompatible version or malformed structured protocol
 message as a fatal helper error. The wire contract and validation on the Node
 side live in
-`agent/src/screen-observation/helper-protocol.ts`. Configuration delivery is
-part of helper protocol version 3; mismatched binaries fail explicitly instead
-of running with a different set of capture defaults.
+`agent/src/screen-observation/protocol.ts`. Node and the helper are built and
+released together, so the current wire format has no version negotiation.
 
 ## Signal sources
 
-`ActivityMonitor` combines three native sources:
+`Monitor` coordinates four native sources without depending on the wire
+transport:
 
 - `NSWorkspace` for application activation, Space changes, wake, and relevant
   application termination;
-- `AXObserver` for focused-window, focused-element, value, and title changes in
-  the current foreground application; and
-- a listen-only `CGEventTap` for mouse-button presses and non-command/control
-  keyboard activity.
+- `AXSource` for focused-window, focused-element, value, and title changes in
+  the current foreground application;
+- `InputSource`, using a listen-only `CGEventTap`, for mouse-button presses and
+  non-command/control keyboard activity; and
+- `VisualSource` for low-resolution ScreenCaptureKit frames.
 
 The current foreground window is cached for high-frequency keyboard and AX
 signals. Keyboard and AX-content signals are independently coalesced using the
@@ -64,10 +65,10 @@ keyboard, focused-element, and AX-content signals use that cached identity;
 a following focus boundary supersedes activity attributed to the previous
 window.
 
-`VisualStreamMonitor` runs a low-resolution ScreenCaptureKit stream for the
-current foreground window. It emits only a `visualChanged` signal when the
-configured grayscale signature distance is large enough. It does not emit or
-store video frames.
+`VisualSource` compares each grayscale signature with the last signature that
+caused an event, not merely the preceding video frame. This allows gradual
+visual changes to accumulate. It emits only `visualChanged`; it never emits or
+stores video frames.
 
 ## Configuration
 
@@ -94,7 +95,12 @@ and scheduler tick frequency. The default capture timeout is 10 seconds and
 releases only the timed-out Node request; it does not terminate or restart the
 helper. Observation settings are not environment-variable overrides. The helper
 executable path remains a deployment concern supplied through
-`OPENSCREEN_OBSERVATION_HELPER_PATH` when needed.
+`OPENSCREEN_HELPER_PATH` when needed.
+
+`visualMonitoring.changeThreshold` must be less than or equal to
+`deduplication.visualDifferenceThreshold`. Swift therefore notices at least
+every change that Node considers materially different. Both sides use normalized
+mean absolute grayscale-pixel distance in the range `0...1`.
 
 Protocol versions, activity/status enums, secure-field redaction, foreground
 window semantics, and self-capture exclusion are compatibility or privacy
@@ -127,21 +133,17 @@ Artifacts remain in the `captureResult` message as in-memory data. This target
 does not write screenshots, snapshots, observations, or logs to application
 storage.
 
-## File map
+## Source layout
 
-| File | Responsibility |
+| Path | Responsibility |
 | --- | --- |
-| `main.swift` | process lifecycle, stdin reader, command dispatch, and shutdown |
-| `HelperProtocol.swift` | Swift protocol messages and serialized stdout writer |
-| `NativeModels.swift` | shared native configuration, signal, window, and capture models |
-| `ActivityMonitor.swift` | workspace, Accessibility, and input-activity monitoring |
-| `VisualStreamMonitor.swift` | low-resolution visual-change stream |
-| `WindowResolver.swift` | filtered foreground-window resolution |
-| `ObservationCaptureEngine.swift` | concurrent screenshot and AX capture |
-| `AccessibilitySnapshotter.swift` | bounded and redacted AX tree creation |
-| `SnapshotBudget.swift` | AX traversal depth, node, and deadline budget |
-| `VisualSignature.swift` | grayscale downsampling and visual distance |
-| `ObservationPrivacy.swift` | self-capture filtering and secure-value redaction |
+| `main.swift` | minimal process bootstrap |
+| `Protocol/` | wire DTOs and JSON Lines framing |
+| `Runtime/` | command coordination and single-capture admission |
+| `Monitoring/` | workspace, AX, input, and visual signal sources |
+| `Capture/` | window/self exclusion, screenshot, AX snapshot, budget, and signature |
+| `Models/` | native configuration, signal, window, and capture models |
+| `../CaptureCore/` | window selection and ScreenCaptureKit target logic shared with the app |
 
 ## Build and test
 

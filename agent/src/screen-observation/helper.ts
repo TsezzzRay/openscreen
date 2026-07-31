@@ -4,18 +4,15 @@ import { once } from "node:events";
 import { createInterface, type Interface } from "node:readline";
 
 import {
-  HELPER_PROTOCOL_VERSION,
   InvalidCaptureResultError,
   NonJSONHelperOutputError,
   encodeHelperCommand,
   parseHelperOutput,
   type HelperOutput,
-} from "./helper-protocol.js";
-import type {
-  NativeActivitySignal,
-  NativeCaptureResult,
-  NativeHelperConfiguration,
-} from "./types.js";
+  type NativeActivitySignal,
+  type NativeCaptureResult,
+  type NativeHelperConfiguration,
+} from "./protocol.js";
 
 export type HelperLifecycle = "starting" | "ready" | "failed" | "stopped";
 export type HelperComponentStatus = Extract<HelperOutput, { type: "status" }>;
@@ -86,7 +83,6 @@ export class NativeHelperClient {
       this.pendingCaptures.set(requestId, { resolve, reject, timer });
     });
     this.child.stdin.write(encodeHelperCommand({
-      protocolVersion: HELPER_PROTOCOL_VERSION,
       requestId,
       type: "capture",
       signal,
@@ -107,7 +103,6 @@ export class NativeHelperClient {
     }
     const requestId = randomUUID();
     child.stdin.write(encodeHelperCommand({
-      protocolVersion: HELPER_PROTOCOL_VERSION,
       requestId,
       type: "shutdown",
     }));
@@ -185,7 +180,6 @@ export class NativeHelperClient {
         );
       }, this.options.configurationTimeoutMilliseconds);
       child.stdin.write(encodeHelperCommand({
-        protocolVersion: HELPER_PROTOCOL_VERSION,
         requestId,
         type: "configure",
         excludedProcessIdentifiers: this.options.excludedProcessIdentifiers,

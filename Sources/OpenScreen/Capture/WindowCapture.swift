@@ -1,4 +1,5 @@
 import AppKit
+import CaptureCore
 import CoreGraphics
 import ScreenCaptureKit
 
@@ -19,30 +20,22 @@ struct WindowCapture {
         guard let application = NSWorkspace.shared.frontmostApplication else {
             throw WindowCaptureError.noFrontmostApplication
         }
-        guard let windows = CGWindowListCopyWindowInfo(
-            [.optionOnScreenOnly, .excludeDesktopElements],
-            kCGNullWindowID
-        ) as? [[String: Any]],
-        let windowID = Self.selectWindowID(
+        guard let windows = Windows.onScreen(),
+        let windowID = Windows.pick(
             for: application.processIdentifier,
             from: windows
-        ) else {
+        )?.id else {
             throw WindowCaptureError.noWindow
         }
 
-        let content = try await SCShareableContent.excludingDesktopWindows(
-            true,
-            onScreenWindowsOnly: true
-        )
-        guard let window = content.windows.first(where: { $0.windowID == windowID }) else {
-            throw WindowCaptureError.noWindow
-        }
-
-        var filter = SCContentFilter(desktopIndependentWindow: window)
+        let target = try await Target.resolve(id: windowID)
+        let content = target.content
+        let window = target.window
+        var filter = target.filter
         var captureSize = window.frame.size
-        let configuration = SCStreamConfiguration()
+        let configuration = target.configuration
 
-        if Self.shouldCaptureWindowGroup(
+        if Windows.shouldGroup(
             for: application.processIdentifier,
             from: windows
         ), let display = content.displays.first(where: { $0.frame.intersects(window.frame) }) {
@@ -82,74 +75,6 @@ struct WindowCapture {
         let url = directory.appendingPathComponent(filename)
         try png.write(to: url, options: .atomic)
         return url
-    }
-
-    static func selectWindowID(
-        for processIdentifier: pid_t,
-        from windows: [[String: Any]]
-    ) -> CGWindowID? {
-        let candidates = windowCandidates(for: processIdentifier, from: windows)
-
-        return candidates.first(where: {
-            $0.frame.width >= 160
-                && $0.frame.height >= 120
-                && max(
-                    $0.frame.width / $0.frame.height,
-                    $0.frame.height / $0.frame.width
-                ) <= 4
-        })?.id ?? candidates.first?.id
-    }
-
-    static func shouldCaptureWindowGroup(
-        for processIdentifier: pid_t,
-        from windows: [[String: Any]]
-    ) -> Bool {
-        let candidates = windowCandidates(for: processIdentifier, from: windows)
-        guard let first = candidates.first else { return false }
-        let aspectRatio = max(
-            first.frame.width / first.frame.height,
-            first.frame.height / first.frame.width
-        )
-        guard aspectRatio > 4 else { return false }
-
-        return candidates.dropFirst().contains {
-            $0.frame.width >= first.frame.width * 0.8
-                && $0.frame.height >= first.frame.height * 2
-        }
-    }
-
-    private struct WindowCandidate {
-        let id: CGWindowID
-        let frame: CGRect
-    }
-
-    private static func windowCandidates(
-        for processIdentifier: pid_t,
-        from windows: [[String: Any]]
-    ) -> [WindowCandidate] {
-        windows.compactMap { window -> WindowCandidate? in
-            guard
-                window[kCGWindowOwnerPID as String] as? pid_t == processIdentifier,
-                window[kCGWindowLayer as String] as? Int == 0,
-                let number = window[kCGWindowNumber as String] as? CGWindowID,
-                let bounds = window[kCGWindowBounds as String] as? [String: CGFloat],
-                let width = bounds["Width"],
-                let height = bounds["Height"],
-                width > 1,
-                height > 1
-            else {
-                return nil
-            }
-            return WindowCandidate(
-                id: number,
-                frame: CGRect(
-                    x: bounds["X"] ?? 0,
-                    y: bounds["Y"] ?? 0,
-                    width: width,
-                    height: height
-                )
-            )
-        }
     }
 
     private func screenshotDirectory() throws -> URL {

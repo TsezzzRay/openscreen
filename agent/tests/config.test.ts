@@ -273,9 +273,8 @@ test("rejects invalid screen observation settings", (t) => {
   );
 
   const missingObservation = withConfig(t, {
-    model: fileConfig.model,
-    baseURL: fileConfig.baseURL,
-    context: fileConfig.context,
+    ...fileConfig,
+    screenObservation: undefined,
   });
   assert.throws(
     () => loadRuntimeConfig(missingObservation.path, { OPENAI_API_KEY: "secret" }),
@@ -342,5 +341,23 @@ test("rejects invalid screen observation settings", (t) => {
       OPENAI_API_KEY: "secret",
     }),
     /screenObservation.activityMonitoring.coalescingIntervalMilliseconds must be a positive integer/,
+  );
+});
+
+test("requires visual monitoring to be at least as sensitive as deduplication", (t) => {
+  const { path } = withConfig(t, {
+    ...fileConfig,
+    screenObservation: {
+      ...fileConfig.screenObservation,
+      visualMonitoring: {
+        ...fileConfig.screenObservation.visualMonitoring,
+        changeThreshold: 0.1,
+      },
+    },
+  });
+
+  assert.throws(
+    () => loadRuntimeConfig(path, { OPENAI_API_KEY: "secret" }),
+    /changeThreshold must not exceed .*visualDifferenceThreshold/,
   );
 });

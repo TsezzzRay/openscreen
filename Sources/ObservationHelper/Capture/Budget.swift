@@ -1,6 +1,6 @@
 import Foundation
 
-struct SnapshotBudget {
+struct Budget {
     let maxDepth: Int
     let maxNodes: Int
     let deadline: Date

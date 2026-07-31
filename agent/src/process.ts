@@ -61,8 +61,18 @@ async function run() {
     "sessions",
   );
   const lines = createInterface({ input: process.stdin, crlfDelay: Infinity });
+  const observationBundleIdentifier = process.env.OPENSCREEN_BUNDLE_ID;
   const observationRuntime = config.screenObservation.enabled
-    ? new ScreenObservationRuntime({ config: config.screenObservation })
+    ? new ScreenObservationRuntime({
+      config: config.screenObservation,
+      helperCommand: process.env.OPENSCREEN_HELPER_PATH ??
+        join(process.cwd(), ".build", "debug", "ObservationHelper"),
+      helperCurrentDirectory: process.cwd(),
+      excludedProcessIdentifiers: [process.pid, process.ppid],
+      excludedBundleIdentifiers: observationBundleIdentifier === undefined
+        ? []
+        : [observationBundleIdentifier],
+    })
     : undefined;
   void observationRuntime?.start().catch((error) => {
     process.stderr.write(

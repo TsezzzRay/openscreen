@@ -1,7 +1,9 @@
 import CoreGraphics
 import Foundation
 
-enum NativeActivityKind: String, Codable, Sendable {
+// MARK: - Activity
+
+enum NativeActivityKind: String, Codable, Hashable, Sendable {
     case applicationActivated
     case focusedWindowChanged
     case focusedElementChanged
@@ -80,6 +82,24 @@ enum CaptureStatus: String, Codable, Sendable {
     case timedOut
     case unsupported
     case failed
+}
+
+struct SourceStatus: Sendable {
+    enum Component: String, Sendable {
+        case accessibility
+        case eventTap
+        case visualStream
+    }
+
+    enum State: String, Sendable {
+        case ready
+        case degraded
+        case stopped
+    }
+
+    let component: Component
+    let state: State
+    let message: String?
 }
 
 struct AccessibilityNode: Codable, Sendable {

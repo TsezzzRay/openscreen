@@ -6,14 +6,23 @@ let package = Package(
     name: "OpenScreen",
     platforms: [.macOS(.v15)],
     targets: [
-        .executableTarget(name: "OpenScreen"),
+        .target(name: "CaptureCore"),
         .executableTarget(
-            name: "OpenScreenObservationHelper",
+            name: "OpenScreen",
+            dependencies: ["CaptureCore"]
+        ),
+        .executableTarget(
+            name: "ObservationHelper",
+            dependencies: ["CaptureCore"],
             exclude: ["README.md"]
         ),
         .testTarget(
             name: "OpenScreenTests",
-            dependencies: ["OpenScreen", "OpenScreenObservationHelper"]
+            dependencies: [
+                "CaptureCore",
+                "OpenScreen",
+                "ObservationHelper",
+            ]
         ),
     ]
 )

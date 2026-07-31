@@ -1,5 +1,6 @@
 import AppKit
 import XCTest
+@testable import CaptureCore
 @testable import OpenScreen
 
 @MainActor
@@ -22,7 +23,7 @@ final class WindowCaptureTests: XCTestCase {
         ]
 
         XCTAssertEqual(
-            WindowCapture.selectWindowID(for: processIdentifier, from: windows),
+            Windows.pick(for: processIdentifier, from: windows)?.id,
             CGWindowID(2)
         )
     }
@@ -39,7 +40,7 @@ final class WindowCaptureTests: XCTestCase {
         ]
 
         XCTAssertEqual(
-            WindowCapture.selectWindowID(for: processIdentifier, from: windows),
+            Windows.pick(for: processIdentifier, from: windows)?.id,
             CGWindowID(7)
         )
     }
@@ -62,10 +63,10 @@ final class WindowCaptureTests: XCTestCase {
         ]
 
         XCTAssertTrue(
-            WindowCapture.shouldCaptureWindowGroup(for: processIdentifier, from: windows)
+            Windows.shouldGroup(for: processIdentifier, from: windows)
         )
         XCTAssertEqual(
-            WindowCapture.selectWindowID(for: processIdentifier, from: windows),
+            Windows.pick(for: processIdentifier, from: windows)?.id,
             CGWindowID(11)
         )
     }
@@ -82,7 +83,17 @@ final class WindowCaptureTests: XCTestCase {
         ]
 
         XCTAssertFalse(
-            WindowCapture.shouldCaptureWindowGroup(for: processIdentifier, from: windows)
+            Windows.shouldGroup(for: processIdentifier, from: windows)
+        )
+    }
+
+    func testCaptureTargetPreservesAspectRatioWhenScaling() {
+        XCTAssertEqual(
+            Target.size(
+                for: CGSize(width: 1_200, height: 800),
+                maxWidth: 600
+            ),
+            CGSize(width: 600, height: 400)
         )
     }
 }

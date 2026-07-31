@@ -1,18 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import {
-  CapturePlanner,
-  axContentHash,
-  shouldEmitObservation,
-  visualDistance,
-} from "../../src/screen-observation/policy.js";
+import type { ScreenObservationConfig } from "../../src/config.js";
+import { CapturePlanner } from "../../src/screen-observation/scheduler.js";
 import type {
   NativeActivitySignal,
-  ObservationContentSignature,
-  ScreenObservationConfig,
   WindowMetadata,
-} from "../../src/screen-observation/types.js";
+} from "../../src/screen-observation/protocol.js";
 
 const scheduling = {
   tickIntervalMilliseconds: 100,
@@ -117,53 +111,4 @@ test("uses capture delays and caps supplied by startup configuration", () => {
     planner.takeDue(20).map((capture) => capture.signal.kind),
     ["keyActivity"],
   );
-});
-
-test("AX content hashing is independent of object key order", () => {
-  assert.equal(
-    axContentHash({
-      role: "AXWindow",
-      title: "Document",
-      children: [{ role: "AXButton", title: "Save" }],
-    }),
-    axContentHash({
-      children: [{ title: "Save", role: "AXButton" }],
-      title: "Document",
-      role: "AXWindow",
-    }),
-  );
-});
-
-test("content dedup keeps boundaries and meaningful AX or visual changes", () => {
-  const previous: ObservationContentSignature = {
-    windowKey: "101:7",
-    accessibilityHash: "same",
-    visualSignature: [0, 0, 0, 0],
-  };
-
-  assert.equal(shouldEmitObservation(previous, previous, false, 0.08), false);
-  assert.equal(shouldEmitObservation(previous, previous, true, 0.08), true);
-  assert.equal(
-    shouldEmitObservation(previous, { ...previous, accessibilityHash: "changed" }, false, 0.08),
-    true,
-  );
-  assert.equal(
-    shouldEmitObservation(
-      previous,
-      { ...previous, visualSignature: [255, 255, 255, 255] },
-      false,
-      0.08,
-    ),
-    true,
-  );
-  assert.equal(
-    shouldEmitObservation(previous, { ...previous, windowKey: "202:9" }, false, 0.08),
-    true,
-  );
-});
-
-test("visual distance is normalized mean absolute pixel difference", () => {
-  assert.equal(visualDistance([0, 0], [255, 255]), 1);
-  assert.equal(visualDistance([0, 255], [0, 255]), 0);
-  assert.equal(visualDistance([0], [0, 1]), 1);
 });

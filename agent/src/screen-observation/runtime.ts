@@ -1,21 +1,25 @@
-import { join } from "node:path";
-
 import {
   NativeHelperClient,
   type HelperComponentStatus,
-} from "./native-helper.js";
+} from "./helper.js";
 import { ScreenObservationService } from "./service.js";
 import type {
-  NativeHelperConfiguration,
-  ScreenObservation,
   ScreenObservationConfig,
-} from "./types.js";
+} from "../config.js";
+import type {
+  NativeHelperConfiguration,
+  NativeActivitySignal,
+} from "./protocol.js";
+import type { ScreenObservation } from "./types.js";
 
 type ScreenObservationRuntimeOptions = {
   config: ScreenObservationConfig;
-  helperCommand?: string;
+  helperCommand: string;
   helperArguments?: string[];
   helperEnvironment?: NodeJS.ProcessEnv;
+  helperCurrentDirectory: string;
+  excludedProcessIdentifiers: number[];
+  excludedBundleIdentifiers: string[];
   onObservation?: (observation: ScreenObservation) => void;
   onComponentStatus?: (status: HelperComponentStatus) => void;
   onFatalError?: (error: Error) => void;
@@ -27,36 +31,21 @@ export class ScreenObservationRuntime {
   private readonly tickIntervalMilliseconds: number;
   private timer?: NodeJS.Timeout;
 
-  latestObservation?: ScreenObservation;
-
   constructor(options: ScreenObservationRuntimeOptions) {
     this.tickIntervalMilliseconds = options.config.scheduling.tickIntervalMilliseconds;
-    let helper!: NativeHelperClient;
-    this.service = new ScreenObservationService({
-      config: options.config,
-      capture: (signal) => helper.capture(signal),
-      onObservation: (observation) => {
-        this.latestObservation = observation;
-        options.onObservation?.(observation);
-      },
-    });
-    const bundleIdentifier = process.env.OPENSCREEN_BUNDLE_ID;
-    helper = new NativeHelperClient({
-      command: options.helperCommand ?? (
-        process.env.OPENSCREEN_OBSERVATION_HELPER_PATH ??
-        join(process.cwd(), ".build", "debug", "OpenScreenObservationHelper")
-      ),
+    const helper = new NativeHelperClient({
+      command: options.helperCommand,
       arguments: options.helperArguments,
       environment: options.helperEnvironment,
-      currentDirectory: process.cwd(),
-      excludedProcessIdentifiers: [process.pid, process.ppid],
-      excludedBundleIdentifiers: bundleIdentifier === undefined ? [] : [bundleIdentifier],
+      currentDirectory: options.helperCurrentDirectory,
+      excludedProcessIdentifiers: options.excludedProcessIdentifiers,
+      excludedBundleIdentifiers: options.excludedBundleIdentifiers,
       configuration: nativeConfiguration(options.config),
       configurationTimeoutMilliseconds:
         options.config.helperLifecycle.configurationTimeoutMilliseconds,
       captureTimeoutMilliseconds: options.config.capture.requestTimeoutMilliseconds,
       shutdownTimeoutMilliseconds: options.config.helperLifecycle.shutdownTimeoutMilliseconds,
-      onSignal: (signal) => this.service.push(signal),
+      onSignal: (signal) => this.push(signal),
       onComponentStatus: (status) => {
         options.onComponentStatus?.(status);
         if (status.status === "degraded") {
@@ -74,6 +63,11 @@ export class ScreenObservationRuntime {
       },
     });
     this.helper = helper;
+    this.service = new ScreenObservationService({
+      config: options.config,
+      capture: (signal) => helper.capture(signal),
+      onObservation: (observation) => options.onObservation?.(observation),
+    });
   }
 
   async start() {
@@ -99,6 +93,10 @@ export class ScreenObservationRuntime {
     if (this.timer === undefined) return;
     clearInterval(this.timer);
     this.timer = undefined;
+  }
+
+  private push(signal: NativeActivitySignal) {
+    this.service.push(signal);
   }
 }
 

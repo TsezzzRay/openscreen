@@ -4,11 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { NativeHelperClient } from "../../src/screen-observation/native-helper.js";
+import { NativeHelperClient } from "../../src/screen-observation/helper.js";
 import type {
   NativeActivitySignal,
   NativeHelperConfiguration,
-} from "../../src/screen-observation/types.js";
+} from "../../src/screen-observation/protocol.js";
 
 const configuration = {
   activityMonitoring: {
@@ -54,7 +54,6 @@ const testSignal: NativeActivitySignal = {
 const helperSource = `
 import { createInterface } from "node:readline";
 process.stdout.write(JSON.stringify({
-  protocolVersion: 3,
   type: "ready",
   processIdentifier: process.pid,
 }) + "\\n");
@@ -67,19 +66,16 @@ for await (const line of lines) {
       command.configuration.activityMonitoring.coalescingIntervalMilliseconds !== 250
     ) process.exit(2);
     process.stdout.write(JSON.stringify({
-      protocolVersion: 3,
       requestId: command.requestId,
       type: "configured",
     }) + "\\n");
     process.stdout.write(JSON.stringify({
-      protocolVersion: 3,
       type: "signal",
       signal: ${JSON.stringify(testSignal)},
     }) + "\\n");
   }
   if (command.type === "capture") {
     process.stdout.write(JSON.stringify({
-      protocolVersion: 3,
       requestId: command.requestId,
       type: "captureResult",
       result: {
@@ -155,14 +151,12 @@ test("reports a crashed helper without restarting it", async (t) => {
     try { count = Number(readFileSync(path, "utf8")); } catch {}
     writeFileSync(path, String(count + 1));
     process.stdout.write(JSON.stringify({
-      protocolVersion: 3,
       type: "ready",
       processIdentifier: process.pid,
     }) + "\\n");
     process.stdin.once("data", (data) => {
       const command = JSON.parse(String(data).trim());
       process.stdout.write(JSON.stringify({
-        protocolVersion: 3,
         requestId: command.requestId,
         type: "configured",
       }) + "\\n");
@@ -205,7 +199,6 @@ test("times out only the stalled capture and accepts another capture", async (t)
   await writeFile(helperPath, `
     import { createInterface } from "node:readline";
     process.stdout.write(JSON.stringify({
-      protocolVersion: 3,
       type: "ready",
       processIdentifier: process.pid,
     }) + "\\n");
@@ -215,7 +208,6 @@ test("times out only the stalled capture and accepts another capture", async (t)
       const command = JSON.parse(line);
       if (command.type === "configure") {
         process.stdout.write(JSON.stringify({
-          protocolVersion: 3,
           requestId: command.requestId,
           type: "configured",
         }) + "\\n");
@@ -224,7 +216,6 @@ test("times out only the stalled capture and accepts another capture", async (t)
         captures += 1;
         if (captures === 1) continue;
         process.stdout.write(JSON.stringify({
-          protocolVersion: 3,
           requestId: command.requestId,
           type: "captureResult",
           result: {
@@ -276,7 +267,6 @@ test("forwards component status without degrading the helper", async (t) => {
   await writeFile(helperPath, `
     import { createInterface } from "node:readline";
     process.stdout.write(JSON.stringify({
-      protocolVersion: 3,
       type: "ready",
       processIdentifier: process.pid,
     }) + "\\n");
@@ -285,12 +275,10 @@ test("forwards component status without degrading the helper", async (t) => {
       const command = JSON.parse(line);
       if (command.type === "configure") {
         process.stdout.write(JSON.stringify({
-          protocolVersion: 3,
           requestId: command.requestId,
           type: "configured",
         }) + "\\n");
         process.stdout.write(JSON.stringify({
-          protocolVersion: 3,
           type: "status",
           component: "accessibility",
           status: "degraded",
@@ -320,7 +308,6 @@ test("forwards component status without degrading the helper", async (t) => {
   await waitFor(() => statuses.length === 1);
 
   assert.deepEqual(statuses, [{
-    protocolVersion: 3,
     type: "status",
     component: "accessibility",
     status: "degraded",
@@ -337,7 +324,6 @@ test("ignores non-JSON stdout diagnostics before readiness", async (t) => {
     import { createInterface } from "node:readline";
     process.stdout.write("framework diagnostic\\n");
     process.stdout.write(JSON.stringify({
-      protocolVersion: 3,
       type: "ready",
       processIdentifier: process.pid,
     }) + "\\n");
@@ -346,7 +332,6 @@ test("ignores non-JSON stdout diagnostics before readiness", async (t) => {
       const command = JSON.parse(line);
       if (command.type === "configure") {
         process.stdout.write(JSON.stringify({
-          protocolVersion: 3,
           requestId: command.requestId,
           type: "configured",
         }) + "\\n");
@@ -372,42 +357,6 @@ test("ignores non-JSON stdout diagnostics before readiness", async (t) => {
   assert.equal(client.running, true);
 });
 
-test("fails fast on an incompatible structured protocol message", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "openscreen-helper-protocol-error-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  const helperPath = join(directory, "protocol-error-helper.mjs");
-  await writeFile(helperPath, `
-    process.stdout.write(JSON.stringify({
-      protocolVersion: 999,
-      type: "ready",
-      processIdentifier: process.pid,
-    }) + "\\n");
-    process.stdin.resume();
-  `);
-  const fatalErrors: Error[] = [];
-  const states: string[] = [];
-  const client = new NativeHelperClient({
-    command: process.execPath,
-    arguments: [helperPath],
-    excludedProcessIdentifiers: [],
-    excludedBundleIdentifiers: [],
-    configuration,
-    configurationTimeoutMilliseconds: 2_000,
-    captureTimeoutMilliseconds: 2_000,
-    shutdownTimeoutMilliseconds: 100,
-    onSignal: () => {},
-    onLifecycle: (state: string) => states.push(state),
-    onFatalError: (error: Error) => fatalErrors.push(error),
-  });
-  t.after(() => client.stop());
-
-  await assert.rejects(client.start(), /Unsupported helper protocol version/);
-
-  assert.equal(client.running, false);
-  assert.equal(states.at(-1), "failed");
-  assert.match(fatalErrors[0]!.message, /Unsupported helper protocol version/);
-});
-
 test("rejects a malformed capture result without failing the helper", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "openscreen-helper-malformed-capture-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
@@ -415,7 +364,6 @@ test("rejects a malformed capture result without failing the helper", async (t) 
   await writeFile(helperPath, `
     import { createInterface } from "node:readline";
     process.stdout.write(JSON.stringify({
-      protocolVersion: 3,
       type: "ready",
       processIdentifier: process.pid,
     }) + "\\n");
@@ -424,14 +372,12 @@ test("rejects a malformed capture result without failing the helper", async (t) 
       const command = JSON.parse(line);
       if (command.type === "configure") {
         process.stdout.write(JSON.stringify({
-          protocolVersion: 3,
           requestId: command.requestId,
           type: "configured",
         }) + "\\n");
       }
       if (command.type === "capture") {
         process.stdout.write(JSON.stringify({
-          protocolVersion: 3,
           requestId: command.requestId,
           type: "captureResult",
           result: { capturedAt: "not-a-date" },
@@ -472,7 +418,6 @@ test("can be explicitly started after a clean stop", async (t) => {
     try { count = Number(readFileSync(path, "utf8")); } catch {}
     writeFileSync(path, String(count + 1));
     process.stdout.write(JSON.stringify({
-      protocolVersion: 3,
       type: "ready",
       processIdentifier: process.pid,
     }) + "\\n");
@@ -481,7 +426,6 @@ test("can be explicitly started after a clean stop", async (t) => {
       const command = JSON.parse(line);
       if (command.type === "configure") {
         process.stdout.write(JSON.stringify({
-          protocolVersion: 3,
           requestId: command.requestId,
           type: "configured",
         }) + "\\n");
@@ -518,7 +462,6 @@ test("rejects startup when the helper rejects configuration", async (t) => {
   await writeFile(helperPath, `
     import { createInterface } from "node:readline";
     process.stdout.write(JSON.stringify({
-      protocolVersion: 3,
       type: "ready",
       processIdentifier: process.pid,
     }) + "\\n");
@@ -526,7 +469,6 @@ test("rejects startup when the helper rejects configuration", async (t) => {
     for await (const line of lines) {
       const command = JSON.parse(line);
       process.stdout.write(JSON.stringify({
-        protocolVersion: 3,
         type: "error",
         requestId: command.requestId,
         code: "invalid_configuration",
@@ -565,7 +507,6 @@ test("times out a helper that never acknowledges configuration", async (t) => {
   const helperPath = join(directory, "silent-helper.mjs");
   await writeFile(helperPath, `
     process.stdout.write(JSON.stringify({
-      protocolVersion: 3,
       type: "ready",
       processIdentifier: process.pid,
     }) + "\\n");

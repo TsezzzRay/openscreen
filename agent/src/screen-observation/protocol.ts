@@ -1,18 +1,114 @@
-import type {
-  AccessibilityCapture,
-  AccessibilityNode,
-  AccessibilitySnapshot,
-  CaptureStatus,
-  NativeActivityKind,
-  NativeActivitySignal,
-  NativeCaptureResult,
-  NativeHelperConfiguration,
-  ScreenshotCapture,
-  WindowFrame,
-  WindowMetadata,
-} from "./types.js";
+export type NativeActivityKind =
+  | "applicationActivated"
+  | "focusedWindowChanged"
+  | "focusedElementChanged"
+  | "mouseClick"
+  | "keyActivity"
+  | "accessibilityChanged"
+  | "visualChanged"
+  | "spaceChanged"
+  | "wake";
 
-export const HELPER_PROTOCOL_VERSION = 3 as const;
+export type NativeHelperConfiguration = {
+  activityMonitoring: {
+    coalescingIntervalMilliseconds: number;
+  };
+  accessibility: {
+    maxDepth: number;
+    maxNodes: number;
+    timeoutMilliseconds: number;
+    maxTextLength: number;
+  };
+  screenshot: {
+    maxWidth: number;
+    jpegQuality: number;
+  };
+  visualMonitoring: {
+    maxWidth: number;
+    sampleIntervalMilliseconds: number;
+    queueDepth: number;
+    changeThreshold: number;
+    signatureWidth: number;
+    signatureHeight: number;
+  };
+  windowSelection: {
+    minimumWidth: number;
+    minimumHeight: number;
+    maximumAspectRatio: number;
+  };
+};
+
+export type WindowFrame = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+export type WindowMetadata = {
+  processIdentifier: number;
+  bundleIdentifier?: string;
+  applicationName: string;
+  windowIdentifier?: number;
+  title?: string;
+  frame?: WindowFrame;
+};
+
+export type NativeActivitySignal = {
+  kind: NativeActivityKind;
+  occurredAt: string;
+  window: WindowMetadata;
+};
+
+export type CaptureStatus =
+  | "complete"
+  | "permissionDenied"
+  | "timedOut"
+  | "unsupported"
+  | "failed";
+
+export type AccessibilityNode = {
+  role: string;
+  subrole?: string;
+  title?: string;
+  value?: string;
+  identifier?: string;
+  description?: string;
+  frame?: WindowFrame;
+  focused?: boolean;
+  enabled?: boolean;
+  selected?: boolean;
+  children?: AccessibilityNode[];
+};
+
+export type AccessibilitySnapshot = {
+  root: AccessibilityNode;
+  nodeCount: number;
+  truncated: boolean;
+};
+
+export type ScreenshotCapture = {
+  status: CaptureStatus;
+  durationMilliseconds: number;
+  mimeType?: "image/jpeg";
+  dataBase64?: string;
+  width?: number;
+  height?: number;
+};
+
+export type AccessibilityCapture = {
+  status: CaptureStatus;
+  durationMilliseconds: number;
+  snapshot?: AccessibilitySnapshot;
+};
+
+export type NativeCaptureResult = {
+  capturedAt: string;
+  window: WindowMetadata;
+  screenshot: ScreenshotCapture;
+  accessibility: AccessibilityCapture;
+  visualSignature?: number[];
+};
 const ACTIVITY_KINDS = new Set<NativeActivityKind>([
   "applicationActivated",
   "focusedWindowChanged",
@@ -47,7 +143,6 @@ export class InvalidCaptureResultError extends Error {
 }
 
 export type HelperCommand = {
-  protocolVersion: typeof HELPER_PROTOCOL_VERSION;
   requestId: string;
 } & ({
   type: "configure";
@@ -62,8 +157,6 @@ export type HelperCommand = {
 });
 
 export type HelperOutput = {
-  protocolVersion: typeof HELPER_PROTOCOL_VERSION;
-} & ({
   type: "ready";
   processIdentifier: number;
 } | {
@@ -78,7 +171,7 @@ export type HelperOutput = {
   result: NativeCaptureResult;
 } | {
   type: "status";
-  component: "accessibility" | "eventTap" | "screenCapture" | "visualStream";
+  component: "accessibility" | "eventTap" | "visualStream";
   status: "ready" | "degraded" | "stopped";
   message?: string;
 } | {
@@ -86,7 +179,7 @@ export type HelperOutput = {
   requestId?: string;
   code: string;
   message: string;
-});
+};
 
 function invalid(): never {
   throw new Error("Invalid helper message");
@@ -127,11 +220,6 @@ function optionalBoolean(value: unknown) {
   if (value === undefined || value === null) return undefined;
   if (typeof value !== "boolean") invalid();
   return value;
-}
-
-function stringArray(value: unknown) {
-  if (!Array.isArray(value)) invalid();
-  return value.map(text);
 }
 
 function integerArray(value: unknown) {
@@ -271,27 +359,21 @@ export function parseHelperOutput(line: string): HelperOutput {
     throw new NonJSONHelperOutputError();
   }
   const value = record(parsed);
-  if (integer(value.protocolVersion) !== HELPER_PROTOCOL_VERSION) {
-    throw new Error("Unsupported helper protocol version");
-  }
   const type = text(value.type);
   if (type === "ready") {
     return {
-      protocolVersion: HELPER_PROTOCOL_VERSION,
       type,
       processIdentifier: integer(value.processIdentifier),
     };
   }
   if (type === "configured") {
     return {
-      protocolVersion: HELPER_PROTOCOL_VERSION,
       type,
       requestId: text(value.requestId),
     };
   }
   if (type === "signal") {
     return {
-      protocolVersion: HELPER_PROTOCOL_VERSION,
       type,
       signal: activitySignal(value.signal),
     };
@@ -305,7 +387,6 @@ export function parseHelperOutput(line: string): HelperOutput {
       throw new InvalidCaptureResultError(requestId);
     }
     return {
-      protocolVersion: HELPER_PROTOCOL_VERSION,
       type,
       requestId,
       result,
@@ -315,11 +396,10 @@ export function parseHelperOutput(line: string): HelperOutput {
     const component = text(value.component);
     const helperStatus = text(value.status);
     if (
-      !["accessibility", "eventTap", "screenCapture", "visualStream"].includes(component) ||
+      !["accessibility", "eventTap", "visualStream"].includes(component) ||
       !["ready", "degraded", "stopped"].includes(helperStatus)
     ) invalid();
     return {
-      protocolVersion: HELPER_PROTOCOL_VERSION,
       type,
       component: component as Extract<HelperOutput, { type: "status" }>["component"],
       status: helperStatus as Extract<HelperOutput, { type: "status" }>["status"],
@@ -328,7 +408,6 @@ export function parseHelperOutput(line: string): HelperOutput {
   }
   if (type === "error") {
     return {
-      protocolVersion: HELPER_PROTOCOL_VERSION,
       type,
       requestId: optionalText(value.requestId),
       code: text(value.code),
