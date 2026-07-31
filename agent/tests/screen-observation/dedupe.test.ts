@@ -6,10 +6,10 @@ import {
   axContentHash,
   shouldEmitObservation,
   visualDistance,
-} from "../../src/screen-observation/dedupe.js";
+} from "../../src/plugins/screen-observation/dedupe.js";
 import type {
   ObservationContentSignature,
-} from "../../src/screen-observation/dedupe.js";
+} from "../../src/plugins/screen-observation/dedupe.js";
 
 test("AX content hashing is independent of object key order", () => {
   assert.equal(

@@ -1,16 +1,16 @@
 import type OpenAI from "openai";
 
 import {
-  appendTimelineEntry,
-  readTimelineEntries,
+  appendActivityRecord,
+  readActivityRecords,
 } from "./store.js";
 import { withMemoryLock } from "../lock.js";
 import type {
   ActivitySource,
-  TimelineEntry,
+  ActivityRecord,
 } from "./types.js";
 
-const TIMELINE_INSTRUCTIONS = `Convert one OpenScreen activity into one factual timeline entry.
+const ACTIVITY_INSTRUCTIONS = `Convert one OpenScreen activity into one factual activity record.
 Return only this JSON shape:
 {"summary":"English factual summary","application":"optional application","windowTitle":"optional title","entities":["named entity"],"verbatimEvidence":["exact source text"]}
 Always include summary, entities, and verbatimEvidence. Omit application and windowTitle when unknown.
@@ -19,7 +19,7 @@ Preserve user text, code, errors, URLs, paths, and proper nouns verbatim.
 Do not infer user preferences from screen content.
 Do not describe failed or cancelled work as successful.`;
 
-export function buildTimelineRequest(
+export function buildActivityRequest(
   model: string,
   source: ActivitySource,
   maxOutputTokens: number,
@@ -27,7 +27,7 @@ export function buildTimelineRequest(
   if (source.type === "turn") {
     return {
       model,
-      instructions: TIMELINE_INSTRUCTIONS,
+      instructions: ACTIVITY_INSTRUCTIONS,
       input: [{
         role: "user",
         content: JSON.stringify({
@@ -35,7 +35,7 @@ export function buildTimelineRequest(
           sessionId: source.sessionId,
           occurredAt: source.occurredAt,
           turn: source.turn,
-          ...(source.agentRun ? { agentRun: source.agentRun } : {}),
+          agentRuns: source.agentRuns,
         }),
       }],
       max_output_tokens: maxOutputTokens,
@@ -65,57 +65,57 @@ export function buildTimelineRequest(
 
   return {
     model,
-    instructions: TIMELINE_INSTRUCTIONS,
+    instructions: ACTIVITY_INSTRUCTIONS,
     input: [{ role: "user", content }],
     max_output_tokens: maxOutputTokens,
   };
 }
 
-export function timelineSourceKey(source: ActivitySource) {
-  if (source.type === "turn" && source.agentRun?.id !== undefined &&
-      source.agentRun.id !== source.turn.id) {
-    throw new Error("Agent Run ID must match turn ID");
+export function activitySourceKey(source: ActivitySource) {
+  if (source.type === "turn" &&
+      source.agentRuns.some(({ turnId }) => turnId !== source.turn.id)) {
+    throw new Error("Agent Run must reference the source Turn");
   }
-  return source.type === "screen"
-    ? `screen:${source.observation.id}`
+  return source.type === "screen_observation"
+    ? `screen_observation:${source.observation.id}`
     : `turn:${source.sessionId}:${source.turn.id}`;
 }
 
-type TimelineProcessResult =
-  | { status: "created"; entry: TimelineEntry }
-  | { status: "duplicate"; entry?: undefined }
-  | { status: "discarded"; entry?: undefined };
+type ActivityProcessResult =
+  | { status: "created"; record: ActivityRecord }
+  | { status: "duplicate"; record?: undefined }
+  | { status: "discarded"; record?: undefined };
 
-function entrySourceKey(entry: TimelineEntry) {
-  return entry.source.type === "screen"
-    ? `screen:${entry.source.id}`
-    : `turn:${entry.source.sessionId}:${entry.source.id}`;
+function recordSourceKeys(record: ActivityRecord) {
+  return record.sources.map((source) => source.type === "screen_observation"
+    ? `screen_observation:${source.observationId}`
+    : `turn:${source.sessionId}:${source.turnId}`);
 }
 
 function stringArray(value: unknown, name: string) {
   if (!Array.isArray(value) || !value.every((item) => typeof item === "string")) {
-    throw new Error(`Invalid timeline ${name}`);
+    throw new Error(`Invalid activity ${name}`);
   }
   return value;
 }
 
-function parseTimelineOutput(output: string) {
+function parseActivityOutput(output: string) {
   let value: unknown;
   try {
     value = JSON.parse(output);
   } catch {
-    throw new Error("Model returned invalid timeline JSON");
+    throw new Error("Model returned invalid activity JSON");
   }
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error("Model returned invalid timeline JSON");
+    throw new Error("Model returned invalid activity JSON");
   }
   const record = value as Record<string, unknown>;
   if (typeof record.summary !== "string" || !record.summary.trim()) {
-    throw new Error("Model returned an empty timeline summary");
+    throw new Error("Model returned an empty activity summary");
   }
   for (const name of ["application", "windowTitle"] as const) {
     if (record[name] !== undefined && typeof record[name] !== "string") {
-      throw new Error(`Invalid timeline ${name}`);
+      throw new Error(`Invalid activity ${name}`);
     }
   }
   return {
@@ -127,7 +127,7 @@ function parseTimelineOutput(output: string) {
   };
 }
 
-export async function processTimelineSource({
+export async function processActivitySource({
   root,
   client,
   model,
@@ -145,14 +145,16 @@ export async function processTimelineSource({
   maxOutputTokens: number;
   now?: () => Date;
   signal?: AbortSignal;
-}): Promise<TimelineProcessResult> {
+}): Promise<ActivityProcessResult> {
   return withMemoryLock(root, async () => {
-    const sourceKey = timelineSourceKey(source);
-    if ((await readTimelineEntries(root)).some((entry) => entrySourceKey(entry) === sourceKey)) {
+    const sourceKey = activitySourceKey(source);
+    if ((await readActivityRecords(root)).some(
+      (record) => recordSourceKeys(record).includes(sourceKey),
+    )) {
       return { status: "duplicate" };
     }
 
-    const request = buildTimelineRequest(model, source, maxOutputTokens);
+    const request = buildActivityRequest(model, source, maxOutputTokens);
     const inputTokens = (
       await client.responses.inputTokens.count({
         model: request.model,
@@ -164,23 +166,31 @@ export async function processTimelineSource({
       return { status: "discarded" };
     }
     const response = await client.responses.create(request, { signal });
-    const generated = parseTimelineOutput(response.output_text);
-    const entry: TimelineEntry = {
+    const generated = parseActivityOutput(response.output_text);
+    const record: ActivityRecord = {
       schemaVersion: 1,
-      id: `timeline:${sourceKey}`,
-      occurredAt: source.type === "screen"
+      id: `activity:${sourceKey}`,
+      occurredAt: source.type === "screen_observation"
         ? source.observation.occurredAt
         : source.occurredAt,
       createdAt: now().toISOString(),
-      source: source.type === "screen"
-        ? { type: "screen", id: source.observation.id }
-        : { type: "turn", id: source.turn.id, sessionId: source.sessionId },
-      status: source.type === "screen"
+      sources: source.type === "screen_observation"
+        ? [{
+            type: "screen_observation",
+            observationId: source.observation.id,
+          }]
+        : [{
+            type: "turn",
+            turnId: source.turn.id,
+            sessionId: source.sessionId,
+            agentRunIds: source.agentRuns.map(({ id }) => id),
+          }],
+      status: source.type === "screen_observation"
         ? "observed"
-        : source.agentRun?.status ?? source.turn.status,
+        : source.turn.status,
       ...generated,
     };
-    await appendTimelineEntry(root, entry);
-    return { status: "created", entry };
+    await appendActivityRecord(root, record);
+    return { status: "created", record };
   });
 }

@@ -10,19 +10,24 @@ import {
   appendMemoryEvent,
   readMemoryEvents,
 } from "../../src/harness/memory/store.js";
-import { appendTimelineEntry } from "../../src/harness/memory/timeline/store.js";
+import { appendActivityRecord } from "../../src/harness/memory/activity/store.js";
 import {
   processMemoryIfDue,
   readActiveMemories,
 } from "../../src/harness/memory/processor.js";
-import type { TimelineEntry } from "../../src/harness/memory/timeline/types.js";
+import type { ActivityRecord } from "../../src/harness/memory/activity/types.js";
 
-const timeline: TimelineEntry = {
+const timeline: ActivityRecord = {
   schemaVersion: 1,
-  id: "timeline:turn:session-1:turn-1",
+  id: "activity:turn:session-1:turn-1",
   occurredAt: "2026-07-27T00:00:00.000Z",
   createdAt: "2026-07-27T00:00:01.000Z",
-  source: { type: "turn", id: "turn-1", sessionId: "session-1" },
+  sources: [{
+    type: "turn",
+    turnId: "turn-1",
+    sessionId: "session-1",
+    agentRunIds: [],
+  }],
   status: "completed",
   summary: "The user decided to run activity memory every 24 hours.",
   entities: ["activity memory"],
@@ -41,10 +46,10 @@ function processMemory(
   });
 }
 
-test("processes pending timeline entries after the configured memory interval", async (t) => {
+test("processes pending activity records after the configured memory interval", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "openscreen-memory-"));
   t.after(() => rm(root, { recursive: true, force: true }));
-  await appendTimelineEntry(root, timeline);
+  await appendActivityRecord(root, timeline);
   let generations = 0;
   const client = {
     responses: {
@@ -53,14 +58,14 @@ test("processes pending timeline entries after the configured memory interval", 
       },
       create: async (request: { instructions: string }) => {
         generations += 1;
-        assert.match(request.instructions, /evidenceTimelineIds/);
+        assert.match(request.instructions, /evidenceActivityIds/);
         return {
           output_text: JSON.stringify({
             decisions: [{
               action: "create",
               topic: "Activity memory schedule",
               content: "The user chose a 24-hour memory processing interval.",
-              evidenceTimelineIds: [timeline.id],
+              evidenceActivityIds: [timeline.id],
             }],
           }),
         };
@@ -93,14 +98,14 @@ test("processes pending timeline entries after the configured memory interval", 
   const events = await readMemoryEvents(root);
   assert.equal(events.length, 1);
   assert.equal(events[0]?.status, "processed");
-  assert.deepEqual(events[0]?.timelineEntryIds, [timeline.id]);
+  assert.deepEqual(events[0]?.activityIds, [timeline.id]);
   assert.equal(events[0]?.changes[0]?.action, "create");
 });
 
 test("records an empty due cycle without calling the model", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "openscreen-memory-"));
   t.after(() => rm(root, { recursive: true, force: true }));
-  await appendTimelineEntry(root, timeline);
+  await appendActivityRecord(root, timeline);
   let generations = 0;
   const client = {
     responses: {
@@ -115,7 +120,7 @@ test("records an empty due cycle without calling the model", async (t) => {
               action: "create",
               topic: "Activity memory schedule",
               content: "The user chose a 24-hour memory processing interval.",
-              evidenceTimelineIds: [timeline.id],
+              evidenceActivityIds: [timeline.id],
             }],
           }),
         };
@@ -148,13 +153,13 @@ test("records an empty due cycle without calling the model", async (t) => {
   const events = await readMemoryEvents(root);
   assert.equal(events.length, 2);
   assert.equal(events[1]?.status, "no_pending");
-  assert.deepEqual(events[1]?.timelineEntryIds, []);
+  assert.deepEqual(events[1]?.activityIds, []);
 });
 
-test("marks skipped timeline entries as processed without creating memory", async (t) => {
+test("marks skipped activity records as processed without creating memory", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "openscreen-memory-"));
   t.after(() => rm(root, { recursive: true, force: true }));
-  await appendTimelineEntry(root, timeline);
+  await appendActivityRecord(root, timeline);
   const client = {
     responses: {
       inputTokens: {
@@ -164,7 +169,7 @@ test("marks skipped timeline entries as processed without creating memory", asyn
         output_text: JSON.stringify({
           decisions: [{
             action: "skip",
-            evidenceTimelineIds: [timeline.id],
+            evidenceActivityIds: [timeline.id],
           }],
         }),
       }),
@@ -182,14 +187,14 @@ test("marks skipped timeline entries as processed without creating memory", asyn
 
   assert.equal(result.status, "processed");
   const [event] = await readMemoryEvents(root);
-  assert.deepEqual(event?.timelineEntryIds, [timeline.id]);
+  assert.deepEqual(event?.activityIds, [timeline.id]);
   assert.deepEqual(event?.changes, []);
 });
 
-test("supersedes an active memory using new timeline evidence", async (t) => {
+test("supersedes an active memory using new activity evidence", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "openscreen-memory-"));
   t.after(() => rm(root, { recursive: true, force: true }));
-  await appendTimelineEntry(root, timeline);
+  await appendActivityRecord(root, timeline);
   let generation = 0;
   let oldMemoryId = "";
   const client = {
@@ -206,7 +211,7 @@ test("supersedes an active memory using new timeline evidence", async (t) => {
                 action: "create",
                 topic: "Activity memory schedule",
                 content: "The user chose a 24-hour memory processing interval.",
-                evidenceTimelineIds: [timeline.id],
+                evidenceActivityIds: [timeline.id],
               }],
             }),
           };
@@ -215,8 +220,8 @@ test("supersedes an active memory using new timeline evidence", async (t) => {
         assert.equal(payload.activeMemories.length, 1);
         assert.equal(payload.activeMemories[0].id, oldMemoryId);
         assert.deepEqual(
-          payload.timelineEntries.map(({ id }: { id: string }) => id),
-          ["timeline:turn:session-1:turn-2"],
+          payload.activityRecords.map(({ id }: { id: string }) => id),
+          ["activity:turn:session-1:turn-2"],
         );
         return {
           output_text: JSON.stringify({
@@ -225,7 +230,7 @@ test("supersedes an active memory using new timeline evidence", async (t) => {
               memoryId: oldMemoryId,
               topic: "Activity memory schedule",
               content: "The user chose a 12-hour memory processing interval.",
-              evidenceTimelineIds: ["timeline:turn:session-1:turn-2"],
+              evidenceActivityIds: ["activity:turn:session-1:turn-2"],
             }],
           }),
         };
@@ -245,12 +250,17 @@ test("supersedes an active memory using new timeline evidence", async (t) => {
     now: () => new Date("2026-07-28T00:00:01.000Z"),
   });
   oldMemoryId = (await readActiveMemories(root))[0]!.id;
-  await appendTimelineEntry(root, {
+  await appendActivityRecord(root, {
     ...timeline,
-    id: "timeline:turn:session-1:turn-2",
+    id: "activity:turn:session-1:turn-2",
     occurredAt: "2026-07-28T01:00:00.000Z",
     createdAt: "2026-07-28T01:00:01.000Z",
-    source: { type: "turn", id: "turn-2", sessionId: "session-1" },
+    sources: [{
+      type: "turn",
+      turnId: "turn-2",
+      sessionId: "session-1",
+      agentRunIds: [],
+    }],
     summary: "The user changed the activity-memory interval to 12 hours.",
     verbatimEvidence: ["改成每12小时"],
   });
@@ -265,24 +275,29 @@ test("supersedes an active memory using new timeline evidence", async (t) => {
   assert.equal(active.length, 1);
   assert.notEqual(active[0]?.id, oldMemoryId);
   assert.match(active[0]?.content ?? "", /12-hour/);
-  assert.deepEqual(active[0]?.evidenceTimelineIds, [
+  assert.deepEqual(active[0]?.evidenceActivityIds, [
     timeline.id,
-    "timeline:turn:session-1:turn-2",
+    "activity:turn:session-1:turn-2",
   ]);
 });
 
-test("splits one due memory run when all pending timeline entries exceed context", async (t) => {
+test("splits one due memory run when all pending activities exceed context", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "openscreen-memory-"));
   t.after(() => rm(root, { recursive: true, force: true }));
-  const second = {
+  const second: ActivityRecord = {
     ...timeline,
-    id: "timeline:turn:session-1:turn-2",
+    id: "activity:turn:session-1:turn-2",
     occurredAt: "2026-07-27T00:01:00.000Z",
     createdAt: "2026-07-27T00:01:01.000Z",
-    source: { type: "turn" as const, id: "turn-2", sessionId: "session-1" },
+    sources: [{
+      type: "turn" as const,
+      turnId: "turn-2",
+      sessionId: "session-1",
+      agentRunIds: [],
+    }],
   };
-  await appendTimelineEntry(root, timeline);
-  await appendTimelineEntry(root, second);
+  await appendActivityRecord(root, timeline);
+  await appendActivityRecord(root, second);
   let generations = 0;
   const client = {
     responses: {
@@ -290,7 +305,7 @@ test("splits one due memory run when all pending timeline entries exceed context
         count: async (request: { input: Array<{ content: string }> }) => {
           const payload = JSON.parse(request.input[0]?.content ?? "");
           return {
-            input_tokens: payload.timelineEntries.length === 1 ? 500 : 1500,
+            input_tokens: payload.activityRecords.length === 1 ? 500 : 1500,
           };
         },
       },
@@ -301,7 +316,7 @@ test("splits one due memory run when all pending timeline entries exceed context
           output_text: JSON.stringify({
             decisions: [{
               action: "skip",
-              evidenceTimelineIds: payload.timelineEntries.map(
+              evidenceActivityIds: payload.activityRecords.map(
                 ({ id }: { id: string }) => id,
               ),
             }],
@@ -324,7 +339,7 @@ test("splits one due memory run when all pending timeline entries exceed context
   assert.equal(generations, 2);
   const events = await readMemoryEvents(root);
   assert.deepEqual(
-    events.map(({ timelineEntryIds }) => timelineEntryIds),
+    events.map(({ activityIds }) => activityIds),
     [[timeline.id], [second.id]],
   );
 });
@@ -332,7 +347,7 @@ test("splits one due memory run when all pending timeline entries exceed context
 test("records a failed memory attempt and waits until the next interval", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "openscreen-memory-"));
   t.after(() => rm(root, { recursive: true, force: true }));
-  await appendTimelineEntry(root, timeline);
+  await appendActivityRecord(root, timeline);
   let generations = 0;
   const client = {
     responses: {
@@ -367,14 +382,14 @@ test("records a failed memory attempt and waits until the next interval", async 
   assert.equal(generations, 1);
   const [event] = await readMemoryEvents(root);
   assert.equal(event?.status, "failed");
-  assert.deepEqual(event?.timelineEntryIds, [timeline.id]);
+  assert.deepEqual(event?.activityIds, [timeline.id]);
   assert.match(event?.error ?? "", /Provider unavailable/);
 });
 
 test("accepts structurally valid memory content without classifying it", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "openscreen-memory-"));
   t.after(() => rm(root, { recursive: true, force: true }));
-  await appendTimelineEntry(root, timeline);
+  await appendActivityRecord(root, timeline);
   const client = {
     responses: {
       inputTokens: {
@@ -386,7 +401,7 @@ test("accepts structurally valid memory content without classifying it", async (
             action: "create",
             topic: "API key",
             content: "OPENAI_API_KEY=sk-12345678901234567890",
-            evidenceTimelineIds: [timeline.id],
+            evidenceActivityIds: [timeline.id],
           }],
         }),
       }),
@@ -412,19 +427,19 @@ test("accepts structurally valid memory content without classifying it", async (
   );
 });
 
-test("anchors the first memory interval to the earliest timeline creation time", async (t) => {
+test("anchors the first memory interval to the earliest activity creation time", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "openscreen-memory-"));
   t.after(() => rm(root, { recursive: true, force: true }));
-  const processedLate: TimelineEntry = {
+  const processedLate: ActivityRecord = {
     ...timeline,
-    id: "timeline:screen:late",
+    id: "activity:screen_observation:late",
     occurredAt: "2026-07-26T00:00:00.000Z",
     createdAt: "2026-07-28T00:00:00.000Z",
-    source: { type: "screen", id: "late" },
+    sources: [{ type: "screen_observation", observationId: "late" }],
     status: "observed",
   };
-  await appendTimelineEntry(root, processedLate);
-  await appendTimelineEntry(root, timeline);
+  await appendActivityRecord(root, processedLate);
+  await appendActivityRecord(root, timeline);
   const client = {
     responses: {
       inputTokens: {
@@ -434,7 +449,7 @@ test("anchors the first memory interval to the earliest timeline creation time",
         output_text: JSON.stringify({
           decisions: [{
             action: "skip",
-            evidenceTimelineIds: [processedLate.id, timeline.id],
+            evidenceActivityIds: [processedLate.id, timeline.id],
           }],
         }),
       }),
@@ -453,10 +468,10 @@ test("anchors the first memory interval to the earliest timeline creation time",
   assert.equal(result.status, "processed");
 });
 
-test("rejects a memory change without timeline evidence", async (t) => {
+test("rejects a memory change without activity evidence", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "openscreen-memory-"));
   t.after(() => rm(root, { recursive: true, force: true }));
-  await appendTimelineEntry(root, timeline);
+  await appendActivityRecord(root, timeline);
   const client = {
     responses: {
       inputTokens: {
@@ -469,11 +484,11 @@ test("rejects a memory change without timeline evidence", async (t) => {
               action: "create",
               topic: "Unsupported memory",
               content: "This memory has no source evidence.",
-              evidenceTimelineIds: [],
+              evidenceActivityIds: [],
             },
             {
               action: "skip",
-              evidenceTimelineIds: [timeline.id],
+              evidenceActivityIds: [timeline.id],
             },
           ],
         }),
@@ -503,7 +518,7 @@ test("rejects multiple supersede decisions for the same active memory", async (t
     content: "The user chose a 24-hour memory processing interval.",
     createdAt: "2026-07-28T00:00:01.000Z",
     updatedAt: "2026-07-28T00:00:01.000Z",
-    evidenceTimelineIds: [timeline.id],
+    evidenceActivityIds: [timeline.id] as [string],
   };
   await appendMemoryEvent(root, {
     schemaVersion: 1,
@@ -511,17 +526,22 @@ test("rejects multiple supersede decisions for the same active memory", async (t
     id: "memory-run:first",
     attemptedAt: "2026-07-28T00:00:01.000Z",
     status: "processed",
-    timelineEntryIds: [timeline.id],
+    activityIds: [timeline.id],
     changes: [{ action: "create", memory: oldMemory }],
   });
-  const next: TimelineEntry = {
+  const next: ActivityRecord = {
     ...timeline,
-    id: "timeline:turn:session-1:turn-2",
+    id: "activity:turn:session-1:turn-2",
     occurredAt: "2026-07-28T01:00:00.000Z",
     createdAt: "2026-07-28T01:00:01.000Z",
-    source: { type: "turn", id: "turn-2", sessionId: "session-1" },
+    sources: [{
+      type: "turn",
+      turnId: "turn-2",
+      sessionId: "session-1",
+      agentRunIds: [],
+    }],
   };
-  await appendTimelineEntry(root, next);
+  await appendActivityRecord(root, next);
   const client = {
     responses: {
       inputTokens: {
@@ -535,14 +555,14 @@ test("rejects multiple supersede decisions for the same active memory", async (t
               memoryId: oldMemory.id,
               topic: "First replacement",
               content: "First replacement content.",
-              evidenceTimelineIds: [next.id],
+              evidenceActivityIds: [next.id],
             },
             {
               action: "supersede",
               memoryId: oldMemory.id,
               topic: "Second replacement",
               content: "Second replacement content.",
-              evidenceTimelineIds: [next.id],
+              evidenceActivityIds: [next.id],
             },
           ],
         }),
@@ -566,7 +586,7 @@ test("rejects multiple supersede decisions for the same active memory", async (t
 test("persists provider errors without content classification", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "openscreen-memory-"));
   t.after(() => rm(root, { recursive: true, force: true }));
-  await appendTimelineEntry(root, timeline);
+  await appendActivityRecord(root, timeline);
   const client = {
     responses: {
       inputTokens: {

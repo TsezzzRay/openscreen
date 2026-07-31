@@ -9,7 +9,7 @@ import {
 } from "./scheduler.js";
 import type {
   ScreenObservationConfig,
-} from "../config.js";
+} from "../../config.js";
 import type {
   NativeActivitySignal,
   NativeCaptureResult,
@@ -21,7 +21,7 @@ import type {
 type ScreenObservationServiceOptions = {
   config: ScreenObservationConfig;
   capture: (signal: NativeActivitySignal) => Promise<NativeCaptureResult>;
-  onObservation: (observation: ScreenObservation) => void;
+  onObservation: (observation: ScreenObservation) => void | Promise<void>;
 };
 
 export class ScreenObservationService {

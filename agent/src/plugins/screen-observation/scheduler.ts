@@ -1,6 +1,6 @@
 import type {
   ScreenObservationConfig,
-} from "../config.js";
+} from "../../config.js";
 import type {
   NativeActivityKind,
   NativeActivitySignal,

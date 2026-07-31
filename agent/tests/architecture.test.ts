@@ -23,16 +23,23 @@ test("organizes agent core and harness code by responsibility", () => {
     "harness/memory/store.ts",
     "harness/memory/lock.ts",
     "harness/memory/types.ts",
-    "harness/memory/timeline/processor.ts",
-    "harness/memory/timeline/store.ts",
-    "harness/memory/timeline/types.ts",
+    "harness/memory/activity/processor.ts",
+    "harness/memory/activity/store.ts",
+    "harness/memory/activity/types.ts",
+    "plugins/screen-observation/plugin.ts",
+    "plugins/screen-observation/types.ts",
+    "tools/retrieve-memory/types.ts",
   ];
   const removedPaths = [
     "main.ts",
     "chat",
     "activity",
     "session",
+    "screen-observation",
     "harness/memory/validation.ts",
+    "harness/memory/timeline",
+    "harness/memory/retrieval",
+    "contracts",
   ];
 
   assert.deepEqual(
@@ -55,8 +62,46 @@ test("keeps protocol and harness dependencies pointing inward", () => {
     "utf8",
   );
   const rootTypes = readFileSync(resolve(sourceRoot, "types.ts"), "utf8");
+  const observationPlugin = readFileSync(
+    resolve(sourceRoot, "plugins/screen-observation/plugin.ts"),
+    "utf8",
+  );
+  const activityTypes = readFileSync(
+    resolve(sourceRoot, "harness/memory/activity/types.ts"),
+    "utf8",
+  );
+  const memoryTypes = readFileSync(
+    resolve(sourceRoot, "harness/memory/types.ts"),
+    "utf8",
+  );
+  const retrievalTypes = readFileSync(
+    resolve(sourceRoot, "tools/retrieve-memory/types.ts"),
+    "utf8",
+  );
 
   assert.doesNotMatch(protocol, /harness\//);
   assert.doesNotMatch(runner, /protocol\.js/);
   assert.doesNotMatch(rootTypes, /export type AgentRun(?:Step|ToolResult)?\b/);
+  assert.doesNotMatch(observationPlugin, /harness\/(?:session|memory)/);
+  assert.doesNotMatch(observationPlugin, /AgentTool/);
+  assert.match(
+    observationPlugin,
+    /export type ScreenObservationPluginOptions\b/,
+  );
+  assert.match(activityTypes, /plugins\/screen-observation\/types\.js/);
+  assert.doesNotMatch(activityTypes, /type ScreenObservationInput\b/);
+  assert.match(activityTypes, /export type ActivityRecord\b/);
+  assert.match(
+    activityTypes,
+    /sources: \[ActivitySourceReference, \.\.\.ActivitySourceReference\[\]\]/,
+  );
+  assert.doesNotMatch(activityTypes, /export type TimelineEntry\b/);
+  assert.match(memoryTypes, /export type LongTermMemory\b/);
+  assert.match(
+    memoryTypes,
+    /evidenceActivityIds: \[string, \.\.\.string\[\]\]/,
+  );
+  assert.doesNotMatch(memoryTypes, /export type MemoryItem\b/);
+  assert.match(retrievalTypes, /export type RetrieveMemoryArguments\b/);
+  assert.doesNotMatch(retrievalTypes, /AgentTool/);
 });

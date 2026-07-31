@@ -5,8 +5,8 @@ import { join } from "node:path";
 import test from "node:test";
 
 import type { ScreenObservationConfig } from "../../src/config.js";
-import { ScreenObservationRuntime } from "../../src/screen-observation/runtime.js";
-import type { ScreenObservation } from "../../src/screen-observation/types.js";
+import { ScreenObservationPlugin } from "../../src/plugins/screen-observation/plugin.js";
+import type { ScreenObservation } from "../../src/plugins/screen-observation/types.js";
 
 const config = {
   enabled: true,
@@ -64,7 +64,7 @@ const config = {
 } satisfies ScreenObservationConfig;
 
 test("forwards helper observations without retaining image data", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "openscreen-observation-runtime-"));
+  const directory = await mkdtemp(join(tmpdir(), "openscreen-observation-plugin-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const helperPath = join(directory, "helper.mjs");
   await writeFile(helperPath, `
@@ -138,29 +138,31 @@ test("forwards helper observations without retaining image data", async (t) => {
 
   const statuses: string[] = [];
   const observations: ScreenObservation[] = [];
-  const runtime = new ScreenObservationRuntime({
+  const plugin = new ScreenObservationPlugin({
     config,
     helperCommand: process.execPath,
     helperArguments: [helperPath],
     helperCurrentDirectory: directory,
     excludedProcessIdentifiers: [],
     excludedBundleIdentifiers: [],
-    onObservation: (observation) => observations.push(observation),
+    onObservation: (observation) => {
+      observations.push(observation);
+    },
     onComponentStatus: (status) => {
       statuses.push(`${status.component}:${status.status}`);
     },
   });
-  t.after(() => runtime.stop());
+  t.after(() => plugin.stop());
 
-  await runtime.start();
+  await plugin.start();
   await waitFor(() => observations.length === 1);
 
   assert.equal(observations[0]?.window.windowIdentifier, 7);
   assert.equal(observations[0]?.visibleText, "Document");
   assert.equal(observations[0]?.screenshot.status, "permissionDenied");
   assert.deepEqual(statuses, ["eventTap:degraded"]);
-  assert.equal("latestObservation" in runtime, false);
-  await runtime.stop();
+  assert.equal("latestObservation" in plugin, false);
+  await plugin.stop();
 });
 
 async function waitFor(check: () => boolean) {

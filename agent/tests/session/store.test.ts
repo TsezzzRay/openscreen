@@ -40,10 +40,20 @@ test("stores metadata on the first line and replays completed turns and compacti
         assistant: "Answer",
         reasoning: "Checked the screen",
         images: systemImages("/tmp/screen.png"),
+        status: "completed",
+        startedAt: "2026-07-19T00:00:01.000Z",
+        finishedAt: "2026-07-19T00:00:02.000Z",
       },
     },
-    { type: "context_compacted", summary: "Earlier facts", firstKeptTurnIndex: 1 },
-  ]);
+    {
+      type: "context_compacted",
+      summary: {
+        content: "Earlier facts",
+        createdAt: "2026-07-19T00:00:02.000Z",
+        firstKeptTurnIndex: 1,
+      },
+    },
+  ] as any);
 
   const path = join(directory, `${session.id}.jsonl`);
   const [header] = (await readFile(path, "utf8")).split("\n");
@@ -55,14 +65,22 @@ test("stores metadata on the first line and replays completed turns and compacti
   });
 
   const loaded = await loadSession(directory, session.id);
-  assert.equal(loaded.summary, "Earlier facts");
-  assert.equal(loaded.firstKeptTurnIndex, 1);
+  assert.deepEqual((loaded as any).conversationSummary, {
+    content: "Earlier facts",
+    createdAt: "2026-07-19T00:00:02.000Z",
+    firstKeptTurnIndex: 1,
+  });
+  assert.equal("summary" in loaded, false);
+  assert.equal("firstKeptTurnIndex" in loaded, false);
   assert.deepEqual(loaded.turns, [{
     id: "turn-1",
     user: "Question",
     assistant: "Answer",
     reasoning: "Checked the screen",
     images: systemImages("/tmp/screen.png"),
+    status: "completed",
+    startedAt: "2026-07-19T00:00:01.000Z",
+    finishedAt: "2026-07-19T00:00:02.000Z",
   }]);
   assert.equal(loaded.visibleTurns[0]?.status, "completed");
 });
@@ -104,12 +122,19 @@ test("records agent runs and rebuilds tool context from append-only events", asy
         id: "turn-1",
         user: "What is the project status?",
         startedAt: "2026-07-27T00:00:00.000Z",
-        agentRun: true,
+      },
+    },
+    {
+      type: "agent_run_started",
+      run: {
+        id: "run-1",
+        turnId: "turn-1",
+        startedAt: "2026-07-27T00:00:00.100Z",
       },
     },
     {
       type: "agent_step_completed",
-      turnId: "turn-1",
+      runId: "run-1",
       step: 1,
       responseId: "response-1",
       outputItems: [reasoningItem, functionCall],
@@ -117,7 +142,7 @@ test("records agent runs and rebuilds tool context from append-only events", asy
     },
     {
       type: "tool_result_recorded",
-      turnId: "turn-1",
+      runId: "run-1",
       step: 1,
       callId: "call-1",
       name: "retrieve_context",
@@ -126,11 +151,17 @@ test("records agent runs and rebuilds tool context from append-only events", asy
     },
     {
       type: "agent_step_completed",
-      turnId: "turn-1",
+      runId: "run-1",
       step: 2,
       responseId: "response-2",
       outputItems: [message],
       totalTokens: 30,
+    },
+    {
+      type: "agent_run_finished",
+      runId: "run-1",
+      status: "completed",
+      finishedAt: "2026-07-27T00:00:01.000Z",
     },
     {
       type: "turn_completed",
@@ -138,16 +169,21 @@ test("records agent runs and rebuilds tool context from append-only events", asy
         id: "turn-1",
         user: "What is the project status?",
         assistant: "The project is active.",
+        status: "completed",
+        startedAt: "2026-07-27T00:00:00.000Z",
+        finishedAt: "2026-07-27T00:00:01.100Z",
       },
     },
-  ]);
+  ] as any);
 
   const loaded = await loadSession(directory, session.id);
 
   assert.deepEqual(loaded.agentRuns, [{
-    id: "turn-1",
+    id: "run-1",
+    turnId: "turn-1",
     status: "completed",
-    startedAt: "2026-07-27T00:00:00.000Z",
+    startedAt: "2026-07-27T00:00:00.100Z",
+    finishedAt: "2026-07-27T00:00:01.000Z",
     steps: [
       {
         step: 1,
@@ -194,12 +230,19 @@ test("rejects malformed model output items in agent run events", async (t) => {
         id: "turn-1",
         user: "Question",
         startedAt: "2026-07-27T00:00:00.000Z",
-        agentRun: true,
+      },
+    }),
+    JSON.stringify({
+      type: "agent_run_started",
+      run: {
+        id: "run-1",
+        turnId: "turn-1",
+        startedAt: "2026-07-27T00:00:00.100Z",
       },
     }),
     JSON.stringify({
       type: "agent_step_completed",
-      turnId: "turn-1",
+      runId: "run-1",
       step: 1,
       outputItems: [{ type: "message" }],
     }),
@@ -207,6 +250,35 @@ test("rejects malformed model output items in agent run events", async (t) => {
   ].join("\n"));
 
   await assert.rejects(loadSession(directory, session.id), /Invalid session event/);
+});
+
+test("rejects a completed Turn that rewrites its start facts", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "openscreen-sessions-"));
+  t.after(() => rm(directory, { force: true, recursive: true }));
+  const session = await createSession(directory);
+  await appendSessionEvents(directory, session.id, [
+    {
+      type: "turn_started",
+      turn: {
+        id: "turn-1",
+        user: "Original question",
+        startedAt: "2026-07-27T00:00:00.000Z",
+      },
+    },
+    {
+      type: "turn_completed",
+      turn: {
+        id: "turn-1",
+        user: "Rewritten question",
+        assistant: "Answer",
+        status: "completed",
+        startedAt: "2026-07-27T00:00:00.500Z",
+        finishedAt: "2026-07-27T00:00:01.000Z",
+      },
+    },
+  ]);
+
+  await assert.rejects(loadSession(directory, session.id), /Turn start mismatch/);
 });
 
 test("persists ordered images and exposes them when restoring visible turns", async (t) => {
@@ -235,6 +307,9 @@ test("persists ordered images and exposes them when restoring visible turns", as
         user: "Question",
         assistant: "Answer",
         images,
+        status: "completed",
+        startedAt: "2026-07-19T00:00:01.000Z",
+        finishedAt: "2026-07-19T00:00:02.000Z",
       },
     },
   ] as any);
@@ -291,6 +366,7 @@ test("restores failed and cancelled turns into model context with their status",
     {
       type: "turn_failed",
       turnId: "failed-turn",
+      finishedAt: "2026-07-19T00:00:01.500Z",
       message: "Provider failed",
       includeInContext: true,
     },
@@ -302,7 +378,11 @@ test("restores failed and cancelled turns into model context with their status",
         startedAt: "2026-07-19T00:00:02.000Z",
       },
     },
-    { type: "turn_cancelled", turnId: "cancelled-turn" },
+    {
+      type: "turn_cancelled",
+      turnId: "cancelled-turn",
+      finishedAt: "2026-07-19T00:00:02.500Z",
+    },
   ]);
 
   const loaded = await loadSession(directory, session.id);
@@ -314,6 +394,8 @@ test("restores failed and cancelled turns into model context with their status",
       reasoning: "",
       images: systemImages("/tmp/failure.png"),
       status: "failed",
+      startedAt: "2026-07-19T00:00:01.000Z",
+      finishedAt: "2026-07-19T00:00:01.500Z",
     },
     {
       id: "cancelled-turn",
@@ -321,6 +403,8 @@ test("restores failed and cancelled turns into model context with their status",
       assistant: "",
       reasoning: "",
       status: "cancelled",
+      startedAt: "2026-07-19T00:00:02.000Z",
+      finishedAt: "2026-07-19T00:00:02.500Z",
     },
   ]);
   assert.deepEqual(loaded.visibleTurns.map(({ status }) => status), ["failed", "cancelled"]);
@@ -344,6 +428,23 @@ test("rejects session events that use screenshotPath", async (t) => {
     loadSession(directory, session.id),
     /Invalid session event/,
   );
+});
+
+test("rejects the removed turn-level Agent Run flag", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "openscreen-sessions-"));
+  t.after(() => rm(directory, { force: true, recursive: true }));
+  const session = await createSession(directory);
+  await appendFile(join(directory, `${session.id}.jsonl`), `${JSON.stringify({
+    type: "turn_started",
+    turn: {
+      id: "old-turn",
+      user: "Old request",
+      startedAt: "2026-07-18T00:00:00.000Z",
+      agentRun: true,
+    },
+  })}\n`);
+
+  await assert.rejects(loadSession(directory, session.id), /Invalid session event/);
 });
 
 test("ignores an unterminated final fragment but rejects a corrupt complete line", async (t) => {

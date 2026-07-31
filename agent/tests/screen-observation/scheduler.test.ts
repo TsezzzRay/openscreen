@@ -2,11 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import type { ScreenObservationConfig } from "../../src/config.js";
-import { CapturePlanner } from "../../src/screen-observation/scheduler.js";
+import { CapturePlanner } from "../../src/plugins/screen-observation/scheduler.js";
 import type {
   NativeActivitySignal,
   WindowMetadata,
-} from "../../src/screen-observation/protocol.js";
+} from "../../src/plugins/screen-observation/protocol.js";
 
 const scheduling = {
   tickIntervalMilliseconds: 100,

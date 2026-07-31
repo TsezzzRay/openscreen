@@ -15,18 +15,18 @@ import { join } from "node:path";
 import test from "node:test";
 
 import {
-  appendTimelineEntry,
-  readTimelineEntries,
-} from "../../src/harness/memory/timeline/store.js";
+  appendActivityRecord,
+  readActivityRecords,
+} from "../../src/harness/memory/activity/store.js";
 import { withMemoryLock } from "../../src/harness/memory/lock.js";
-import type { TimelineEntry } from "../../src/harness/memory/timeline/types.js";
+import type { ActivityRecord } from "../../src/harness/memory/activity/types.js";
 
-const entry: TimelineEntry = {
+const entry: ActivityRecord = {
   schemaVersion: 1,
-  id: "timeline:screen:observation-1",
+  id: "activity:screen_observation:observation-1",
   occurredAt: "2026-07-27T00:00:00.000Z",
   createdAt: "2026-07-27T00:00:01.000Z",
-  source: { type: "screen", id: "observation-1" },
+  sources: [{ type: "screen_observation", observationId: "observation-1" }],
   status: "observed",
   summary: "The user viewed the OpenScreen design.",
   application: "Safari",
@@ -35,11 +35,11 @@ const entry: TimelineEntry = {
   verbatimEvidence: ["Activity memory design"],
 };
 
-test("stores timeline entries in daily private JSONL files", async (t) => {
+test("stores activity records in daily private JSONL files", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "openscreen-activity-"));
   t.after(() => rm(root, { recursive: true, force: true }));
 
-  await appendTimelineEntry(root, entry);
+  await appendActivityRecord(root, entry);
 
   const path = join(root, "timeline", "2026-07-27.jsonl");
   assert.deepEqual(
@@ -47,24 +47,27 @@ test("stores timeline entries in daily private JSONL files", async (t) => {
     entry,
   );
   assert.equal((await stat(path)).mode & 0o777, 0o600);
-  assert.deepEqual(await readTimelineEntries(root), [entry]);
+  assert.deepEqual(await readActivityRecords(root), [entry]);
 });
 
-test("truncates an incomplete timeline tail before appending", async (t) => {
+test("truncates an incomplete activity tail before appending", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "openscreen-activity-"));
   t.after(() => rm(root, { recursive: true, force: true }));
-  await appendTimelineEntry(root, entry);
+  await appendActivityRecord(root, entry);
   const path = join(root, "timeline", "2026-07-27.jsonl");
   await appendFile(path, '{"id":"interrupted"');
 
-  const second = {
+  const second: ActivityRecord = {
     ...entry,
-    id: "timeline:screen:observation-2",
-    source: { type: "screen" as const, id: "observation-2" },
+    id: "activity:screen_observation:observation-2",
+    sources: [{
+      type: "screen_observation" as const,
+      observationId: "observation-2",
+    }],
   };
-  await appendTimelineEntry(root, second);
+  await appendActivityRecord(root, second);
 
-  assert.deepEqual(await readTimelineEntries(root), [entry, second]);
+  assert.deepEqual(await readActivityRecords(root), [entry, second]);
 });
 
 test("recovers a stale activity lock without deleting a new owner", async (t) => {

@@ -1,19 +1,19 @@
-export type MemoryItem = {
+export type LongTermMemory = {
   id: string;
   topic: string;
   content: string;
   createdAt: string;
   updatedAt: string;
-  evidenceTimelineIds: string[];
+  evidenceActivityIds: [string, ...string[]];
 };
 
 export type MemoryChange = {
   action: "create";
-  memory: MemoryItem;
+  memory: LongTermMemory;
 } | {
   action: "supersede";
   memoryId: string;
-  replacement: MemoryItem;
+  replacement: LongTermMemory;
 };
 
 export type MemoryEvent = {
@@ -22,7 +22,7 @@ export type MemoryEvent = {
   id: string;
   attemptedAt: string;
   status: "processed" | "no_pending" | "failed";
-  timelineEntryIds: string[];
+  activityIds: string[];
   changes: MemoryChange[];
   error?: string;
 };

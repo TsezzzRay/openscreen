@@ -13,7 +13,7 @@
     "eventFlushBytes": 4096,
     "eventFlushMilliseconds": 250
   },
-  "timeline": {
+  "activity": {
     "maxInputTokens": 244800,
     "maxOutputTokens": 4096
   },

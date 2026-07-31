@@ -5,14 +5,14 @@ import {
 import { ScreenObservationService } from "./service.js";
 import type {
   ScreenObservationConfig,
-} from "../config.js";
+} from "../../config.js";
 import type {
   NativeHelperConfiguration,
   NativeActivitySignal,
 } from "./protocol.js";
 import type { ScreenObservation } from "./types.js";
 
-type ScreenObservationRuntimeOptions = {
+export type ScreenObservationPluginOptions = {
   config: ScreenObservationConfig;
   helperCommand: string;
   helperArguments?: string[];
@@ -20,18 +20,18 @@ type ScreenObservationRuntimeOptions = {
   helperCurrentDirectory: string;
   excludedProcessIdentifiers: number[];
   excludedBundleIdentifiers: string[];
-  onObservation?: (observation: ScreenObservation) => void;
+  onObservation?: (observation: ScreenObservation) => void | Promise<void>;
   onComponentStatus?: (status: HelperComponentStatus) => void;
   onFatalError?: (error: Error) => void;
 };
 
-export class ScreenObservationRuntime {
+export class ScreenObservationPlugin {
   private readonly helper: NativeHelperClient;
   private readonly service: ScreenObservationService;
   private readonly tickIntervalMilliseconds: number;
   private timer?: NodeJS.Timeout;
 
-  constructor(options: ScreenObservationRuntimeOptions) {
+  constructor(options: ScreenObservationPluginOptions) {
     this.tickIntervalMilliseconds = options.config.scheduling.tickIntervalMilliseconds;
     const helper = new NativeHelperClient({
       command: options.helperCommand,

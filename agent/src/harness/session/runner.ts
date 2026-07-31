@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import OpenAI from "openai";
 
 import { runAgentLoop } from "../../loop.js";
@@ -100,7 +102,12 @@ export async function runChat(
   tools: AgentTool[] = [],
 ) {
   const { requestId, sessionId, input } = command;
+  const turnId = requestId;
+  const runId = `run:${randomUUID()}`;
   let turnStarted = false;
+  let turnStartedAt: string | undefined;
+  let runStarted = false;
+  let runFinished = false;
   let terminalStarted = false;
   let failureEmitted = false;
   let failureMessage = REQUEST_FAILED_MESSAGE;
@@ -111,11 +118,26 @@ export async function runChat(
   };
   const finishCancelled = async () => {
     if (!signal.aborted) return false;
+    const finishedAt = new Date().toISOString();
+    const events: SessionEvent[] = [];
+    if (runStarted && !runFinished) {
+      events.push({
+        type: "agent_run_finished",
+        runId,
+        status: "cancelled",
+        finishedAt,
+      });
+    }
     if (turnStarted && !terminalStarted) {
-      await appendSessionEvents(sessionsDirectory, sessionId, [{
+      events.push({
         type: "turn_cancelled",
-        turnId: requestId,
-      }]);
+        turnId,
+        finishedAt,
+      });
+    }
+    if (events.length > 0) {
+      await appendSessionEvents(sessionsDirectory, sessionId, events);
+      runFinished = runStarted;
       terminalStarted = true;
     }
     emit({ requestId, sessionId, type: "cancelled" });
@@ -124,14 +146,14 @@ export async function runChat(
 
   try {
     const session = await loadSession(sessionsDirectory, sessionId);
+    turnStartedAt = new Date().toISOString();
     await appendSessionEvents(sessionsDirectory, sessionId, [{
       type: "turn_started",
       turn: {
         id: requestId,
         user: input.text,
         images: input.images,
-        startedAt: new Date().toISOString(),
-        agentRun: true,
+        startedAt: turnStartedAt,
       },
     }]);
     turnStarted = true;
@@ -157,8 +179,7 @@ export async function runChat(
       if (compacted) {
         await appendSessionEvents(sessionsDirectory, sessionId, [{
           type: "context_compacted",
-          summary: session.summary!,
-          firstKeptTurnIndex: session.firstKeptTurnIndex,
+          summary: session.conversationSummary!,
         }]);
       }
       return compacted;
@@ -197,6 +218,15 @@ export async function runChat(
       sessionId,
       sessionConfig,
     );
+    await appendSessionEvents(sessionsDirectory, sessionId, [{
+      type: "agent_run_started",
+      run: {
+        id: runId,
+        turnId,
+        startedAt: new Date().toISOString(),
+      },
+    }]);
+    runStarted = true;
     let result: Awaited<ReturnType<typeof runAgentLoop>>;
     try {
       result = await runAgentLoop(
@@ -218,7 +248,7 @@ export async function runChat(
           }
         },
         async (event: AgentRunEvent) => {
-          batcher.add({ ...event, turnId: requestId });
+          batcher.add({ ...event, runId });
           await batcher.drain();
         },
         signal,
@@ -229,17 +259,29 @@ export async function runChat(
 
     if (result === null) {
       if (await finishCancelled()) return;
+      const finishedAt = new Date().toISOString();
       terminalStarted = true;
-      await appendSessionEvents(sessionsDirectory, sessionId, [{
-        type: "turn_failed",
-        turnId: requestId,
-        message: failureMessage,
-        includeInContext: true,
-      }]);
+      runFinished = true;
+      await appendSessionEvents(sessionsDirectory, sessionId, [
+        {
+          type: "agent_run_finished",
+          runId,
+          status: "failed",
+          finishedAt,
+        },
+        {
+          type: "turn_failed",
+          turnId,
+          finishedAt,
+          message: failureMessage,
+          includeInContext: true,
+        },
+      ]);
       return;
     }
 
     const wasEmpty = session.turns.length === 0;
+    const finishedAt = new Date().toISOString();
     const turn = {
       id: requestId,
       user: input.text,
@@ -248,13 +290,24 @@ export async function runChat(
       images: input.images,
       outputItems: result.outputItems,
       status: "completed" as const,
+      startedAt: turnStartedAt!,
+      finishedAt,
     };
     terminalStarted = true;
+    runFinished = true;
     const { outputItems: _outputItems, ...persistedTurn } = turn;
-    await appendSessionEvents(sessionsDirectory, sessionId, [{
-      type: "turn_completed",
-      turn: persistedTurn,
-    }]);
+    await appendSessionEvents(sessionsDirectory, sessionId, [
+      {
+        type: "agent_run_finished",
+        runId,
+        status: "completed",
+        finishedAt,
+      },
+      {
+        type: "turn_completed",
+        turn: persistedTurn,
+      },
+    ]);
     session.turns.push(turn);
     if (wasEmpty && session.title === "New Chat") {
       try {
@@ -283,12 +336,26 @@ export async function runChat(
     const message = REQUEST_FAILED_MESSAGE;
     if (turnStarted && !terminalStarted) {
       try {
-        await appendSessionEvents(sessionsDirectory, sessionId, [{
+        const finishedAt = new Date().toISOString();
+        const events: SessionEvent[] = [];
+        if (runStarted && !runFinished) {
+          events.push({
+            type: "agent_run_finished",
+            runId,
+            status: "failed",
+            finishedAt,
+          });
+          runFinished = true;
+        }
+        events.push({
           type: "turn_failed",
-          turnId: requestId,
+          turnId,
+          finishedAt,
           message,
           includeInContext: true,
-        }]);
+        });
+        terminalStarted = true;
+        await appendSessionEvents(sessionsDirectory, sessionId, events);
       } catch (persistenceError) {
         process.stderr.write(
           `Failed to persist turn failure: ${persistenceError instanceof Error ? persistenceError.message : "unknown error"}\n`,

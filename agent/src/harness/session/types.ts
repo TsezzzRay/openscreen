@@ -8,19 +8,26 @@ import type {
 export type { ChatImage } from "../../types.js";
 
 export type Turn = {
-  id?: string;
+  id: string;
   user: string;
   assistant: string;
+  status: "completed" | "failed" | "cancelled";
+  startedAt: string;
+  finishedAt: string;
   reasoning?: string;
   images?: ChatImage[];
-  status?: "completed" | "failed" | "cancelled";
   outputItems?: ConversationOutputItem[];
+};
+
+export type ConversationSummary = {
+  content: string;
+  createdAt: string;
+  firstKeptTurnIndex: number;
 };
 
 export type SessionState = {
   turns: Turn[];
-  summary?: string;
-  firstKeptTurnIndex: number;
+  conversationSummary?: ConversationSummary;
 };
 
 export type AgentToolResult = {
@@ -40,8 +47,10 @@ export type AgentRunStep = {
 
 export type AgentRun = {
   id: string;
+  turnId: string;
   status: "completed" | "failed" | "cancelled" | "interrupted";
   startedAt: string;
+  finishedAt?: string;
   steps: AgentRunStep[];
 };
 

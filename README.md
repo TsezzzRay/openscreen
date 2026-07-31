@@ -48,7 +48,7 @@ For MiniMax M3, set `model` to `MiniMax-M3` and `baseURL` to `https://api.minima
 
 OpenScreen sends `reasoning.summary: "auto"` to other Responses API providers and `reasoning.effort: "minimal"` to MiniMax M3.
 
-`config.json` contains the non-secret defaults for context, sessions, timeline
+`config.json` contains the non-secret defaults for context, sessions, activity
 processing, long-term memory, and screen observation. Process environment
 variables can override supported values, but `.env.example` intentionally lists
 only the three common provider variables. Screen observation settings are read
@@ -127,16 +127,18 @@ foreground-window screenshots, Accessibility snapshots, and permission status;
 it does not persist observations or make business decisions.
 
 Every chat event carries both `requestId` and `sessionId`; reasoning and
-final-answer text are rendered separately. Completed, failed, and cancelled
-turns are retained in model context, with unsuccessful responses marked as
-incomplete so they are not mistaken for finished answers. The default
+final-answer text are rendered separately. A Turn owns the user-visible
+interaction, while each Agent Run has an independent ID and links back through
+`turnId`. Completed, failed, and cancelled turns are retained in model context,
+with unsuccessful responses marked as incomplete so they are not mistaken for
+finished answers. The default
 configuration keeps recent turns in model context and retains the full event
 history on disk. See the [Agent README](agent/README.md) for its internal
 structure and data flow.
 
 ## Activity memory core
 
-The Node Agent contains timeline and long-term-memory processing for later
+The Node Agent contains Activity Record and long-term-memory processing for later
 integration with live screen observations and terminal turns. Live observation
 wiring, memory search, automatic recall, and model-context injection are not
 connected yet. Implementation boundaries and persistence behavior are

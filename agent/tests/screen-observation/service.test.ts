@@ -2,14 +2,14 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import type { ScreenObservationConfig } from "../../src/config.js";
-import { ScreenObservationService } from "../../src/screen-observation/service.js";
+import { ScreenObservationService } from "../../src/plugins/screen-observation/service.js";
 import type {
   NativeActivitySignal,
   NativeCaptureResult,
-} from "../../src/screen-observation/protocol.js";
+} from "../../src/plugins/screen-observation/protocol.js";
 import type {
   ScreenObservation,
-} from "../../src/screen-observation/types.js";
+} from "../../src/plugins/screen-observation/types.js";
 
 const config = {
   enabled: true,
@@ -139,7 +139,9 @@ test("builds a normalized observation without persisting it", async () => {
   const service = new ScreenObservationService({
     config,
     capture: async () => result(),
-    onObservation: (observation) => observations.push(observation),
+    onObservation: (observation) => {
+      observations.push(observation);
+    },
   });
 
   service.push(signal("mouseClick"), 0);
@@ -161,7 +163,9 @@ test("drops unchanged ordinary observations but retains a real window boundary",
   const service = new ScreenObservationService({
     config,
     capture: async () => captures.shift()!,
-    onObservation: (observation) => observations.push(observation),
+    onObservation: (observation) => {
+      observations.push(observation);
+    },
   });
 
   service.push(signal("mouseClick"), 0);
@@ -204,7 +208,9 @@ test("discards a capture when the helper returns a different foreground window",
   const service = new ScreenObservationService({
     config,
     capture: async () => result(windowB, "Other"),
-    onObservation: (observation) => observations.push(observation),
+    onObservation: (observation) => {
+      observations.push(observation);
+    },
   });
 
   service.push(signal("mouseClick"), 0);

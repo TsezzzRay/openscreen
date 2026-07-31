@@ -7,20 +7,20 @@ import {
   readMemoryEvents,
 } from "./store.js";
 import { withMemoryLock } from "./lock.js";
-import { readTimelineEntries } from "./timeline/store.js";
+import { readActivityRecords } from "./activity/store.js";
 import type {
+  LongTermMemory,
   MemoryChange,
   MemoryEvent,
-  MemoryItem,
 } from "./types.js";
-import type { TimelineEntry } from "./timeline/types.js";
+import type { ActivityRecord } from "./activity/types.js";
 
-const MEMORY_INSTRUCTIONS = `Update OpenScreen long-term memory from timeline entries.
+const MEMORY_INSTRUCTIONS = `Update OpenScreen long-term memory from activity records.
 Return only JSON with a decisions array using these shapes:
-{"action":"create","topic":"...","content":"...","evidenceTimelineIds":["timeline id"]}
-{"action":"supersede","memoryId":"existing memory id","topic":"...","content":"...","evidenceTimelineIds":["timeline id"]}
-{"action":"skip","evidenceTimelineIds":["timeline id"]}
-Every input timeline ID must appear in at least one decision.
+{"action":"create","topic":"...","content":"...","evidenceActivityIds":["activity id"]}
+{"action":"supersede","memoryId":"existing memory id","topic":"...","content":"...","evidenceActivityIds":["activity id"]}
+{"action":"skip","evidenceActivityIds":["activity id"]}
+Every input activity ID must appear in at least one decision.
 Use create for explicit, stable user facts, preferences, project decisions, or durable state.
 Use skip for transient screen content, one-time actions, ordinary browsing, assistant inference, or duplicates.
 Use supersede only when new evidence clearly replaces an existing memory.
@@ -31,12 +31,12 @@ type CreateDecision = {
   action: "create";
   topic: string;
   content: string;
-  evidenceTimelineIds: string[];
+  evidenceActivityIds: string[];
 };
 
 type SkipDecision = {
   action: "skip";
-  evidenceTimelineIds: string[];
+  evidenceActivityIds: string[];
 };
 
 type SupersedeDecision = {
@@ -44,15 +44,15 @@ type SupersedeDecision = {
   memoryId: string;
   topic: string;
   content: string;
-  evidenceTimelineIds: string[];
+  evidenceActivityIds: string[];
 };
 
 type MemoryDecision = CreateDecision | SkipDecision | SupersedeDecision;
 
 function parseDecisions(
   output: string,
-  pending: TimelineEntry[],
-  activeMemories: MemoryItem[],
+  pending: ActivityRecord[],
+  activeMemories: LongTermMemory[],
 ): MemoryDecision[] {
   let value: unknown;
   try {
@@ -75,16 +75,16 @@ function parseDecisions(
       throw new Error("Model returned an invalid memory decision");
     }
     const record = decision as Record<string, unknown>;
-    if (!Array.isArray(record.evidenceTimelineIds) ||
-        record.evidenceTimelineIds.length === 0 ||
-        !record.evidenceTimelineIds.every((id) => typeof id === "string" && allowed.has(id))) {
+    if (!Array.isArray(record.evidenceActivityIds) ||
+        record.evidenceActivityIds.length === 0 ||
+        !record.evidenceActivityIds.every((id) => typeof id === "string" && allowed.has(id))) {
       throw new Error("Model returned an invalid memory decision");
     }
-    for (const id of record.evidenceTimelineIds as string[]) covered.add(id);
+    for (const id of record.evidenceActivityIds as string[]) covered.add(id);
     if (record.action === "skip") {
       result.push({
         action: "skip",
-        evidenceTimelineIds: record.evidenceTimelineIds as string[],
+        evidenceActivityIds: record.evidenceActivityIds as string[],
       });
       continue;
     }
@@ -106,7 +106,7 @@ function parseDecisions(
         memoryId: record.memoryId,
         topic: record.topic.trim(),
         content: record.content.trim(),
-        evidenceTimelineIds: record.evidenceTimelineIds as string[],
+        evidenceActivityIds: record.evidenceActivityIds as string[],
       });
       continue;
     }
@@ -114,17 +114,17 @@ function parseDecisions(
       action: "create",
       topic: record.topic.trim(),
       content: record.content.trim(),
-      evidenceTimelineIds: record.evidenceTimelineIds as string[],
+      evidenceActivityIds: record.evidenceActivityIds as string[],
     });
   }
   if (covered.size !== allowed.size) {
-    throw new Error("Memory decisions did not cover every timeline entry");
+    throw new Error("Memory decisions did not cover every activity record");
   }
   return result;
 }
 
 function activeMemoriesFromEvents(events: MemoryEvent[]) {
-  const active = new Map<string, MemoryItem>();
+  const active = new Map<string, LongTermMemory>();
   for (const event of events) {
     if (event.status !== "processed") continue;
     for (const change of event.changes) {
@@ -146,15 +146,15 @@ export async function readActiveMemories(root: string) {
 function buildMemoryRequest(
   model: string,
   maxOutputTokens: number,
-  activeMemories: MemoryItem[],
-  timelineEntries: TimelineEntry[],
+  activeMemories: LongTermMemory[],
+  activityRecords: ActivityRecord[],
 ): OpenAI.Responses.ResponseCreateParamsNonStreaming {
   return {
     model,
     instructions: MEMORY_INSTRUCTIONS,
     input: [{
       role: "user",
-      content: JSON.stringify({ activeMemories, timelineEntries }),
+      content: JSON.stringify({ activeMemories, activityRecords }),
     }],
     max_output_tokens: maxOutputTokens,
   };
@@ -165,8 +165,8 @@ async function largestFittingBatch(
   model: string,
   maxInputTokens: number,
   maxOutputTokens: number,
-  activeMemories: MemoryItem[],
-  pending: TimelineEntry[],
+  activeMemories: LongTermMemory[],
+  pending: ActivityRecord[],
   signal?: AbortSignal,
 ) {
   let low = 1;
@@ -199,7 +199,7 @@ async function largestFittingBatch(
 
 function memoryChanges(
   decisions: MemoryDecision[],
-  activeMemories: MemoryItem[],
+  activeMemories: LongTermMemory[],
   attemptedAt: string,
 ) {
   const changes: MemoryChange[] = [];
@@ -208,17 +208,21 @@ function memoryChanges(
     const previous = decision.action === "supersede"
       ? activeMemories.find(({ id }) => id === decision.memoryId)
       : undefined;
-    const memory: MemoryItem = {
+    const evidenceActivityIds = [
+      ...new Set([
+        ...(previous?.evidenceActivityIds ?? []),
+        ...decision.evidenceActivityIds,
+      ]),
+    ];
+    const memory: LongTermMemory = {
       id: `memory:${randomUUID()}`,
       topic: decision.topic,
       content: decision.content,
       createdAt: previous?.createdAt ?? attemptedAt,
       updatedAt: attemptedAt,
-      evidenceTimelineIds: [
-        ...new Set([
-          ...(previous?.evidenceTimelineIds ?? []),
-          ...decision.evidenceTimelineIds,
-        ]),
+      evidenceActivityIds: [
+        evidenceActivityIds[0]!,
+        ...evidenceActivityIds.slice(1),
       ],
     };
     changes.push(decision.action === "create"
@@ -252,13 +256,13 @@ export async function processMemoryIfDue({
   signal?: AbortSignal;
 }) {
   return withMemoryLock(root, async () => {
-    const timeline = await readTimelineEntries(root);
+    const activities = await readActivityRecords(root);
     const events = await readMemoryEvents(root);
     let activeMemories = activeMemoriesFromEvents(events);
     const processed = new Set(events
       .filter((event) => event.status === "processed")
-      .flatMap((event) => event.timelineEntryIds));
-    const pending = timeline.filter(({ id }) => !processed.has(id));
+      .flatMap((event) => event.activityIds));
+    const pending = activities.filter(({ id }) => !processed.has(id));
 
     const timestamp = now();
     const lastAttempt = events.at(-1)?.attemptedAt;
@@ -285,7 +289,7 @@ export async function processMemoryIfDue({
         id: `memory-run:${randomUUID()}`,
         attemptedAt: timestamp.toISOString(),
         status: "no_pending",
-        timelineEntryIds: [],
+        activityIds: [],
         changes: [],
       };
       await appendMemoryEvent(root, event);
@@ -324,7 +328,7 @@ export async function processMemoryIfDue({
           id: `memory-run:${randomUUID()}`,
           attemptedAt,
           status: "processed",
-          timelineEntryIds: batch.map(({ id }) => id),
+          activityIds: batch.map(({ id }) => id),
           changes: memoryChanges(decisions, activeMemories, attemptedAt),
         };
         await appendMemoryEvent(root, event);
@@ -344,7 +348,7 @@ export async function processMemoryIfDue({
         id: `memory-run:${randomUUID()}`,
         attemptedAt,
         status: "failed",
-        timelineEntryIds: remaining.map(({ id }) => id),
+        activityIds: remaining.map(({ id }) => id),
         changes: [],
         error: message,
       };

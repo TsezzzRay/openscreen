@@ -90,13 +90,13 @@ export async function makeRequest(
   text: string,
   images: ChatImage[],
   maxOutputTokens: number,
-  session: SessionState = { turns: [], firstKeptTurnIndex: 0 },
+  session: SessionState = { turns: [] },
   readScreenshot: LoadScreenshot = loadScreenshot,
 ): Promise<OpenAI.Responses.ResponseCreateParamsStreaming> {
   const isMiniMaxM3 = model.toLowerCase() === "minimax-m3";
   const retainedInput = await buildTurnsInput(
     model,
-    session.turns.slice(session.firstKeptTurnIndex),
+    session.turns.slice(session.conversationSummary?.firstKeptTurnIndex ?? 0),
     readScreenshot,
   );
 
@@ -104,8 +104,11 @@ export async function makeRequest(
     model,
     instructions,
     input: [
-      ...(session.summary
-        ? [{ role: "developer" as const, content: `Conversation summary:\n${session.summary}` }]
+      ...(session.conversationSummary
+        ? [{
+            role: "developer" as const,
+            content: `Conversation summary:\n${session.conversationSummary.content}`,
+          }]
         : []),
       ...retainedInput,
       await userInput(model, text, images, readScreenshot),

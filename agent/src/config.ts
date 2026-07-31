@@ -73,7 +73,7 @@ export type RuntimeConfig = {
     eventFlushBytes: number;
     eventFlushMilliseconds: number;
   };
-  timeline: {
+  activity: {
     maxInputTokens: number;
     maxOutputTokens: number;
   };
@@ -99,9 +99,9 @@ const sessionOverrides = {
   eventFlushMilliseconds: "OPENSCREEN_SESSION_EVENT_FLUSH_MS",
 } as const;
 
-const timelineOverrides = {
-  maxInputTokens: "OPENSCREEN_TIMELINE_MAX_INPUT_TOKENS",
-  maxOutputTokens: "OPENSCREEN_TIMELINE_MAX_OUTPUT_TOKENS",
+const activityOverrides = {
+  maxInputTokens: "OPENSCREEN_ACTIVITY_MAX_INPUT_TOKENS",
+  maxOutputTokens: "OPENSCREEN_ACTIVITY_MAX_OUTPUT_TOKENS",
 } as const;
 
 const memoryOverrides = {
@@ -427,7 +427,7 @@ export function loadRuntimeConfig(
   const file = object(JSON.parse(readFileSync(configPath, "utf8")), "config");
   const fileContext = object(file.context, "context");
   const fileSession = object(file.session, "session");
-  const fileTimeline = object(file.timeline, "timeline");
+  const fileActivity = object(file.activity, "activity");
   const fileMemory = object(file.memory, "memory");
   const model = string(env.OPENAI_MODEL ?? file.model, "model");
   const baseURL = string(env.OPENAI_BASE_URL ?? file.baseURL, "baseURL");
@@ -457,12 +457,12 @@ export function loadRuntimeConfig(
     "session",
     sessionOverrides,
   ) as RuntimeConfig["session"];
-  const timeline = numericSection(
-    fileTimeline,
+  const activity = numericSection(
+    fileActivity,
     env,
-    "timeline",
-    timelineOverrides,
-  ) as RuntimeConfig["timeline"];
+    "activity",
+    activityOverrides,
+  ) as RuntimeConfig["activity"];
   const memory = numericSection(
     fileMemory,
     env,
@@ -479,8 +479,8 @@ export function loadRuntimeConfig(
   if (context.maxOutputTokens > context.windowTokens - context.compactAtTokens) {
     throw new Error("context.maxOutputTokens exceeds the available output budget");
   }
-  if (timeline.maxInputTokens + timeline.maxOutputTokens > context.windowTokens) {
-    throw new Error("timeline token budget exceeds context.windowTokens");
+  if (activity.maxInputTokens + activity.maxOutputTokens > context.windowTokens) {
+    throw new Error("activity token budget exceeds context.windowTokens");
   }
   if (memory.maxInputTokens + memory.maxOutputTokens > context.windowTokens) {
     throw new Error("memory token budget exceeds context.windowTokens");
@@ -492,7 +492,7 @@ export function loadRuntimeConfig(
     baseURL,
     context,
     session,
-    timeline,
+    activity,
     memory,
     screenObservation: loadScreenObservationConfig(file.screenObservation),
   };

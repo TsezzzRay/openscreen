@@ -7,17 +7,19 @@ export async function compactSession(
   countTurns: (turns: Turn[]) => Promise<number>,
   summarize: (previousSummary: string | undefined, turns: Turn[]) => Promise<string>,
 ): Promise<boolean> {
+  const previousFirstKeptTurnIndex =
+    session.conversationSummary?.firstKeptTurnIndex ?? 0;
   const latestFirstKeptTurnIndex = Math.max(
-    session.firstKeptTurnIndex,
+    previousFirstKeptTurnIndex,
     session.turns.length - minimumRecentTurns,
   );
   let firstKeptTurnIndex = latestFirstKeptTurnIndex;
 
   if (
-    latestFirstKeptTurnIndex > session.firstKeptTurnIndex &&
+    latestFirstKeptTurnIndex > previousFirstKeptTurnIndex &&
     await countTurns(session.turns.slice(latestFirstKeptTurnIndex)) <= keepRecentTokens
   ) {
-    let low = session.firstKeptTurnIndex;
+    let low = previousFirstKeptTurnIndex;
     let high = latestFirstKeptTurnIndex;
     while (low < high) {
       const candidate = Math.floor((low + high) / 2);
@@ -30,14 +32,17 @@ export async function compactSession(
     firstKeptTurnIndex = low;
   }
 
-  if (firstKeptTurnIndex <= session.firstKeptTurnIndex) return false;
+  if (firstKeptTurnIndex <= previousFirstKeptTurnIndex) return false;
 
   const summary = await summarize(
-    session.summary,
-    session.turns.slice(session.firstKeptTurnIndex, firstKeptTurnIndex),
+    session.conversationSummary?.content,
+    session.turns.slice(previousFirstKeptTurnIndex, firstKeptTurnIndex),
   );
-  session.summary = summary;
-  session.firstKeptTurnIndex = firstKeptTurnIndex;
+  session.conversationSummary = {
+    content: summary,
+    createdAt: new Date().toISOString(),
+    firstKeptTurnIndex,
+  };
   return true;
 }
 

@@ -6,19 +6,19 @@ import test from "node:test";
 
 import OpenAI from "openai";
 
-import { readTimelineEntries } from "../../src/harness/memory/timeline/store.js";
+import { readActivityRecords } from "../../src/harness/memory/activity/store.js";
 import {
-  buildTimelineRequest,
-  processTimelineSource,
-  timelineSourceKey,
-} from "../../src/harness/memory/timeline/processor.js";
+  activitySourceKey,
+  buildActivityRequest,
+  processActivitySource,
+} from "../../src/harness/memory/activity/processor.js";
 import type {
   ScreenActivitySource,
   TurnActivitySource,
-} from "../../src/harness/memory/timeline/types.js";
+} from "../../src/harness/memory/activity/types.js";
 
 const screen: ScreenActivitySource = {
-  type: "screen",
+  type: "screen_observation",
   observation: {
     schemaVersion: 1,
     id: "observation-1",
@@ -49,11 +49,16 @@ const screen: ScreenActivitySource = {
     },
     visibleText: "Activity memory design",
     url: "https://example.com/design",
+    diagnostics: {
+      triggerToCaptureMilliseconds: 100,
+      screenshotDurationMilliseconds: 20,
+      accessibilityDurationMilliseconds: 15,
+    },
   },
 };
 
 test("builds one JSON Responses request for a screen observation and its image", () => {
-  const request = buildTimelineRequest("vision-model", screen, 4096);
+  const request = buildActivityRequest("vision-model", screen, 4096);
   const body = JSON.stringify(request);
 
   assert.equal(request.model, "vision-model");
@@ -78,7 +83,7 @@ test("builds one JSON Responses request for a screen observation and its image",
 });
 
 test("uses the MiniMax M3 image shape in the same JSON request", () => {
-  const request = buildTimelineRequest("MiniMax-M3", screen, 4096);
+  const request = buildActivityRequest("MiniMax-M3", screen, 4096);
   const input = request.input as Array<{
     content: Array<{ type: string; image_url?: unknown }>;
   }>;
@@ -102,9 +107,12 @@ test("uses one turn source for a conversation with an Agent Run", () => {
       user: "Inspect the repository",
       assistant: "The tests pass.",
       status: "completed",
+      startedAt: "2026-07-27T00:58:00.000Z",
+      finishedAt: "2026-07-27T01:00:00.000Z",
     },
-    agentRun: {
-      id: "turn-1",
+    agentRuns: [{
+      id: "run-1",
+      turnId: "turn-1",
       status: "completed",
       startedAt: "2026-07-27T00:59:00.000Z",
       steps: [{
@@ -117,17 +125,18 @@ test("uses one turn source for a conversation with an Agent Run", () => {
           status: "completed",
         }],
       }],
-    },
+    }],
   };
 
-  const request = buildTimelineRequest("vision-model", source, 4096);
+  const request = buildActivityRequest("vision-model", source, 4096);
   const input = request.input as Array<{ content: string }>;
   const payload = JSON.parse(input[0]?.content ?? "");
 
-  assert.equal(timelineSourceKey(source), "turn:session-1:turn-1");
+  assert.equal(activitySourceKey(source), "turn:session-1:turn-1");
   assert.equal(payload.turn.id, "turn-1");
-  assert.equal(payload.agentRun.id, "turn-1");
-  assert.equal(payload.agentRun.steps[0].toolResults[0].name, "run_tests");
+  assert.equal(payload.agentRuns[0].id, "run-1");
+  assert.equal(payload.agentRuns[0].turnId, "turn-1");
+  assert.equal(payload.agentRuns[0].steps[0].toolResults[0].name, "run_tests");
 });
 
 test("rejects an Agent Run that does not belong to its turn", () => {
@@ -140,19 +149,22 @@ test("rejects an Agent Run that does not belong to its turn", () => {
       user: "Inspect the repository",
       assistant: "",
       status: "failed",
+      startedAt: "2026-07-27T00:58:00.000Z",
+      finishedAt: "2026-07-27T01:00:00.000Z",
     },
-    agentRun: {
-      id: "other-turn",
+    agentRuns: [{
+      id: "run-1",
+      turnId: "other-turn",
       status: "failed",
       startedAt: "2026-07-27T00:59:00.000Z",
       steps: [],
-    },
+    }],
   };
 
-  assert.throws(() => timelineSourceKey(source), /Agent Run ID must match turn ID/);
+  assert.throws(() => activitySourceKey(source), /must reference the source Turn/);
 });
 
-test("generates and persists one timeline entry per source", async (t) => {
+test("generates and persists one activity record per source", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "openscreen-activity-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   let generations = 0;
@@ -176,7 +188,7 @@ test("generates and persists one timeline entry per source", async (t) => {
     },
   } as unknown as OpenAI;
 
-  const first = await processTimelineSource({
+  const first = await processActivitySource({
     root,
     client,
     model: "vision-model",
@@ -185,7 +197,7 @@ test("generates and persists one timeline entry per source", async (t) => {
     maxOutputTokens: 4096,
     now: () => new Date("2026-07-27T00:00:01.000Z"),
   });
-  const duplicate = await processTimelineSource({
+  const duplicate = await processActivitySource({
     root,
     client,
     model: "vision-model",
@@ -196,14 +208,18 @@ test("generates and persists one timeline entry per source", async (t) => {
   });
 
   assert.equal(first.status, "created");
-  assert.equal(first.entry?.id, "timeline:screen:observation-1");
-  assert.equal(first.entry?.status, "observed");
+  assert.equal(first.record?.id, "activity:screen_observation:observation-1");
+  assert.equal(first.record?.status, "observed");
+  assert.deepEqual(first.record?.sources, [{
+    type: "screen_observation",
+    observationId: "observation-1",
+  }]);
   assert.equal(duplicate.status, "duplicate");
   assert.equal(generations, 1);
-  assert.equal((await readTimelineEntries(root)).length, 1);
+  assert.equal((await readActivityRecords(root)).length, 1);
 });
 
-test("discards an over-limit source without generating or persisting a timeline", async (t) => {
+test("discards an over-limit source without generating or persisting activity", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "openscreen-activity-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   let generations = 0;
@@ -219,7 +235,7 @@ test("discards an over-limit source without generating or persisting a timeline"
     },
   } as unknown as OpenAI;
 
-  const result = await processTimelineSource({
+  const result = await processActivitySource({
     root,
     client,
     model: "vision-model",
@@ -230,10 +246,10 @@ test("discards an over-limit source without generating or persisting a timeline"
 
   assert.equal(result.status, "discarded");
   assert.equal(generations, 0);
-  assert.deepEqual(await readTimelineEntries(root), []);
+  assert.deepEqual(await readActivityRecords(root), []);
 });
 
-test("serializes concurrent processing of the same timeline source", async (t) => {
+test("serializes concurrent processing of the same activity source", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "openscreen-activity-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   let generations = 0;
@@ -265,8 +281,8 @@ test("serializes concurrent processing of the same timeline source", async (t) =
   };
 
   const results = await Promise.all([
-    processTimelineSource(options),
-    processTimelineSource(options),
+    processActivitySource(options),
+    processActivitySource(options),
   ]);
 
   assert.deepEqual(
@@ -274,10 +290,10 @@ test("serializes concurrent processing of the same timeline source", async (t) =
     ["created", "duplicate"],
   );
   assert.equal(generations, 1);
-  assert.equal((await readTimelineEntries(root)).length, 1);
+  assert.equal((await readActivityRecords(root)).length, 1);
 });
 
-test("persists structurally valid timeline output without classifying it", async (t) => {
+test("persists structurally valid activity output without classifying it", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "openscreen-activity-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const client = {
@@ -295,7 +311,7 @@ test("persists structurally valid timeline output without classifying it", async
     },
   } as unknown as OpenAI;
 
-  const result = await processTimelineSource({
+  const result = await processActivitySource({
     root,
     client,
     model: "vision-model",
@@ -305,7 +321,7 @@ test("persists structurally valid timeline output without classifying it", async
   });
   assert.equal(result.status, "created");
   assert.deepEqual(
-    (await readTimelineEntries(root))[0]?.verbatimEvidence,
+    (await readActivityRecords(root))[0]?.verbatimEvidence,
     ["OPENAI_API_KEY=sk-12345678901234567890"],
   );
 });

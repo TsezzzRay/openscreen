@@ -105,7 +105,6 @@ export async function createSession(directory: string): Promise<StoredSession> {
     turns: [],
     visibleTurns: [],
     agentRuns: [],
-    firstKeptTurnIndex: 0,
   };
 }
 

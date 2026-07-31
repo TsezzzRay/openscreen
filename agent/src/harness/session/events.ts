@@ -3,6 +3,7 @@ import type {
   AgentRun,
   AgentRunStep,
   ChatImage,
+  ConversationSummary,
   StoredSession,
   Turn,
   VisibleTurn,
@@ -23,7 +24,12 @@ export type StartedTurn = {
   user: string;
   images?: ChatImage[];
   startedAt: string;
-  agentRun?: boolean;
+};
+
+export type StartedAgentRun = {
+  id: string;
+  turnId: string;
+  startedAt: string;
 };
 
 export type SessionEvent = {
@@ -35,34 +41,43 @@ export type SessionEvent = {
   delta: string;
 } | {
   type: "turn_completed";
-  turn: Turn & { id: string };
+  turn: Turn;
 } | {
   type: "turn_failed";
   turnId: string;
+  finishedAt: string;
   message: string;
   includeInContext?: boolean;
 } | {
   type: "turn_cancelled";
   turnId: string;
+  finishedAt: string;
+} | {
+  type: "agent_run_started";
+  run: StartedAgentRun;
 } | {
   type: "agent_step_completed";
-  turnId: string;
+  runId: string;
   step: number;
   responseId?: string;
   outputItems: ModelOutputItem[];
   totalTokens?: number;
 } | {
   type: "tool_result_recorded";
-  turnId: string;
+  runId: string;
   step: number;
   callId: string;
   name: string;
   output: string;
   status: "completed" | "failed";
 } | {
+  type: "agent_run_finished";
+  runId: string;
+  status: "completed" | "failed" | "cancelled";
+  finishedAt: string;
+} | {
   type: "context_compacted";
-  summary: string;
-  firstKeptTurnIndex: number;
+  summary: ConversationSummary;
 };
 
 export function isSessionId(value: string) {
@@ -115,7 +130,7 @@ function visibleImages(turn: { images?: ChatImage[] }) {
   return images.length > 0 ? { images } : {};
 }
 
-function isTurn(value: unknown): value is Turn & { id: string } {
+function isTurn(value: unknown): value is Turn {
   if (!isRecord(value) || !hasOnlyKeys(value, [
     "id",
     "user",
@@ -123,14 +138,18 @@ function isTurn(value: unknown): value is Turn & { id: string } {
     "reasoning",
     "images",
     "status",
+    "startedAt",
+    "finishedAt",
     "outputItems",
   ])) return false;
   return typeof value.id === "string" && value.id.length > 0 &&
     typeof value.user === "string" &&
     typeof value.assistant === "string" &&
     (value.images === undefined || isChatImages(value.images)) &&
-    (value.status === undefined || value.status === "completed" ||
-      value.status === "failed" || value.status === "cancelled") &&
+    (value.status === "completed" || value.status === "failed" ||
+      value.status === "cancelled") &&
+    typeof value.startedAt === "string" &&
+    typeof value.finishedAt === "string" &&
     (value.reasoning === undefined || typeof value.reasoning === "string") &&
     (value.outputItems === undefined || Array.isArray(value.outputItems));
 }
@@ -164,11 +183,9 @@ function parseSessionEvent(line: string, lineNumber: number): SessionEvent {
     case "turn_started": {
       const turn = value.turn;
       if (!isRecord(turn) || typeof turn.id !== "string" || !turn.id ||
-          !hasOnlyKeys(turn, ["id", "user", "images", "startedAt", "agentRun"]) ||
+          !hasOnlyKeys(turn, ["id", "user", "images", "startedAt"]) ||
           typeof turn.user !== "string" ||
           ("images" in turn && turn.images !== undefined && !isChatImages(turn.images)) ||
-          ("agentRun" in turn && turn.agentRun !== undefined &&
-            typeof turn.agentRun !== "boolean") ||
           typeof turn.startedAt !== "string") break;
       return value as SessionEvent;
     }
@@ -179,10 +196,13 @@ function parseSessionEvent(line: string, lineNumber: number): SessionEvent {
       }
       break;
     case "turn_completed":
-      if (isTurn(value.turn)) return value as SessionEvent;
+      if (isTurn(value.turn) && value.turn.status === "completed") {
+        return value as SessionEvent;
+      }
       break;
     case "turn_failed":
       if (typeof value.turnId === "string" && value.turnId &&
+          typeof value.finishedAt === "string" &&
           typeof value.message === "string" &&
           (!("includeInContext" in value) || value.includeInContext === undefined ||
             typeof value.includeInContext === "boolean")) {
@@ -190,10 +210,21 @@ function parseSessionEvent(line: string, lineNumber: number): SessionEvent {
       }
       break;
     case "turn_cancelled":
-      if (typeof value.turnId === "string" && value.turnId) return value as SessionEvent;
-      break;
-    case "agent_step_completed":
       if (typeof value.turnId === "string" && value.turnId &&
+          typeof value.finishedAt === "string") return value as SessionEvent;
+      break;
+    case "agent_run_started": {
+      const run = value.run;
+      if (isRecord(run) && hasOnlyKeys(run, ["id", "turnId", "startedAt"]) &&
+          typeof run.id === "string" && run.id &&
+          typeof run.turnId === "string" && run.turnId &&
+          typeof run.startedAt === "string") {
+        return value as SessionEvent;
+      }
+      break;
+    }
+    case "agent_step_completed":
+      if (typeof value.runId === "string" && value.runId &&
           Number.isInteger(value.step) && (value.step as number) > 0 &&
           (!("responseId" in value) || value.responseId === undefined ||
             typeof value.responseId === "string") &&
@@ -204,7 +235,7 @@ function parseSessionEvent(line: string, lineNumber: number): SessionEvent {
       }
       break;
     case "tool_result_recorded":
-      if (typeof value.turnId === "string" && value.turnId &&
+      if (typeof value.runId === "string" && value.runId &&
           Number.isInteger(value.step) && (value.step as number) > 0 &&
           typeof value.callId === "string" && value.callId &&
           typeof value.name === "string" && value.name &&
@@ -213,11 +244,26 @@ function parseSessionEvent(line: string, lineNumber: number): SessionEvent {
         return value as SessionEvent;
       }
       break;
-    case "context_compacted":
-      if (typeof value.summary === "string" && Number.isInteger(value.firstKeptTurnIndex) &&
-          (value.firstKeptTurnIndex as number) >= 0) {
+    case "agent_run_finished":
+      if (typeof value.runId === "string" && value.runId &&
+          (value.status === "completed" || value.status === "failed" ||
+            value.status === "cancelled") &&
+          typeof value.finishedAt === "string") {
         return value as SessionEvent;
       }
+      break;
+    case "context_compacted": {
+      const summary = value.summary;
+      if (isRecord(summary) &&
+          hasOnlyKeys(summary, ["content", "createdAt", "firstKeptTurnIndex"]) &&
+          typeof summary.content === "string" && summary.content &&
+          typeof summary.createdAt === "string" &&
+          Number.isInteger(summary.firstKeptTurnIndex) &&
+          (summary.firstKeptTurnIndex as number) >= 0) {
+        return value as SessionEvent;
+      }
+      break;
+    }
   }
   throw new Error(`Invalid session event at line ${lineNumber}`);
 }
@@ -238,8 +284,7 @@ export function replaySession(
   const pendingTurns = new Map<string, StartedTurn>();
   const agentRuns: AgentRun[] = [];
   const agentRunIndexes = new Map<string, number>();
-  let summary: string | undefined;
-  let firstKeptTurnIndex = 0;
+  let conversationSummary: ConversationSummary | undefined;
 
   for (let index = 1; index < lines.length; index += 1) {
     const event = parseSessionEvent(lines[index]!, index + 1);
@@ -260,15 +305,6 @@ export function replaySession(
         visibleTurns.push(visible);
         pending.set(event.turn.id, visible);
         pendingTurns.set(event.turn.id, event.turn);
-        if (event.turn.agentRun) {
-          agentRunIndexes.set(event.turn.id, agentRuns.length);
-          agentRuns.push({
-            id: event.turn.id,
-            status: "interrupted",
-            startedAt: event.turn.startedAt,
-            steps: [],
-          });
-        }
         break;
       }
       case "reasoning_delta":
@@ -284,20 +320,26 @@ export function replaySession(
       }
       case "turn_completed": {
         const visibleIndex = visibleIndexes.get(event.turn.id);
-        if (visibleIndex === undefined || !pending.has(event.turn.id)) {
+        const started = pendingTurns.get(event.turn.id);
+        if (visibleIndex === undefined || !pending.has(event.turn.id) || !started) {
           throw new Error(`Unknown turn at line ${index + 1}`);
         }
-        const runIndex = agentRunIndexes.get(event.turn.id);
-        const run = runIndex === undefined ? undefined : agentRuns[runIndex];
-        if (run) run.status = "completed";
-        const outputItems = run?.steps.flatMap((step) => [
+        if (event.turn.user !== started.user ||
+            event.turn.startedAt !== started.startedAt) {
+          throw new Error(`Turn start mismatch at line ${index + 1}`);
+        }
+        const runs = agentRuns.filter(({ turnId }) => turnId === event.turn.id);
+        if (runs.some(({ status }) => status === "interrupted")) {
+          throw new Error(`Active Agent Run at line ${index + 1}`);
+        }
+        const outputItems = runs.flatMap(({ steps }) => steps.flatMap((step) => [
           ...step.outputItems,
           ...step.toolResults.map(({ callId, output }) => ({
             type: "function_call_output" as const,
             call_id: callId,
             output,
           })),
-        ]);
+        ]));
         turns.push(event.turn.outputItems || !outputItems?.length
           ? event.turn
           : { ...event.turn, outputItems });
@@ -319,8 +361,10 @@ export function replaySession(
         if (!visible || !started) throw new Error(`Unknown turn at line ${index + 1}`);
         visible.status = "failed";
         visible.error = event.message;
-        const runIndex = agentRunIndexes.get(event.turnId);
-        if (runIndex !== undefined) agentRuns[runIndex]!.status = "failed";
+        if (agentRuns.some(({ turnId, status }) =>
+          turnId === event.turnId && status === "interrupted")) {
+          throw new Error(`Active Agent Run at line ${index + 1}`);
+        }
         if (event.includeInContext) {
           turns.push({
             id: started.id,
@@ -329,6 +373,8 @@ export function replaySession(
             reasoning: visible.reasoning,
             ...(started.images ? { images: started.images } : {}),
             status: "failed",
+            startedAt: started.startedAt,
+            finishedAt: event.finishedAt,
           });
         }
         pending.delete(event.turnId);
@@ -340,8 +386,10 @@ export function replaySession(
         const started = pendingTurns.get(event.turnId);
         if (!visible || !started) throw new Error(`Unknown turn at line ${index + 1}`);
         visible.status = "cancelled";
-        const runIndex = agentRunIndexes.get(event.turnId);
-        if (runIndex !== undefined) agentRuns[runIndex]!.status = "cancelled";
+        if (agentRuns.some(({ turnId, status }) =>
+          turnId === event.turnId && status === "interrupted")) {
+          throw new Error(`Active Agent Run at line ${index + 1}`);
+        }
         turns.push({
           id: started.id,
           user: started.user,
@@ -349,15 +397,35 @@ export function replaySession(
           reasoning: visible.reasoning,
           ...(started.images ? { images: started.images } : {}),
           status: "cancelled",
+          startedAt: started.startedAt,
+          finishedAt: event.finishedAt,
         });
         pending.delete(event.turnId);
         pendingTurns.delete(event.turnId);
         break;
       }
+      case "agent_run_started": {
+        if (!pending.has(event.run.turnId)) {
+          throw new Error(`Unknown turn at line ${index + 1}`);
+        }
+        if (agentRunIndexes.has(event.run.id)) {
+          throw new Error(`Duplicate Agent Run at line ${index + 1}`);
+        }
+        agentRunIndexes.set(event.run.id, agentRuns.length);
+        agentRuns.push({
+          id: event.run.id,
+          turnId: event.run.turnId,
+          status: "interrupted",
+          startedAt: event.run.startedAt,
+          steps: [],
+        });
+        break;
+      }
       case "agent_step_completed": {
-        const runIndex = agentRunIndexes.get(event.turnId);
+        const runIndex = agentRunIndexes.get(event.runId);
         const run = runIndex === undefined ? undefined : agentRuns[runIndex];
-        if (!run || !pending.has(event.turnId) || event.step !== run.steps.length + 1) {
+        if (!run || !pending.has(run.turnId) || run.status !== "interrupted" ||
+            event.step !== run.steps.length + 1) {
           throw new Error(`Invalid agent step at line ${index + 1}`);
         }
         const step: AgentRunStep = {
@@ -371,14 +439,15 @@ export function replaySession(
         break;
       }
       case "tool_result_recorded": {
-        const runIndex = agentRunIndexes.get(event.turnId);
+        const runIndex = agentRunIndexes.get(event.runId);
         const run = runIndex === undefined ? undefined : agentRuns[runIndex];
         const step = run?.steps[event.step - 1];
         const call = step?.outputItems.find(
           (item) => item.type === "function_call" &&
             item.call_id === event.callId && item.name === event.name,
         );
-        if (!run || !pending.has(event.turnId) || !step || !call ||
+        if (!run || !pending.has(run.turnId) || run.status !== "interrupted" ||
+            !step || !call ||
             step.toolResults.some(({ callId }) => callId === event.callId)) {
           throw new Error(`Invalid tool result at line ${index + 1}`);
         }
@@ -390,12 +459,21 @@ export function replaySession(
         });
         break;
       }
+      case "agent_run_finished": {
+        const runIndex = agentRunIndexes.get(event.runId);
+        const run = runIndex === undefined ? undefined : agentRuns[runIndex];
+        if (!run || !pending.has(run.turnId) || run.status !== "interrupted") {
+          throw new Error(`Invalid Agent Run finish at line ${index + 1}`);
+        }
+        run.status = event.status;
+        run.finishedAt = event.finishedAt;
+        break;
+      }
       case "context_compacted":
-        if (event.firstKeptTurnIndex > turns.length) {
+        if (event.summary.firstKeptTurnIndex > turns.length) {
           throw new Error(`Invalid compaction event at line ${index + 1}`);
         }
-        summary = event.summary;
-        firstKeptTurnIndex = event.firstKeptTurnIndex;
+        conversationSummary = event.summary;
         break;
     }
   }
@@ -408,7 +486,6 @@ export function replaySession(
     turns,
     visibleTurns,
     agentRuns,
-    summary,
-    firstKeptTurnIndex,
+    ...(conversationSummary ? { conversationSummary } : {}),
   };
 }

@@ -18,7 +18,7 @@ import type {
   StoredSession,
 } from "./harness/session/types.js";
 import { withSessionLock } from "./harness/session/lock.js";
-import { ScreenObservationRuntime } from "./screen-observation/runtime.js";
+import { ScreenObservationPlugin } from "./plugins/screen-observation/plugin.js";
 import {
   parseInputEnvelope,
   serializeOutputEnvelope,
@@ -62,8 +62,8 @@ async function run() {
   );
   const lines = createInterface({ input: process.stdin, crlfDelay: Infinity });
   const observationBundleIdentifier = process.env.OPENSCREEN_BUNDLE_ID;
-  const observationRuntime = config.screenObservation.enabled
-    ? new ScreenObservationRuntime({
+  const observationPlugin = config.screenObservation.enabled
+    ? new ScreenObservationPlugin({
       config: config.screenObservation,
       helperCommand: process.env.OPENSCREEN_HELPER_PATH ??
         join(process.cwd(), ".build", "debug", "ObservationHelper"),
@@ -74,7 +74,7 @@ async function run() {
         : [observationBundleIdentifier],
     })
     : undefined;
-  void observationRuntime?.start().catch((error) => {
+  void observationPlugin?.start().catch((error) => {
     process.stderr.write(
       `OpenScreen observation unavailable: ${
         error instanceof Error ? error.message : "unknown error"
@@ -131,10 +131,15 @@ async function run() {
             },
           },
           envelope.status === "cancelled"
-            ? { type: "turn_cancelled", turnId: envelope.requestId }
+            ? {
+                type: "turn_cancelled",
+                turnId: envelope.requestId,
+                finishedAt: new Date().toISOString(),
+              }
             : {
                 type: "turn_failed",
                 turnId: envelope.requestId,
+                finishedAt: new Date().toISOString(),
                 message: "Request failed. Please retry.",
                 includeInContext: true,
               },
@@ -229,7 +234,7 @@ async function run() {
     }
     await Promise.allSettled([...active]);
   } finally {
-    await observationRuntime?.stop();
+    await observationPlugin?.stop();
   }
 }
 

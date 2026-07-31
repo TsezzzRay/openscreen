@@ -1,19 +1,30 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import type { SessionState } from "../../src/harness/session/types.js";
+import type { SessionState, Turn } from "../../src/harness/session/types.js";
 import {
   compactIfNeeded,
   compactSession,
 } from "../../src/harness/compaction/compact.js";
 
+function completedTurn(id: number, user: string, assistant: string): Turn {
+  return {
+    id: `turn-${id}`,
+    user,
+    assistant,
+    status: "completed",
+    startedAt: `2026-07-31T00:00:${String(id).padStart(2, "0")}.000Z`,
+    finishedAt: `2026-07-31T00:00:${String(id).padStart(2, "0")}.500Z`,
+  };
+}
+
 test("compacts older turns while retaining 20K recent tokens", async () => {
   const session: SessionState = {
-    turns: Array.from({ length: 5 }, (_, index) => ({
-      user: `Question ${index + 1}`,
-      assistant: `Answer ${index + 1}`,
-    })),
-    firstKeptTurnIndex: 0,
+    turns: Array.from({ length: 5 }, (_, index) => completedTurn(
+      index + 1,
+      `Question ${index + 1}`,
+      `Answer ${index + 1}`,
+    )),
   };
   let summarizedTurns = 0;
 
@@ -29,18 +40,18 @@ test("compacts older turns while retaining 20K recent tokens", async () => {
   );
 
   assert.equal(summarizedTurns, 3);
-  assert.equal(session.summary, "Compact summary");
-  assert.equal(session.firstKeptTurnIndex, 3);
+  assert.equal(session.conversationSummary?.content, "Compact summary");
+  assert.equal(session.conversationSummary?.firstKeptTurnIndex, 3);
   assert.equal(session.turns.length, 5);
 });
 
 test("finds the 20K recent-turn boundary without scanning every turn", async () => {
   const session: SessionState = {
-    turns: Array.from({ length: 100 }, (_, index) => ({
-      user: `Question ${index + 1}`,
-      assistant: `Answer ${index + 1}`,
-    })),
-    firstKeptTurnIndex: 0,
+    turns: Array.from({ length: 100 }, (_, index) => completedTurn(
+      index + 1,
+      `Question ${index + 1}`,
+      `Answer ${index + 1}`,
+    )),
   };
   let countCalls = 0;
 
@@ -55,18 +66,22 @@ test("finds the 20K recent-turn boundary without scanning every turn", async () 
     async () => "Compact summary",
   );
 
-  assert.equal(session.firstKeptTurnIndex, 80);
+  assert.equal(session.conversationSummary?.firstKeptTurnIndex, 80);
   assert.ok(countCalls <= 8);
 });
 
 test("rolls the previous summary forward without re-summarizing raw history", async () => {
   const session: SessionState = {
-    turns: Array.from({ length: 8 }, (_, index) => ({
-      user: `Question ${index + 1}`,
-      assistant: `Answer ${index + 1}`,
-    })),
-    summary: "Previous summary",
-    firstKeptTurnIndex: 3,
+    turns: Array.from({ length: 8 }, (_, index) => completedTurn(
+      index + 1,
+      `Question ${index + 1}`,
+      `Answer ${index + 1}`,
+    )),
+    conversationSummary: {
+      content: "Previous summary",
+      createdAt: "2026-07-30T00:00:00.000Z",
+      firstKeptTurnIndex: 3,
+    },
   };
   let summarizedQuestions: string[] = [];
 
@@ -83,19 +98,22 @@ test("rolls the previous summary forward without re-summarizing raw history", as
   );
 
   assert.deepEqual(summarizedQuestions, ["Question 4", "Question 5", "Question 6"]);
-  assert.equal(session.summary, "Updated summary");
-  assert.equal(session.firstKeptTurnIndex, 6);
+  assert.equal(session.conversationSummary?.content, "Updated summary");
+  assert.equal(session.conversationSummary?.firstKeptTurnIndex, 6);
 });
 
 test("leaves context unchanged when compaction fails", async () => {
   const session: SessionState = {
     turns: [
-      { user: "One", assistant: "1" },
-      { user: "Two", assistant: "2" },
-      { user: "Three", assistant: "3" },
+      completedTurn(1, "One", "1"),
+      completedTurn(2, "Two", "2"),
+      completedTurn(3, "Three", "3"),
     ],
-    summary: "Existing summary",
-    firstKeptTurnIndex: 0,
+    conversationSummary: {
+      content: "Existing summary",
+      createdAt: "2026-07-30T00:00:00.000Z",
+      firstKeptTurnIndex: 0,
+    },
   };
 
   await assert.rejects(
@@ -108,17 +126,17 @@ test("leaves context unchanged when compaction fails", async () => {
     ),
     /Summary failed/,
   );
-  assert.equal(session.summary, "Existing summary");
-  assert.equal(session.firstKeptTurnIndex, 0);
+  assert.equal(session.conversationSummary?.content, "Existing summary");
+  assert.equal(session.conversationSummary?.firstKeptTurnIndex, 0);
 });
 
 test("keeps the configured minimum number of recent turns", async () => {
   const session: SessionState = {
-    turns: Array.from({ length: 5 }, (_, index) => ({
-      user: `Question ${index + 1}`,
-      assistant: `Answer ${index + 1}`,
-    })),
-    firstKeptTurnIndex: 0,
+    turns: Array.from({ length: 5 }, (_, index) => completedTurn(
+      index + 1,
+      `Question ${index + 1}`,
+      `Answer ${index + 1}`,
+    )),
   };
 
   await compactSession(
@@ -129,7 +147,7 @@ test("keeps the configured minimum number of recent turns", async () => {
     async () => "Compact summary",
   );
 
-  assert.equal(session.firstKeptTurnIndex, 2);
+  assert.equal(session.conversationSummary?.firstKeptTurnIndex, 2);
 });
 
 test("compacts before a request and verifies the rebuilt context", async () => {

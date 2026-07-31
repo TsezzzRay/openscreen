@@ -21,7 +21,7 @@ const fileConfig = {
     eventFlushBytes: 4_096,
     eventFlushMilliseconds: 250,
   },
-  timeline: {
+  activity: {
     maxInputTokens: 244_800,
     maxOutputTokens: 4_096,
   },
@@ -121,8 +121,8 @@ test("overrides every JSON setting from environment variables", (t) => {
     OPENSCREEN_MIN_RECENT_TURNS: "3",
     OPENSCREEN_SESSION_EVENT_FLUSH_BYTES: "8192",
     OPENSCREEN_SESSION_EVENT_FLUSH_MS: "100",
-    OPENSCREEN_TIMELINE_MAX_INPUT_TOKENS: "90000",
-    OPENSCREEN_TIMELINE_MAX_OUTPUT_TOKENS: "2000",
+    OPENSCREEN_ACTIVITY_MAX_INPUT_TOKENS: "90000",
+    OPENSCREEN_ACTIVITY_MAX_OUTPUT_TOKENS: "2000",
     OPENSCREEN_MEMORY_PROCESSING_INTERVAL_MINUTES: "720",
     OPENSCREEN_MEMORY_MAX_INPUT_TOKENS: "80000",
     OPENSCREEN_MEMORY_MAX_OUTPUT_TOKENS: "1500",
@@ -142,7 +142,7 @@ test("overrides every JSON setting from environment variables", (t) => {
       eventFlushBytes: 8_192,
       eventFlushMilliseconds: 100,
     },
-    timeline: {
+    activity: {
       maxInputTokens: 90_000,
       maxOutputTokens: 2_000,
     },
@@ -242,16 +242,29 @@ test("rejects invalid harness limits", (t) => {
     /memory.processingIntervalMinutes must be a positive integer/,
   );
 
-  const invalidTimelineBudget = withConfig(t, {
+  const invalidActivityBudget = withConfig(t, {
     ...fileConfig,
-    timeline: {
+    activity: {
       maxInputTokens: 270_000,
       maxOutputTokens: 4_096,
     },
   });
   assert.throws(
-    () => loadRuntimeConfig(invalidTimelineBudget.path, { OPENAI_API_KEY: "secret" }),
-    /timeline token budget exceeds context.windowTokens/,
+    () => loadRuntimeConfig(invalidActivityBudget.path, { OPENAI_API_KEY: "secret" }),
+    /activity token budget exceeds context.windowTokens/,
+  );
+});
+
+test("does not accept the removed timeline configuration", (t) => {
+  const { activity: removedActivity, ...withoutActivity } = fileConfig;
+  const { path } = withConfig(t, {
+    ...withoutActivity,
+    timeline: removedActivity,
+  });
+
+  assert.throws(
+    () => loadRuntimeConfig(path, { OPENAI_API_KEY: "secret" }),
+    /activity must be an object/,
   );
 });
 

@@ -7,7 +7,7 @@ import {
 } from "node:fs/promises";
 import { join } from "node:path";
 
-import type { TimelineEntry } from "./types.js";
+import type { ActivityRecord } from "./types.js";
 
 function day(value: string) {
   const date = new Date(value);
@@ -41,33 +41,33 @@ async function truncateIncompleteTail(file: FileHandle) {
   await file.truncate(newline < 0 ? 0 : position + newline + 1);
 }
 
-export async function appendTimelineEntry(
+export async function appendActivityRecord(
   root: string,
-  entry: TimelineEntry,
+  record: ActivityRecord,
 ) {
   const directory = join(root, "timeline");
   await mkdir(directory, { recursive: true });
-  const file = await open(join(directory, `${day(entry.occurredAt)}.jsonl`), "a+", 0o600);
+  const file = await open(join(directory, `${day(record.occurredAt)}.jsonl`), "a+", 0o600);
   try {
     await truncateIncompleteTail(file);
-    await file.writeFile(`${JSON.stringify(entry)}\n`);
+    await file.writeFile(`${JSON.stringify(record)}\n`);
     await file.sync();
   } finally {
     await file.close();
   }
 }
 
-export async function readTimelineEntries(root: string): Promise<TimelineEntry[]> {
+export async function readActivityRecords(root: string): Promise<ActivityRecord[]> {
   const directory = join(root, "timeline");
   await mkdir(directory, { recursive: true });
   const names = (await readdir(directory))
     .filter((name) => /^\d{4}-\d{2}-\d{2}\.jsonl$/.test(name))
     .sort();
-  const entries: TimelineEntry[] = [];
+  const records: ActivityRecord[] = [];
   for (const name of names) {
     for (const line of await readCompleteLines(join(directory, name))) {
-      entries.push(JSON.parse(line) as TimelineEntry);
+      records.push(JSON.parse(line) as ActivityRecord);
     }
   }
-  return entries;
+  return records;
 }

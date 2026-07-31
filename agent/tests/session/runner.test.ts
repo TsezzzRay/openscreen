@@ -103,6 +103,8 @@ test("cancels an agent run while a tool is executing", async (t) => {
   const loaded = await loadSession(directory, session.id);
   assert.equal(loaded.visibleTurns[0]?.status, "cancelled");
   assert.equal(loaded.agentRuns[0]?.status, "cancelled");
+  assert.equal((loaded.agentRuns[0] as any)?.turnId, "turn-1");
+  assert.notEqual(loaded.agentRuns[0]?.id, "turn-1");
   assert.equal(loaded.agentRuns[0]?.steps.length, 1);
   assert.deepEqual(loaded.agentRuns[0]?.steps[0]?.toolResults, []);
 });
@@ -320,7 +322,7 @@ test("rebuilds the agent process context after turn-end compaction", async (t) =
       OPENSCREEN_KEEP_RECENT_TOKENS: "20000",
       OPENSCREEN_MAX_OUTPUT_TOKENS: "40000",
       OPENSCREEN_SUMMARY_MAX_OUTPUT_TOKENS: "4096",
-      OPENSCREEN_TIMELINE_MAX_INPUT_TOKENS: "90000",
+      OPENSCREEN_ACTIVITY_MAX_INPUT_TOKENS: "90000",
       OPENSCREEN_MEMORY_MAX_INPUT_TOKENS: "90000",
       OPENSCREEN_DATA_DIR: sessionsDirectory,
     },
@@ -552,10 +554,17 @@ test("rebuilds the agent process context after turn-end compaction", async (t) =
     ["createdAt", "id", "title", "type"],
   );
   assert.ok(persistedLines.some((event) => event.type === "answer_delta"));
+  const startedRun = persistedLines.find((event) => event.type === "agent_run_started");
+  assert.ok(startedRun);
+  assert.notEqual(startedRun.run.id, startedRun.run.turnId);
   assert.ok(persistedLines.some(
-    (event) => event.type === "turn_started" && event.turn.agentRun === true,
+    (event) => event.type === "agent_step_completed" &&
+      event.runId === startedRun.run.id,
   ));
-  assert.ok(persistedLines.some((event) => event.type === "agent_step_completed"));
+  assert.ok(persistedLines.some(
+    (event) => event.type === "agent_run_finished" &&
+      event.runId === startedRun.run.id,
+  ));
   assert.ok(persistedLines.some((event) => event.type === "turn_completed"));
   assert.ok(persistedLines.some((event) => event.type === "context_compacted"));
 

@@ -9,6 +9,7 @@ import {
   makeRequest,
 } from "../src/harness/session/context.js";
 import { summarizeTurns } from "../src/harness/compaction/summary.js";
+import type { Turn } from "../src/harness/session/types.js";
 import {
   mapEvent,
   relayStream,
@@ -19,6 +20,20 @@ const loadScreenshot = async (path: string) => Buffer.from(path).toString("base6
 
 function systemImages(path: string) {
   return [{ id: "system", source: "system_capture" as const, path }];
+}
+
+function terminalTurn(
+  id: string,
+  value: Pick<Turn, "user" | "assistant"> &
+    Partial<Omit<Turn, "id" | "user" | "assistant" | "startedAt" | "finishedAt">>,
+): Turn {
+  return {
+    id,
+    status: "completed",
+    startedAt: "2026-07-31T00:00:00.000Z",
+    finishedAt: "2026-07-31T00:00:01.000Z",
+    ...value,
+  };
 }
 
 test("builds a streaming Responses API request with system and user screenshots in order", async () => {
@@ -96,12 +111,27 @@ test("includes every retained screenshot before the current request", async () =
     21_760,
     {
       turns: [
-        { user: "First question", assistant: "First answer", images: systemImages("first.png") },
-        { user: "Second question", assistant: "Second answer", images: systemImages("second.png") },
-        { user: "Third question", assistant: "Third answer", images: systemImages("third.png") },
+        terminalTurn("turn-1", {
+          user: "First question",
+          assistant: "First answer",
+          images: systemImages("first.png"),
+        }),
+        terminalTurn("turn-2", {
+          user: "Second question",
+          assistant: "Second answer",
+          images: systemImages("second.png"),
+        }),
+        terminalTurn("turn-3", {
+          user: "Third question",
+          assistant: "Third answer",
+          images: systemImages("third.png"),
+        }),
       ],
-      summary: "Earlier context",
-      firstKeptTurnIndex: 1,
+      conversationSummary: {
+        content: "Earlier context",
+        createdAt: "2026-07-31T00:00:00.000Z",
+        firstKeptTurnIndex: 1,
+      },
     },
     loadScreenshot,
   );
@@ -154,20 +184,19 @@ test("marks failed and cancelled turns in model context", async () => {
     21_760,
     {
       turns: [
-        {
+        terminalTurn("failed-turn", {
           user: "Failed question",
           assistant: "Partial answer",
           reasoning: "Partial reasoning",
           images: systemImages("failed.png"),
           status: "failed",
-        },
-        {
+        }),
+        terminalTurn("cancelled-turn", {
           user: "Cancelled before capture",
           assistant: "",
           status: "cancelled",
-        },
+        }),
       ],
-      firstKeptTurnIndex: 0,
     },
     loadScreenshot,
   );
@@ -222,13 +251,12 @@ test("preserves prior response output items for the next model turn", async () =
     systemImages("current.png"),
     21_760,
     {
-      turns: [{
+      turns: [terminalTurn("turn-1", {
         user: "First question",
         assistant: "First answer",
         images: systemImages("first.png"),
         outputItems,
-      }],
-      firstKeptTurnIndex: 0,
+      })],
     },
     loadScreenshot,
   );
@@ -252,8 +280,16 @@ test("counts retained turn text and screenshots together", async () => {
   } as unknown as OpenAI;
 
   const tokens = await countTurns(client, "vision-model", [
-    { user: "Question 1", assistant: "Answer 1", images: systemImages("first.png") },
-    { user: "Question 2", assistant: "Answer 2", images: systemImages("second.png") },
+    terminalTurn("turn-1", {
+      user: "Question 1",
+      assistant: "Answer 1",
+      images: systemImages("first.png"),
+    }),
+    terminalTurn("turn-2", {
+      user: "Question 2",
+      assistant: "Answer 2",
+      images: systemImages("second.png"),
+    }),
   ], loadScreenshot);
 
   assert.equal(tokens, 123);
@@ -348,11 +384,11 @@ test("summarizes old screenshots as plain facts without internal references", as
     client,
     "vision-model",
     "The user is configuring an account.",
-    [{
+    [terminalTurn("turn-1", {
       user: "Why did this fail?",
       assistant: "The form reports an authentication error.",
       images: systemImages("error-screen.png"),
-    }],
+    })],
     4_096,
     loadScreenshot,
   );
