@@ -23,13 +23,12 @@ const detachedRun: AgentRun = {
 void detachedRun;
 
 const unsupportedMemory: LongTermMemory = {
-  id: "memory-without-evidence",
-  topic: "Unsupported",
+  key: "memory-without-evidence",
+  title: "Unsupported",
+  scope: { type: "global" },
   content: "This memory has no evidence.",
-  createdAt: "2026-07-31T00:00:00.000Z",
-  updatedAt: "2026-07-31T00:00:00.000Z",
-  // @ts-expect-error Long-term memory requires at least one Activity Record.
-  evidenceActivityIds: [],
+  // @ts-expect-error Long-term memory requires at least one Activity evidence source.
+  evidenceSourceIds: [],
 };
 void unsupportedMemory;
 
@@ -51,12 +50,11 @@ test("connects the public Turn, Run, memory, and retrieval contracts", () => {
     steps: [],
   };
   const memory: LongTermMemory = {
-    id: "memory-1",
-    topic: "Architecture",
+    key: "memory-1",
+    title: "Architecture",
+    scope: { type: "topic", key: "screen-observation" },
     content: "Screen observation is an Agent plugin.",
-    createdAt: "2026-07-31T00:00:02.000Z",
-    updatedAt: "2026-07-31T00:00:02.000Z",
-    evidenceActivityIds: ["activity-1"],
+    evidenceSourceIds: ["activity:activity-1"],
   };
   const argumentsValue: RetrieveMemoryArguments = {
     query: "screen observation boundary",
@@ -64,11 +62,11 @@ test("connects the public Turn, Run, memory, and retrieval contracts", () => {
   };
   const result: RetrieveMemoryResult = {
     memories: [{
-      memoryId: memory.id,
-      topic: memory.topic,
+      memoryId: memory.key,
+      topic: memory.title,
       content: memory.content,
       evidence: [{
-        activityId: memory.evidenceActivityIds[0]!,
+        activityId: memory.evidenceSourceIds[0]!,
         occurredAt: "2026-07-31T00:00:00.000Z",
         summary: "The screen observation boundary was decided.",
       }],

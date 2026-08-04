@@ -323,7 +323,7 @@ test("rebuilds the agent process context after turn-end compaction", async (t) =
       OPENSCREEN_MAX_OUTPUT_TOKENS: "40000",
       OPENSCREEN_SUMMARY_MAX_OUTPUT_TOKENS: "4096",
       OPENSCREEN_ACTIVITY_MAX_INPUT_TOKENS: "90000",
-      OPENSCREEN_MEMORY_MAX_INPUT_TOKENS: "90000",
+      OPENSCREEN_CONSOLIDATION_MAX_INPUT_TOKENS: "90000",
       OPENSCREEN_DATA_DIR: sessionsDirectory,
     },
     stdio: ["pipe", "pipe", "inherit"],

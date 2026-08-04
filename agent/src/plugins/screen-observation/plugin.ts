@@ -30,6 +30,7 @@ export class ScreenObservationPlugin {
   private readonly service: ScreenObservationService;
   private readonly tickIntervalMilliseconds: number;
   private timer?: NodeJS.Timeout;
+  private readonly activeTicks = new Set<Promise<void>>();
 
   constructor(options: ScreenObservationPluginOptions) {
     this.tickIntervalMilliseconds = options.config.scheduling.tickIntervalMilliseconds;
@@ -74,18 +75,21 @@ export class ScreenObservationPlugin {
     if (this.timer !== undefined) return;
     await this.helper.start();
     this.timer = setInterval(() => {
-      void this.service.tick().catch((error) => {
+      const tick = this.service.tick().catch((error) => {
         process.stderr.write(
           `OpenScreen observation capture failed: ${
             error instanceof Error ? error.message : "unknown error"
           }\n`,
         );
       });
+      this.activeTicks.add(tick);
+      void tick.finally(() => this.activeTicks.delete(tick));
     }, this.tickIntervalMilliseconds);
   }
 
   async stop() {
     this.clearTimer();
+    await Promise.allSettled([...this.activeTicks]);
     await this.helper.stop();
   }
 

@@ -28,19 +28,21 @@ src/
     │   └── types.ts           session domain types
     ├── compaction/            retained-context compaction and summaries
     └── memory/
-        ├── processor.ts       long-term memory processing
-        ├── store.ts           long-term memory event storage
-        ├── lock.ts            shared activity-memory lock
-        ├── types.ts           long-term memory types
-        └── activity/          activity normalization and storage
+        ├── db/                SQLite connection, schema, attempts, helpers
+        ├── evidence.ts        raw Observation sidecars and cleanup
+        ├── activity/          intake, projection, jobs, summaries
+        ├── consolidate/       global merge, publication, Git baseline
+        ├── worker/            independent Worker Thread orchestration
+        └── types.ts           current long-term-memory contract
 ```
 
 `process.ts` communicates with the Swift process through JSON Lines on
 standard input and output. `protocol.ts` owns that wire format; harness code
 does not depend on it. Chat requests are mapped to session commands before
 entering `session/runner.ts`, which builds model context and invokes
-`loop.ts`. Activity and long-term memory are separate layers of the same
-memory capability and are not yet connected to the production tool registry.
+`loop.ts`. Activity and long-term memory are separate layers of the same memory
+capability. They run in a background Worker Thread and are not connected to the
+production tool registry.
 
 ## Domain boundaries
 
@@ -55,16 +57,18 @@ The Agent is the composition center, but each capability owns its domain:
 - `ScreenObservationPlugin` is a hosted background plugin. It owns native
   observation lifecycle and emits canonical `ScreenObservation` values. It is
   not callable by the model and is not an `AgentTool`.
-- An `ActivityRecord` is normalized evidence derived from screen observations
-  or a terminal Turn and its Runs. Activity belongs to the memory capability;
-  there is no separate activity-summary entity.
-- `LongTermMemory` is synthesized knowledge supported by Activity Record IDs.
+- An Activity record is a factual summary derived from one or more Observation
+  or Turn source IDs. Its time and terminal status come from code, not the
+  model.
+- `LongTermMemory` is current synthesized knowledge supported by Activity source
+  IDs. Conflicting evidence updates the current block; the pipeline does not
+  retain memory versions.
 - Model-initiated retrieval is an Agent Tool boundary under
   `tools/retrieve-memory`. Memory owns the data being queried; the Tool owns
   the model-facing arguments and results.
 
 The background evidence flow is
-`ScreenObservation | terminal Turn + AgentRun[] -> ActivityRecord -> LongTermMemory`.
+`ScreenObservation | terminal Turn + AgentRun[] -> Activity summary -> Consolidation -> Markdown memory`.
 The model-initiated flow is
 `Agent -> retrieve-memory Tool -> memory query -> bounded results`.
 
@@ -78,17 +82,23 @@ no shared runtime snapshot or centralized contracts directory.
 Non-secret defaults live in the repository-level
 [`config.json`](../config.json). `OPENAI_API_KEY` is required from the process
 environment or `.env`. `OPENAI_MODEL` and `OPENAI_BASE_URL` can override the
-provider fields. Every numeric setting also supports its corresponding
-environment-variable override, while [`.env.example`](../.env.example)
-intentionally shows only the three common provider variables.
+provider fields. Context, Session, and Memory model-token settings support
+explicit environment-variable overrides, while [`.env.example`](../.env.example)
+intentionally shows only the three common provider variables. Scheduling,
+retry, and retention policy is configured in JSON so there is one visible
+source of truth.
 
 Configuration is grouped by responsibility:
 
 - `context`: model window, compaction threshold, retained context, output
   budgets, and minimum recent turns.
 - `session`: streaming event flush size and interval.
-- `activity`: model input and output budgets for one Activity Record.
-- `memory`: processing interval and model input and output budgets.
+- `memory.worker`: background interval, per-tick work limit, lease, heartbeat,
+  retry delay, attempt limit, and expired-lease limit.
+- `memory.activity`: Activity model budgets, Observation windows, request size,
+  and Turn idle/hard-cap boundaries.
+- `memory.consolidation`: Consolidation model budgets and success cooldown.
+- `memory.evidence`: successful, failed, and abandoned evidence retention.
 
 Configuration is loaded once when the Agent process starts. Invalid,
 incomplete, or internally inconsistent values stop startup with an explicit
@@ -101,15 +111,121 @@ owns file I/O, while `events.ts` owns event validation and replay. The header
 contains session metadata; subsequent records represent turn lifecycle
 events, streamed text, Agent Run steps, tool results, and compaction.
 
-Activity records are currently stored by UTC day under
-`timeline/YYYY-MM-DD.jsonl`; changing that persistence layout belongs to the
-memory-persistence work. Long-term memory decisions are stored in
-`memory/events.jsonl`. Both stores
-use append-only records and recover complete lines after an interrupted
-write.
+The Session JSONL remains the fact source for Turns. Replay exposes a separate
+recorded-Turn view containing completed, failed, cancelled, and interrupted
+Turns; interrupted Turns stay outside future chat context but are still valid
+Activity evidence. The Memory Worker rescans Sessions on startup, so a durable
+terminal event is sufficient even if its notification was lost.
 
-Generated activity summaries and memories use English. User text, code,
-errors, URLs, paths, and proper nouns remain verbatim.
+## Activity and memory persistence
+
+The single memory root is
+`~/Library/Application Support/OpenScreen/memory/` by default:
+
+```text
+memory/
+├── activity-memory.sqlite3
+├── evidence/observations/
+├── MEMORY.md
+├── memory_summary.md
+├── raw_memories.md
+├── source_summaries/
+│   ├── observations/
+│   └── turns/
+└── .git/
+```
+
+`OPENSCREEN_DATA_DIR` keeps its existing meaning as the Session directory; its
+parent becomes the data root for memory. `OPENSCREEN_MEMORY_DIR` can override
+only the memory root. That override must point to a dedicated directory.
+OpenScreen marks the directory and creates its own nested Git repository; it
+refuses to adopt an enclosing repository or an existing user-owned repository.
+
+SQLite is the structured truth for sources, Observation windows, Turn batches,
+Activity jobs and outputs, Activity records, model-attempt audits, Consolidation job
+state, ownership tokens, watermarks, publication recovery, and evidence links.
+Connections enable foreign keys, WAL, a five-second busy timeout, and immediate
+write transactions. The directory is mode `0700` and the database is mode
+`0600`. Production SQLite access is confined to the Memory Worker Thread.
+
+Observation evidence is atomically written as a mode-`0600` JSON sidecar before
+the source row is inserted. The Activity request uses a compact projection and
+never reads the sidecar into the request. With the default configuration,
+successful evidence expires after 24 hours and failed evidence after seven
+days. Startup cleanup removes temp and unreferenced files after a one-hour
+abandonment grace. These values come from `memory.evidence`. Turn evidence
+remains in Session JSONL instead of being duplicated.
+
+Activity timing and input rules are deterministic and use the values under
+`memory.activity`:
+
+- Observations use closed UTC one-minute windows, become eligible 15 seconds
+  after the window ends, and send no more than 30 sources per request. A late
+  Observation increments the processing generation, fences any old worker, and
+  replaces the current result after a successful retry.
+- Terminal Turns from the same Session accumulate until 30 minutes of idle
+  time, a two-hour hard cap, or 70% of the effective Activity context budget.
+  The prospective complete batch is measured with `/responses/input_tokens`
+  before each Turn is added. If the new Turn would exceed the budget, the
+  existing batch is sealed without it and the Turn is measured again in a new
+  batch. Splits occur only between complete Turns. New Turns arriving after a
+  batch is sealed belong to the next batch.
+- Observation requests include only IDs, times, application/bundle/window,
+  URL, focused-element facts, and visible text. Turn requests include IDs,
+  times, code-owned status, user text, final assistant text, and compact tool
+  names/results. Neither request includes reasoning, streaming deltas, response
+  protocol fields, screenshots, full AX trees, or duplicate output items.
+- `/responses/input_tokens` is checked before every model generation. Activity
+  uses at most 70% of the model window and also reserves the configured output
+  budget. An oversized single source becomes a persisted retryable error; it is
+  not discarded and does not produce a heuristic fallback.
+
+Activity output must cover every input source exactly once and may not invent a
+source. Generated summaries are English; quoted evidence retains its source
+language. Activity describes what happened. Durable memory is limited to
+explicit, stable user facts, preferences, long-term goals, project decisions,
+or lasting state. Ordinary browsing and one-off actions are skipped. A single
+passive screen observation cannot establish a preference, and an unsuccessful
+Turn cannot prove success.
+
+Consolidation follows the Codex global-consolidation pattern. SQLite contains one
+`memory_consolidate_global/global` job. A worker claims a one-hour lease and
+heartbeats every 90 seconds. Failures wait one hour and have three attempts.
+Lease expiry is tracked separately from model failure: after three consecutive
+abandoned leases the job waits one hour before another owner may try, without
+consuming the model-failure attempts. These are the defaults under
+`memory.worker`, and Activity uses the same job settings. Worker startup and
+timer failures are written to stderr. After success, new input waits for the
+default six-hour cooldown from `memory.consolidation`. The claim snapshots an
+input watermark and copies the corresponding Activity rows and evidence links,
+so replacements arriving during a run remain pending for the next run without
+changing the active request.
+
+Before consolidation, current Activity source summaries and raw candidates are
+mechanically synchronized into Markdown. A one-commit disposable Git repository
+provides the real change set; SQLite, WAL, evidence, and publication staging
+are ignored. No Git change with valid artifacts completes without a model call.
+Otherwise Consolidation sends the complete diff plus current memory and applies exact
+token counting; an oversized request becomes a retryable error instead of
+silently truncating evidence. It validates a structured full-memory result and
+stages both output files. Final file replacement, Git baseline recreation, and
+SQLite completion run under one short cross-process write lock, preventing an
+expired worker from publishing after a replacement takes ownership. The summary
+always begins with `v1`. A publication journal and Git baseline recover a crash
+between the file and database updates. The baseline is a diff mechanism rather
+than memory history; after replacement, its reflog and unreachable objects are
+pruned so superseded memory is not retained as hidden Git history.
+
+Memory uses one physical root. Scopes are logical values: global, application,
+web domain, document, project, workflow, person, organization, and topic.
+Screen evidence can therefore produce application, site, document, person, or
+workflow memory without pretending everything is a coding project. Project
+scope requires explicit project evidence. Memory records learned context and
+does not replace fixed project rules in files such as `AGENTS.md` or `README.md`.
+
+Retrieval, Agent Tools, chat Capture fusion, UI controls, additional secret
+redaction, heuristic fallback, and memory-version history are outside this
+pipeline.
 
 ## Tests
 

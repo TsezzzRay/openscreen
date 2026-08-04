@@ -21,14 +21,35 @@ const fileConfig = {
     eventFlushBytes: 4_096,
     eventFlushMilliseconds: 250,
   },
-  activity: {
-    maxInputTokens: 244_800,
-    maxOutputTokens: 4_096,
-  },
   memory: {
-    processingIntervalMinutes: 1_440,
-    maxInputTokens: 244_800,
-    maxOutputTokens: 4_096,
+    worker: {
+      intervalMilliseconds: 60_000,
+      maxJobsPerTick: 100,
+      leaseMilliseconds: 60 * 60_000,
+      heartbeatMilliseconds: 90_000,
+      retryDelayMilliseconds: 60 * 60_000,
+      maxAttempts: 3,
+      maxConsecutiveExpiredLeases: 3,
+    },
+    activity: {
+      maxInputTokens: 244_800,
+      maxOutputTokens: 4_096,
+      observationWindowMilliseconds: 60_000,
+      observationGraceMilliseconds: 15_000,
+      maxObservationsPerRequest: 30,
+      turnIdleMilliseconds: 30 * 60_000,
+      turnHardCapMilliseconds: 2 * 60 * 60_000,
+    },
+    consolidation: {
+      maxInputTokens: 244_800,
+      maxOutputTokens: 4_096,
+      cooldownMilliseconds: 6 * 60 * 60_000,
+    },
+    evidence: {
+      successRetentionMilliseconds: 24 * 60 * 60_000,
+      failedRetentionMilliseconds: 7 * 24 * 60 * 60_000,
+      abandonedGraceMilliseconds: 60 * 60_000,
+    },
   },
   screenObservation: {
     enabled: true,
@@ -123,9 +144,8 @@ test("overrides every JSON setting from environment variables", (t) => {
     OPENSCREEN_SESSION_EVENT_FLUSH_MS: "100",
     OPENSCREEN_ACTIVITY_MAX_INPUT_TOKENS: "90000",
     OPENSCREEN_ACTIVITY_MAX_OUTPUT_TOKENS: "2000",
-    OPENSCREEN_MEMORY_PROCESSING_INTERVAL_MINUTES: "720",
-    OPENSCREEN_MEMORY_MAX_INPUT_TOKENS: "80000",
-    OPENSCREEN_MEMORY_MAX_OUTPUT_TOKENS: "1500",
+    OPENSCREEN_CONSOLIDATION_MAX_INPUT_TOKENS: "80000",
+    OPENSCREEN_CONSOLIDATION_MAX_OUTPUT_TOKENS: "1500",
   }), {
     apiKey: "secret",
     model: "override-model",
@@ -142,14 +162,18 @@ test("overrides every JSON setting from environment variables", (t) => {
       eventFlushBytes: 8_192,
       eventFlushMilliseconds: 100,
     },
-    activity: {
-      maxInputTokens: 90_000,
-      maxOutputTokens: 2_000,
-    },
     memory: {
-      processingIntervalMinutes: 720,
-      maxInputTokens: 80_000,
-      maxOutputTokens: 1_500,
+      ...fileConfig.memory,
+      activity: {
+        ...fileConfig.memory.activity,
+        maxInputTokens: 90_000,
+        maxOutputTokens: 2_000,
+      },
+      consolidation: {
+        ...fileConfig.memory.consolidation,
+        maxInputTokens: 80_000,
+        maxOutputTokens: 1_500,
+      },
     },
     screenObservation: fileConfig.screenObservation,
   });
@@ -230,41 +254,51 @@ test("rejects inconsistent context limits", (t) => {
 });
 
 test("rejects invalid harness limits", (t) => {
-  const invalidInterval = withConfig(t, {
+  const invalidActivityBudget = withConfig(t, {
     ...fileConfig,
     memory: {
       ...fileConfig.memory,
-      processingIntervalMinutes: 0,
-    },
-  });
-  assert.throws(
-    () => loadRuntimeConfig(invalidInterval.path, { OPENAI_API_KEY: "secret" }),
-    /memory.processingIntervalMinutes must be a positive integer/,
-  );
-
-  const invalidActivityBudget = withConfig(t, {
-    ...fileConfig,
-    activity: {
-      maxInputTokens: 270_000,
-      maxOutputTokens: 4_096,
+      activity: {
+        ...fileConfig.memory.activity,
+        maxInputTokens: 270_000,
+      },
     },
   });
   assert.throws(
     () => loadRuntimeConfig(invalidActivityBudget.path, { OPENAI_API_KEY: "secret" }),
-    /activity token budget exceeds context.windowTokens/,
+    /memory.activity token budget exceeds context.windowTokens/,
   );
 });
 
-test("does not accept the removed timeline configuration", (t) => {
-  const { activity: removedActivity, ...withoutActivity } = fileConfig;
+test("does not accept the removed top-level Activity configuration", (t) => {
+  const { activity: removedActivity, ...memoryWithoutActivity } = fileConfig.memory;
   const { path } = withConfig(t, {
-    ...withoutActivity,
-    timeline: removedActivity,
+    ...fileConfig,
+    activity: removedActivity,
+    memory: memoryWithoutActivity,
   });
 
   assert.throws(
     () => loadRuntimeConfig(path, { OPENAI_API_KEY: "secret" }),
-    /activity must be an object/,
+    /memory.activity must be an object/,
+  );
+});
+
+test("rejects invalid Memory pipeline settings", (t) => {
+  const { path } = withConfig(t, {
+    ...fileConfig,
+    memory: {
+      ...fileConfig.memory,
+      worker: {
+        ...fileConfig.memory.worker,
+        heartbeatMilliseconds: fileConfig.memory.worker.leaseMilliseconds,
+      },
+    },
+  });
+
+  assert.throws(
+    () => loadRuntimeConfig(path, { OPENAI_API_KEY: "secret" }),
+    /memory.worker.heartbeatMilliseconds must be less than leaseMilliseconds/,
   );
 });
 

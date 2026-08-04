@@ -104,6 +104,7 @@ export async function createSession(directory: string): Promise<StoredSession> {
     updatedAt: timestamp,
     turns: [],
     visibleTurns: [],
+    recordedTurns: [],
     agentRuns: [],
   };
 }

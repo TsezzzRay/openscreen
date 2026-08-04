@@ -19,13 +19,25 @@ test("organizes agent core and harness code by responsibility", () => {
     "harness/session/types.ts",
     "harness/compaction/compact.ts",
     "harness/compaction/summary.ts",
-    "harness/memory/processor.ts",
-    "harness/memory/store.ts",
-    "harness/memory/lock.ts",
+    "harness/memory/db/database.ts",
+    "harness/memory/db/schema.ts",
+    "harness/memory/db/attempts.ts",
+    "harness/memory/evidence.ts",
     "harness/memory/types.ts",
     "harness/memory/activity/processor.ts",
-    "harness/memory/activity/store.ts",
-    "harness/memory/activity/types.ts",
+    "harness/memory/activity/projection.ts",
+    "harness/memory/activity/repository.ts",
+    "harness/memory/activity/jobs.ts",
+    "harness/memory/activity/outputs.ts",
+    "harness/memory/activity/sources.ts",
+    "harness/memory/activity/scheduler.ts",
+    "harness/memory/consolidate/processor.ts",
+    "harness/memory/consolidate/repository.ts",
+    "harness/memory/consolidate/publication.ts",
+    "harness/memory/consolidate/workspace.ts",
+    "harness/memory/worker/client.ts",
+    "harness/memory/worker/runtime.ts",
+    "harness/memory/worker/thread.ts",
     "plugins/screen-observation/plugin.ts",
     "plugins/screen-observation/types.ts",
     "tools/retrieve-memory/types.ts",
@@ -39,6 +51,15 @@ test("organizes agent core and harness code by responsibility", () => {
     "harness/memory/validation.ts",
     "harness/memory/timeline",
     "harness/memory/retrieval",
+    "harness/memory/database.ts",
+    "harness/memory/db/values.ts",
+    "harness/memory/activity/intake.ts",
+    "harness/memory/consolidate/jobs.ts",
+    "harness/memory/stage1",
+    "harness/memory/phase2",
+    "harness/memory/processor.ts",
+    "harness/memory/store.ts",
+    "harness/memory/lock.ts",
     "contracts",
   ];
 
@@ -66,8 +87,8 @@ test("keeps protocol and harness dependencies pointing inward", () => {
     resolve(sourceRoot, "plugins/screen-observation/plugin.ts"),
     "utf8",
   );
-  const activityTypes = readFileSync(
-    resolve(sourceRoot, "harness/memory/activity/types.ts"),
+  const activityProjection = readFileSync(
+    resolve(sourceRoot, "harness/memory/activity/projection.ts"),
     "utf8",
   );
   const memoryTypes = readFileSync(
@@ -88,18 +109,13 @@ test("keeps protocol and harness dependencies pointing inward", () => {
     observationPlugin,
     /export type ScreenObservationPluginOptions\b/,
   );
-  assert.match(activityTypes, /plugins\/screen-observation\/types\.js/);
-  assert.doesNotMatch(activityTypes, /type ScreenObservationInput\b/);
-  assert.match(activityTypes, /export type ActivityRecord\b/);
-  assert.match(
-    activityTypes,
-    /sources: \[ActivitySourceReference, \.\.\.ActivitySourceReference\[\]\]/,
-  );
-  assert.doesNotMatch(activityTypes, /export type TimelineEntry\b/);
+  assert.match(activityProjection, /plugins\/screen-observation\/types\.js/);
+  assert.match(activityProjection, /export function projectObservation\b/);
+  assert.doesNotMatch(activityProjection, /dataBase64/);
   assert.match(memoryTypes, /export type LongTermMemory\b/);
   assert.match(
     memoryTypes,
-    /evidenceActivityIds: \[string, \.\.\.string\[\]\]/,
+    /evidenceSourceIds: \[string, \.\.\.string\[\]\]/,
   );
   assert.doesNotMatch(memoryTypes, /export type MemoryItem\b/);
   assert.match(retrievalTypes, /export type RetrieveMemoryArguments\b/);

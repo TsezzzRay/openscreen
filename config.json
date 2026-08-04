@@ -13,14 +13,35 @@
     "eventFlushBytes": 4096,
     "eventFlushMilliseconds": 250
   },
-  "activity": {
-    "maxInputTokens": 244800,
-    "maxOutputTokens": 4096
-  },
   "memory": {
-    "processingIntervalMinutes": 1440,
-    "maxInputTokens": 244800,
-    "maxOutputTokens": 4096
+    "worker": {
+      "intervalMilliseconds": 60000,
+      "maxJobsPerTick": 100,
+      "leaseMilliseconds": 3600000,
+      "heartbeatMilliseconds": 90000,
+      "retryDelayMilliseconds": 3600000,
+      "maxAttempts": 3,
+      "maxConsecutiveExpiredLeases": 3
+    },
+    "activity": {
+      "maxInputTokens": 244800,
+      "maxOutputTokens": 4096,
+      "observationWindowMilliseconds": 60000,
+      "observationGraceMilliseconds": 15000,
+      "maxObservationsPerRequest": 30,
+      "turnIdleMilliseconds": 1800000,
+      "turnHardCapMilliseconds": 7200000
+    },
+    "consolidation": {
+      "maxInputTokens": 244800,
+      "maxOutputTokens": 4096,
+      "cooldownMilliseconds": 21600000
+    },
+    "evidence": {
+      "successRetentionMilliseconds": 86400000,
+      "failedRetentionMilliseconds": 604800000,
+      "abandonedGraceMilliseconds": 3600000
+    }
   },
   "screenObservation": {
     "enabled": true,

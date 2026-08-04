@@ -1,5 +1,5 @@
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createInterface } from "node:readline";
 
@@ -19,6 +19,7 @@ import type {
 } from "./harness/session/types.js";
 import { withSessionLock } from "./harness/session/lock.js";
 import { ScreenObservationPlugin } from "./plugins/screen-observation/plugin.js";
+import { MemoryWorkerClient } from "./harness/memory/worker/client.js";
 import {
   parseInputEnvelope,
   serializeOutputEnvelope,
@@ -53,13 +54,48 @@ async function run() {
   const config = loadRuntimeConfig();
   const client = new OpenAI({ apiKey: config.apiKey, baseURL: config.baseURL });
   const { model, context, session } = config;
-  const sessionsDirectory = process.env.OPENSCREEN_DATA_DIR ?? join(
+  const defaultDataRoot = join(
     homedir(),
     "Library",
     "Application Support",
     "OpenScreen",
-    "sessions",
   );
+  const sessionsDirectory = process.env.OPENSCREEN_DATA_DIR ??
+    join(defaultDataRoot, "sessions");
+  const memoryRoot = process.env.OPENSCREEN_MEMORY_DIR ?? join(
+    process.env.OPENSCREEN_DATA_DIR
+      ? dirname(sessionsDirectory)
+      : defaultDataRoot,
+    "memory",
+  );
+  const memoryWorker = new MemoryWorkerClient({
+    memoryRoot,
+    sessionsDirectory,
+    apiKey: config.apiKey,
+    baseURL: config.baseURL,
+    model,
+    contextWindowTokens: context.windowTokens,
+    memory: config.memory,
+  });
+  try {
+    await memoryWorker.ready();
+  } catch (error) {
+    process.stderr.write(
+      `OpenScreen memory unavailable: ${
+        error instanceof Error ? error.message : "unknown error"
+      }\n`,
+    );
+  }
+  const reportMemoryError = (error: unknown) => {
+    process.stderr.write(
+      `OpenScreen memory notification failed: ${
+        error instanceof Error ? error.message : "unknown error"
+      }\n`,
+    );
+  };
+  const notifySessionMemory = (sessionId: string) => {
+    void memoryWorker.scanSession(sessionId).catch(reportMemoryError);
+  };
   const lines = createInterface({ input: process.stdin, crlfDelay: Infinity });
   const observationBundleIdentifier = process.env.OPENSCREEN_BUNDLE_ID;
   const observationPlugin = config.screenObservation.enabled
@@ -72,6 +108,14 @@ async function run() {
       excludedBundleIdentifiers: observationBundleIdentifier === undefined
         ? []
         : [observationBundleIdentifier],
+      onObservation: async (observation) => {
+        try {
+          await memoryWorker.recordObservation(observation);
+        } catch (error) {
+          reportMemoryError(error);
+          throw error;
+        }
+      },
     })
     : undefined;
   void observationPlugin?.start().catch((error) => {
@@ -144,6 +188,7 @@ async function run() {
                 includeInContext: true,
               },
         ]);
+        notifySessionMemory(envelope.sessionId);
         emit({ requestId, sessionId: envelope.sessionId, type: "completed" });
         return;
       }
@@ -161,6 +206,7 @@ async function run() {
         emit,
         signal!,
       );
+      notifySessionMemory(envelope.sessionId);
     } catch (error) {
       emit({
         requestId,
@@ -235,6 +281,7 @@ async function run() {
     await Promise.allSettled([...active]);
   } finally {
     await observationPlugin?.stop();
+    await memoryWorker.stop();
   }
 }
 

@@ -19,6 +19,10 @@ export type Turn = {
   outputItems?: ConversationOutputItem[];
 };
 
+export type RecordedTurn = Omit<Turn, "status"> & {
+  status: "completed" | "failed" | "cancelled" | "interrupted";
+};
+
 export type ConversationSummary = {
   content: string;
   createdAt: string;
@@ -67,6 +71,7 @@ export type StoredSession = SessionState & {
   createdAt: string;
   updatedAt: string;
   visibleTurns: VisibleTurn[];
+  recordedTurns: RecordedTurn[];
   agentRuns: AgentRun[];
 };
 

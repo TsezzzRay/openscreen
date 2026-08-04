@@ -7,6 +7,7 @@ import type {
   StoredSession,
   Turn,
   VisibleTurn,
+  RecordedTurn,
 } from "./types.js";
 
 const UUID_PATTERN =
@@ -278,6 +279,7 @@ export function replaySession(
   if (header.id !== expectedId) throw new Error("Session ID does not match filename");
 
   const turns: Turn[] = [];
+  const recordedTurns: RecordedTurn[] = [];
   const visibleTurns: VisibleTurn[] = [];
   const visibleIndexes = new Map<string, number>();
   const pending = new Map<string, VisibleTurn>();
@@ -343,6 +345,7 @@ export function replaySession(
         turns.push(event.turn.outputItems || !outputItems?.length
           ? event.turn
           : { ...event.turn, outputItems });
+        recordedTurns.push(event.turn);
         visibleTurns[visibleIndex] = {
           id: event.turn.id,
           user: event.turn.user,
@@ -377,6 +380,16 @@ export function replaySession(
             finishedAt: event.finishedAt,
           });
         }
+        recordedTurns.push({
+          id: started.id,
+          user: started.user,
+          assistant: visible.assistant,
+          reasoning: visible.reasoning,
+          ...(started.images ? { images: started.images } : {}),
+          status: "failed",
+          startedAt: started.startedAt,
+          finishedAt: event.finishedAt,
+        });
         pending.delete(event.turnId);
         pendingTurns.delete(event.turnId);
         break;
@@ -391,6 +404,16 @@ export function replaySession(
           throw new Error(`Active Agent Run at line ${index + 1}`);
         }
         turns.push({
+          id: started.id,
+          user: started.user,
+          assistant: visible.assistant,
+          reasoning: visible.reasoning,
+          ...(started.images ? { images: started.images } : {}),
+          status: "cancelled",
+          startedAt: started.startedAt,
+          finishedAt: event.finishedAt,
+        });
+        recordedTurns.push({
           id: started.id,
           user: started.user,
           assistant: visible.assistant,
@@ -478,6 +501,24 @@ export function replaySession(
     }
   }
 
+  for (const [turnId, started] of pendingTurns) {
+    const visible = pending.get(turnId);
+    if (!visible) continue;
+    recordedTurns.push({
+      id: started.id,
+      user: started.user,
+      assistant: visible.assistant,
+      reasoning: visible.reasoning,
+      ...(started.images ? { images: started.images } : {}),
+      status: "interrupted",
+      startedAt: started.startedAt,
+      finishedAt: new Date(Math.max(
+        Date.parse(started.startedAt),
+        Date.parse(updatedAt),
+      )).toISOString(),
+    });
+  }
+
   return {
     id: header.id,
     title: header.title,
@@ -485,6 +526,7 @@ export function replaySession(
     updatedAt,
     turns,
     visibleTurns,
+    recordedTurns,
     agentRuns,
     ...(conversationSummary ? { conversationSummary } : {}),
   };

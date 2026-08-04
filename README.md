@@ -12,6 +12,8 @@ Press `Option + Space` to open a floating panel, ask a question, and OpenScreen 
 - Movable floating panel that stays above other applications.
 - Active-window capture using ScreenCaptureKit.
 - Event-driven foreground-window observations using a native macOS helper.
+- Background activity summarization and durable local memory derived from closed
+  observation windows and terminal chat Turns.
 - Persistent multi-session chat history with create, switch, and rename controls.
 - Per-turn capture, request, generation, and completion status with cancellation and editable retries.
 - A streaming Agent Loop for every request, with durable model-step and tool-result records.
@@ -24,7 +26,8 @@ Press `Option + Space` to open a floating panel, ask a question, and OpenScreen 
 - macOS 15 or later with Screen Recording, Accessibility, and Input Monitoring
   permission for native screen observation.
 - Swift 6.2 toolchain.
-- Node.js 20.12 or later and npm.
+- Node.js 22.13 or later and npm. The Agent uses the built-in `node:sqlite`
+  module.
 - An API key and reasoning-capable model from a Responses API-compatible provider that supports image input, streaming, and `/responses/input_tokens`. OpenAI-compatible models and MiniMax M3 are supported.
 
 ## Run locally
@@ -66,12 +69,22 @@ the launching terminal.
 
 Automatic screen observation is limited to the foreground window. It does not
 record raw keys or typed key values, redacts secure Accessibility fields, and
-excludes OpenScreen's own processes to prevent capture loops. Observations are
-currently kept in memory and are not persisted, added to long-term memory, or
-sent to a model. See the
+excludes OpenScreen's own processes to prevent capture loops. Captured
+observations are persisted as private local evidence, then summarized in
+closed one-minute windows. The summary request contains only identifiers,
+times, application and window names, URL, focused-element facts, and visible
+text. It does not contain the screenshot, full Accessibility tree, capture
+diagnostics, or the original Observation JSON. See the
 [native observation helper documentation](Sources/ObservationHelper/README.md)
 for capture behavior, permission degradation, and implementation-level privacy
 controls.
+
+By default, raw observation evidence is removed 24 hours after successful Activity
+processing. Evidence for a failed Activity job is retained for seven days to
+allow safe retry and diagnosis. Compact projections, hashes, source IDs,
+summaries, and processing state remain in the local SQLite database. These
+retention values are configured under `memory.evidence`; they apply to automatic
+observations, while chat screenshots keep their existing lifecycle below.
 
 Conversation state is stored locally as one append-only JSONL file per session
 under `~/Library/Application Support/OpenScreen/sessions/`. The first line
@@ -99,9 +112,12 @@ Screenshots are not deleted automatically in the current version. Review your pr
 - No session deletion, search, or cloud sync.
 - Only one request per session can run at a time; different sessions can stream concurrently.
 - The production tool registry is empty: activity and memory retrieval, click, type, scroll, application control, and Bash are not connected yet.
-- No automatic retries or settings interface; Retry opens the previous prompt for editing and captures a new screenshot when resubmitted.
-- Automatic screen observations are held only in memory and are not yet consumed
-  by activity memory or an Agent Loop.
+- No automatic chat retries or settings interface; Retry opens the previous
+  prompt for editing and captures a new screenshot when resubmitted. Background
+  memory jobs use their own persisted retry policy.
+- Long-term memory is generated and persisted locally, but retrieval,
+  model-context injection, Memory Agent Tools, Capture fusion, and Memory UI
+  controls are not part of this implementation.
 
 ## Architecture
 
@@ -115,14 +131,21 @@ native observation helper (Swift, AXObserver, CGEventTap, ScreenCaptureKit)
 local agent
     -> streaming Agent Loop with retained text and Base64 PNG screenshots
 configured Responses API-compatible provider
+
+local agent
+    -> independent Memory Worker Thread
+    -> SQLite WAL + private evidence files
+    -> Activity summaries
+    -> global Memory consolidation with a Git baseline
 ```
 
 The macOS process owns the panel, shortcut, explicit chat capture,
 selected-session UI, per-session streaming cache, and local chat screenshot
 files. The Node.js process owns durable chat history, screen-observation
 scheduling and deduplication, cross-process session locks, context compaction,
-runtime configuration, and model requests. It starts and supervises the native
-helper while OpenScreen is running. The helper owns only macOS activity signals,
+runtime configuration, and foreground chat model requests. It starts an
+independent Memory Worker Thread and supervises the native helper while
+OpenScreen is running. The helper owns only macOS activity signals,
 foreground-window screenshots, Accessibility snapshots, and permission status;
 it does not persist observations or make business decisions.
 
@@ -136,13 +159,39 @@ configuration keeps recent turns in model context and retains the full event
 history on disk. See the [Agent README](agent/README.md) for its internal
 structure and data flow.
 
-## Activity memory core
+## Activity and long-term memory
 
-The Node Agent contains Activity Record and long-term-memory processing for later
-integration with live screen observations and terminal turns. Live observation
-wiring, memory search, automatic recall, and model-context injection are not
-connected yet. Implementation boundaries and persistence behavior are
-documented in the [Agent README](agent/README.md).
+The Memory Worker persists each automatic observation immediately and restores
+completed, failed, cancelled, and process-interrupted Turns from the append-only
+Session log. Observation Activity runs after a UTC one-minute window closes plus
+a 15-second grace period, with at most 30 observations per model request. Turns
+from one Session accumulate until 30 minutes of inactivity, a two-hour hard
+cap, or the 70% Activity input threshold, measured exactly through
+`/responses/input_tokens`. When a new Turn would exceed the threshold, the
+previous batch is sealed first and the Turn is measured again by itself. A
+terminal Turn is never split across requests, and an oversized Turn cannot
+block adjacent Turns.
+
+Activity writes factual Activity records, a source summary, and optional durable
+memory candidates to SQLite. Consolidation is one global leased job. Its first run is
+immediate; later successful runs have a six-hour cooldown. It synchronizes
+`raw_memories.md` and `source_summaries/`, uses a disposable Git baseline to
+find real changes, and updates the current `MEMORY.md` and
+`memory_summary.md`. The logical memory scopes are global, application, web
+domain, document, project, workflow, person, organization, and topic; they do
+not create separate physical directories. The memory root is a dedicated,
+marked directory and never adopts an enclosing or user-owned Git repository.
+
+The process is retryable and fenced by ownership tokens. A crashed worker can
+be replaced after its lease expires, while an old worker cannot commit or
+publish. Three consecutive expired leases cause a one-hour backoff without
+using up the separate model-failure retry budget. Consolidation works from a
+materialized Activity snapshot, sends a complete
+Git diff without silent truncation, and publishes under a short cross-process
+lock. Its disposable baseline prunes old reflog entries and unreachable Git
+objects. A partially published Markdown update is recovered from the previous
+Git baseline before retry. Detailed storage and business rules are documented
+in the [Agent README](agent/README.md#activity-and-memory-persistence).
 
 ## Development
 

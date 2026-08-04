@@ -2,6 +2,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { loadEnvFile } from "node:process";
 
+import type { MemoryPipelineConfig } from "./harness/memory/types.js";
+
 export type ScreenObservationConfig = {
   enabled: boolean;
   scheduling: {
@@ -73,15 +75,7 @@ export type RuntimeConfig = {
     eventFlushBytes: number;
     eventFlushMilliseconds: number;
   };
-  activity: {
-    maxInputTokens: number;
-    maxOutputTokens: number;
-  };
-  memory: {
-    processingIntervalMinutes: number;
-    maxInputTokens: number;
-    maxOutputTokens: number;
-  };
+  memory: MemoryPipelineConfig;
   screenObservation: ScreenObservationConfig;
 };
 
@@ -104,10 +98,9 @@ const activityOverrides = {
   maxOutputTokens: "OPENSCREEN_ACTIVITY_MAX_OUTPUT_TOKENS",
 } as const;
 
-const memoryOverrides = {
-  processingIntervalMinutes: "OPENSCREEN_MEMORY_PROCESSING_INTERVAL_MINUTES",
-  maxInputTokens: "OPENSCREEN_MEMORY_MAX_INPUT_TOKENS",
-  maxOutputTokens: "OPENSCREEN_MEMORY_MAX_OUTPUT_TOKENS",
+const consolidationOverrides = {
+  maxInputTokens: "OPENSCREEN_CONSOLIDATION_MAX_INPUT_TOKENS",
+  maxOutputTokens: "OPENSCREEN_CONSOLIDATION_MAX_OUTPUT_TOKENS",
 } as const;
 
 function object(value: unknown, name: string): Record<string, unknown> {
@@ -417,6 +410,117 @@ function loadScreenObservationConfig(value: unknown): ScreenObservationConfig {
   return config;
 }
 
+function loadMemoryConfig(
+  value: unknown,
+  env: NodeJS.ProcessEnv,
+): MemoryPipelineConfig {
+  const root = object(value, "memory");
+  const worker = object(root.worker, "memory.worker");
+  const activityFile = object(root.activity, "memory.activity");
+  const consolidationFile = object(
+    root.consolidation,
+    "memory.consolidation",
+  );
+  const evidence = object(root.evidence, "memory.evidence");
+  const activityTokens = numericSection(
+    activityFile,
+    env,
+    "memory.activity",
+    activityOverrides,
+  ) as Pick<MemoryPipelineConfig["activity"], "maxInputTokens" | "maxOutputTokens">;
+  const consolidationTokens = numericSection(
+    consolidationFile,
+    env,
+    "memory.consolidation",
+    consolidationOverrides,
+  ) as Pick<
+    MemoryPipelineConfig["consolidation"],
+    "maxInputTokens" | "maxOutputTokens"
+  >;
+  const config: MemoryPipelineConfig = {
+    worker: {
+      intervalMilliseconds: positiveJSONInteger(
+        worker.intervalMilliseconds,
+        "memory.worker.intervalMilliseconds",
+      ),
+      maxJobsPerTick: positiveJSONInteger(
+        worker.maxJobsPerTick,
+        "memory.worker.maxJobsPerTick",
+      ),
+      leaseMilliseconds: positiveJSONInteger(
+        worker.leaseMilliseconds,
+        "memory.worker.leaseMilliseconds",
+      ),
+      heartbeatMilliseconds: positiveJSONInteger(
+        worker.heartbeatMilliseconds,
+        "memory.worker.heartbeatMilliseconds",
+      ),
+      retryDelayMilliseconds: positiveJSONInteger(
+        worker.retryDelayMilliseconds,
+        "memory.worker.retryDelayMilliseconds",
+      ),
+      maxAttempts: positiveJSONInteger(
+        worker.maxAttempts,
+        "memory.worker.maxAttempts",
+      ),
+      maxConsecutiveExpiredLeases: positiveJSONInteger(
+        worker.maxConsecutiveExpiredLeases,
+        "memory.worker.maxConsecutiveExpiredLeases",
+      ),
+    },
+    activity: {
+      ...activityTokens,
+      observationWindowMilliseconds: positiveJSONInteger(
+        activityFile.observationWindowMilliseconds,
+        "memory.activity.observationWindowMilliseconds",
+      ),
+      observationGraceMilliseconds: nonNegativeInteger(
+        activityFile.observationGraceMilliseconds,
+        "memory.activity.observationGraceMilliseconds",
+      ),
+      maxObservationsPerRequest: positiveJSONInteger(
+        activityFile.maxObservationsPerRequest,
+        "memory.activity.maxObservationsPerRequest",
+      ),
+      turnIdleMilliseconds: positiveJSONInteger(
+        activityFile.turnIdleMilliseconds,
+        "memory.activity.turnIdleMilliseconds",
+      ),
+      turnHardCapMilliseconds: positiveJSONInteger(
+        activityFile.turnHardCapMilliseconds,
+        "memory.activity.turnHardCapMilliseconds",
+      ),
+    },
+    consolidation: {
+      ...consolidationTokens,
+      cooldownMilliseconds: nonNegativeInteger(
+        consolidationFile.cooldownMilliseconds,
+        "memory.consolidation.cooldownMilliseconds",
+      ),
+    },
+    evidence: {
+      successRetentionMilliseconds: nonNegativeInteger(
+        evidence.successRetentionMilliseconds,
+        "memory.evidence.successRetentionMilliseconds",
+      ),
+      failedRetentionMilliseconds: nonNegativeInteger(
+        evidence.failedRetentionMilliseconds,
+        "memory.evidence.failedRetentionMilliseconds",
+      ),
+      abandonedGraceMilliseconds: positiveJSONInteger(
+        evidence.abandonedGraceMilliseconds,
+        "memory.evidence.abandonedGraceMilliseconds",
+      ),
+    },
+  };
+  if (config.worker.heartbeatMilliseconds >= config.worker.leaseMilliseconds) {
+    throw new Error(
+      "memory.worker.heartbeatMilliseconds must be less than leaseMilliseconds",
+    );
+  }
+  return config;
+}
+
 export function loadRuntimeConfig(
   configPath = resolve("config.json"),
   env: NodeJS.ProcessEnv = process.env,
@@ -427,8 +531,6 @@ export function loadRuntimeConfig(
   const file = object(JSON.parse(readFileSync(configPath, "utf8")), "config");
   const fileContext = object(file.context, "context");
   const fileSession = object(file.session, "session");
-  const fileActivity = object(file.activity, "activity");
-  const fileMemory = object(file.memory, "memory");
   const model = string(env.OPENAI_MODEL ?? file.model, "model");
   const baseURL = string(env.OPENAI_BASE_URL ?? file.baseURL, "baseURL");
   const apiKey = string(env.OPENAI_API_KEY, "OPENAI_API_KEY");
@@ -457,18 +559,7 @@ export function loadRuntimeConfig(
     "session",
     sessionOverrides,
   ) as RuntimeConfig["session"];
-  const activity = numericSection(
-    fileActivity,
-    env,
-    "activity",
-    activityOverrides,
-  ) as RuntimeConfig["activity"];
-  const memory = numericSection(
-    fileMemory,
-    env,
-    "memory",
-    memoryOverrides,
-  ) as RuntimeConfig["memory"];
+  const memory = loadMemoryConfig(file.memory, env);
 
   if (context.compactAtTokens >= context.windowTokens) {
     throw new Error("context.compactAtTokens must be less than windowTokens");
@@ -479,11 +570,15 @@ export function loadRuntimeConfig(
   if (context.maxOutputTokens > context.windowTokens - context.compactAtTokens) {
     throw new Error("context.maxOutputTokens exceeds the available output budget");
   }
-  if (activity.maxInputTokens + activity.maxOutputTokens > context.windowTokens) {
-    throw new Error("activity token budget exceeds context.windowTokens");
+  if (memory.activity.maxInputTokens + memory.activity.maxOutputTokens >
+      context.windowTokens) {
+    throw new Error("memory.activity token budget exceeds context.windowTokens");
   }
-  if (memory.maxInputTokens + memory.maxOutputTokens > context.windowTokens) {
-    throw new Error("memory token budget exceeds context.windowTokens");
+  if (memory.consolidation.maxInputTokens +
+      memory.consolidation.maxOutputTokens > context.windowTokens) {
+    throw new Error(
+      "memory.consolidation token budget exceeds context.windowTokens",
+    );
   }
 
   return {
@@ -492,7 +587,6 @@ export function loadRuntimeConfig(
     baseURL,
     context,
     session,
-    activity,
     memory,
     screenObservation: loadScreenObservationConfig(file.screenObservation),
   };
