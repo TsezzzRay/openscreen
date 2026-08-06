@@ -16,19 +16,26 @@ import type { ConsolidationInput } from "../../src/harness/memory/consolidate/re
 
 const inputs: ConsolidationInput[] = [
   {
-    jobKey: "activity:observation-window:2026-08-04T10:00:00.000Z",
-    sourceKind: "observation_window",
+    jobKey: "chronicle:window:2026-08-04T10:00:00.000Z",
+    sourceKind: "chronicle",
     sourceId: "observation-window:2026-08-04T10:00:00.000Z",
     sourceGeneration: 1,
     sourceUpdatedAt: 1,
     sourceSummary: "The user reviewed an OpenScreen memory design in Safari.",
-    rawMemory: "The user is building the OpenScreen memory pipeline.",
+    rawMemory: null,
     scopeHints: [{ type: "topic", key: "openscreen-memory", label: "OpenScreen Memory" }],
     generatedAt: Date.parse("2026-08-04T10:01:20.000Z"),
+    artifactPath: "rollout_summaries/chronicle-memory-design.md",
+    contentHash: "a".repeat(64),
+    startedAt: Date.parse("2026-08-04T10:00:00.000Z"),
+    endedAt: Date.parse("2026-08-04T10:01:00.000Z"),
+    provenance: "passive_screen",
+    sourceIds: ["observation:1"],
+    state: "added",
   },
   {
-    jobKey: "activity:turn-batch:session-1:turn-1",
-    sourceKind: "turn_batch",
+    jobKey: "turn-memory:batch:session-1:turn-1",
+    sourceKind: "turn_memory",
     sourceId: "turn-batch:session-1:turn-1",
     sourceGeneration: 1,
     sourceUpdatedAt: 2,
@@ -36,11 +43,18 @@ const inputs: ConsolidationInput[] = [
     rawMemory: "The user chose a six-hour consolidation cooldown.",
     scopeHints: [{ type: "workflow", key: "memory-consolidation" }],
     generatedAt: Date.parse("2026-08-04T11:01:20.000Z"),
+    artifactPath: "rollout_summaries/turn-consolidation-cooldown.md",
+    contentHash: "b".repeat(64),
+    startedAt: Date.parse("2026-08-04T10:30:00.000Z"),
+    endedAt: Date.parse("2026-08-04T11:00:00.000Z"),
+    provenance: "user_turn",
+    sourceIds: ["turn:1"],
+    state: "added",
   },
 ];
 const execFileAsync = promisify(execFile);
 
-test("syncs structured Activity truth into one Codex-style Markdown workspace", async (t) => {
+test("syncs structured Memory sources into one Codex-style Markdown workspace", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "openscreen-memory-workspace-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   await prepareMemoryWorkspace(root);
@@ -48,14 +62,14 @@ test("syncs structured Activity truth into one Codex-style Markdown workspace", 
   const synced = await syncConsolidationInputs(root, inputs);
 
   assert.equal(synced.sourceSummaryFiles.length, 2);
-  assert.ok(synced.sourceSummaryFiles.some((path) =>
-    path.startsWith("source_summaries/observations/")));
-  assert.ok(synced.sourceSummaryFiles.some((path) =>
-    path.startsWith("source_summaries/turns/")));
+  assert.deepEqual(synced.sourceSummaryFiles, [
+    "rollout_summaries/chronicle-memory-design.md",
+    "rollout_summaries/turn-consolidation-cooldown.md",
+  ]);
   const raw = await readFile(join(root, "raw_memories.md"), "utf8");
-  assert.match(raw, /OpenScreen memory pipeline/);
+  assert.doesNotMatch(raw, /OpenScreen memory pipeline/);
   assert.match(raw, /six-hour consolidation cooldown/);
-  assert.ok(raw.indexOf(inputs[0]!.jobKey) < raw.indexOf(inputs[1]!.jobKey));
+  assert.match(raw, /turn-memory:batch:session-1:turn-1/);
   for (const relative of synced.sourceSummaryFiles) {
     assert.equal((await stat(join(root, relative))).mode & 0o777, 0o600);
   }
@@ -79,7 +93,9 @@ test("uses a disposable one-commit Git baseline to detect real workspace changes
 
   await resetMemoryWorkspaceBaseline(root);
   assert.equal((await memoryWorkspaceDiff(root)).hasChanges, false);
-  assert.equal((await memoryWorkspaceDiff(root)).commitCount, 1);
+  assert.equal(Number((await execFileAsync("git", [
+    "rev-list", "--count", "HEAD",
+  ], { cwd: root })).stdout.trim()), 1);
   await assert.rejects(execFileAsync("git", [
     "cat-file", "-e", `${firstBaseline}^{commit}`,
   ], { cwd: root }));
@@ -102,9 +118,20 @@ test("keeps SQLite and evidence outside the Git baseline", async (t) => {
   await prepareMemoryWorkspace(root);
   const ignore = await readFile(join(root, ".gitignore"), "utf8");
 
-  assert.match(ignore, /activity-memory\.sqlite3/);
+  assert.match(ignore, /memory\.sqlite3/);
   assert.match(ignore, /evidence/);
   assert.match(ignore, /\.consolidation-staging/);
+  assert.match(ignore, /\.DS_Store/);
+  await writeFile(join(root, ".DS_Store"), "finder metadata");
+  await mkdir(join(root, "rollout_summaries"), { recursive: true });
+  await writeFile(
+    join(root, "rollout_summaries", ".DS_Store"),
+    "finder metadata",
+  );
+  await resetMemoryWorkspaceBaseline(root);
+  assert.doesNotMatch((await execFileAsync("git", ["ls-files"], {
+    cwd: root,
+  })).stdout, /\.DS_Store/);
 });
 
 test("does not adopt or modify a user-owned Git repository", async (t) => {

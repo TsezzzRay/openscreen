@@ -122,7 +122,10 @@ export async function loadSession(directory: string, id: string): Promise<Stored
   );
 }
 
-export async function listSessions(directory: string): Promise<SessionSummary[]> {
+export async function listSessions(
+  directory: string,
+  { reportInvalid = true }: { reportInvalid?: boolean } = {},
+): Promise<SessionSummary[]> {
   await mkdir(directory, { recursive: true });
   const summaries: SessionSummary[] = [];
   for (const entry of await readdir(directory, { withFileTypes: true })) {
@@ -138,9 +141,11 @@ export async function listSessions(directory: string): Promise<SessionSummary[]>
         updatedAt: (await stat(path)).mtime.toISOString(),
       });
     } catch (error) {
-      process.stderr.write(
-        `Skipping invalid session ${entry.name}: ${error instanceof Error ? error.message : "unknown error"}\n`,
-      );
+      if (reportInvalid) {
+        process.stderr.write(
+          `Skipping invalid session ${entry.name}: ${error instanceof Error ? error.message : "unknown error"}\n`,
+        );
+      }
     }
   }
   return summaries.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));

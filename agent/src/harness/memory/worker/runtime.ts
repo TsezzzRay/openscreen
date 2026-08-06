@@ -2,24 +2,26 @@ import { setImmediate as yieldToEventLoop } from "node:timers/promises";
 
 import type OpenAI from "openai";
 
+import { processNextChronicle } from "../chronicle/processor.js";
+import { ChronicleRepository } from "../chronicle/repository.js";
+import { processConsolidation } from "../consolidate/processor.js";
+import { ConsolidationRepository } from "../consolidate/repository.js";
 import { openMemoryDatabase, type MemoryDatabase } from "../db/database.js";
 import {
   cleanupEvidence,
   persistObservationEvidence,
   type ObservationEvidence,
 } from "../evidence.js";
-import { processConsolidation } from "../consolidate/processor.js";
-import { ConsolidationRepository } from "../consolidate/repository.js";
-import {
-  buildActivityRequest,
-  processNextActivity,
-  activityInputBudget,
-} from "../activity/processor.js";
-import { ActivityRepository } from "../activity/repository.js";
-import { loadSessionActivitySources } from "../activity/session-sources.js";
+import { countModelRequestTokens } from "../shared/model-request.js";
+import { turnMemoryInputTokenBudget } from "../shared/request-budget.js";
+import { buildTurnMemoryExtractionRequest } from "../turn-memory/extractor.js";
+import { processNextTurnMemory } from "../turn-memory/processor.js";
+import { TurnMemoryRepository } from "../turn-memory/repository.js";
+import { loadSessionTurnMemorySources } from "../turn-memory/session-scanner.js";
+import { SessionScanRepository } from "../turn-memory/session-scan-repository.js";
+import type { TurnMemorySource } from "../turn-memory/types.js";
 import { listSessions } from "../../session/store.js";
-import type { ScreenObservation } from "../../../plugins/screen-observation/types.js";
-import type { ActivitySource } from "../activity/types.js";
+import type { ScreenObservation } from "../../../extensions/screen-observation/types.js";
 import type { MemoryPipelineConfig } from "../types.js";
 
 export type MemoryPipelineOptions = {
@@ -39,30 +41,35 @@ export type MemoryPipelineOptions = {
 
 export type CapturedSessionSources = {
   sessionId: string;
-  sources: ActivitySource[];
+  sessionUpdatedAt: string;
+  includesInterrupted: boolean;
+  sources: TurnMemorySource[];
 };
 
 export class MemoryPipeline {
   readonly database: MemoryDatabase;
-  private readonly activity: ActivityRepository;
+  private readonly chronicle: ChronicleRepository;
+  private readonly turnMemory: TurnMemoryRepository;
   private readonly consolidation: ConsolidationRepository;
+  private readonly sessionScans: SessionScanRepository;
   private readonly now: () => number;
   private scanQueue: Promise<void> = Promise.resolve();
   private evidenceQueue: Promise<void> = Promise.resolve();
 
   constructor(private readonly options: MemoryPipelineOptions) {
     this.database = openMemoryDatabase(options.memoryRoot);
-    this.activity = new ActivityRepository(this.database, options.memory);
+    this.chronicle = new ChronicleRepository(this.database, options.memory);
+    this.turnMemory = new TurnMemoryRepository(this.database, options.memory);
     this.consolidation = new ConsolidationRepository(this.database, options.memory);
+    this.sessionScans = new SessionScanRepository(this.database);
     this.now = options.now ?? Date.now;
   }
 
   async ingestObservation(observation: ScreenObservation) {
     return this.withEvidenceLock(async () => {
-      const persist = this.options.persistObservationEvidence ??
-        persistObservationEvidence;
+      const persist = this.options.persistObservationEvidence ?? persistObservationEvidence;
       const evidence = await persist(this.options.memoryRoot, observation);
-      return this.activity.ingestObservation(observation, this.now(), evidence);
+      return this.chronicle.ingestObservation(observation, this.now(), evidence);
     });
   }
 
@@ -72,38 +79,36 @@ export class MemoryPipeline {
     return result;
   }
 
+  private turnInputBudget() {
+    return turnMemoryInputTokenBudget({
+      contextWindowTokens: this.options.contextWindowTokens,
+      maxInputTokens: this.options.memory.turnMemory.maxInputTokens,
+      maxOutputTokens: this.options.memory.turnMemory.maxOutputTokens,
+    });
+  }
+
   private async ingestSessionSources(
     sessionId: string,
-    sources: ActivitySource[],
+    sources: TurnMemorySource[],
     signal?: AbortSignal,
   ) {
-    const inputBudget = activityInputBudget({
-      contextWindowTokens: this.options.contextWindowTokens,
-      maxInputTokens: this.options.memory.activity.maxInputTokens,
-      maxOutputTokens: this.options.memory.activity.maxOutputTokens,
-    });
+    const inputBudget = this.turnInputBudget();
     for (const source of sources) {
       if (signal?.aborted) throw signal.reason ?? new Error("Session scan aborted");
       while (true) {
-        const projection = this.activity.previewTurnBatch(
-          sessionId,
-          source,
-          inputBudget,
-        );
+        const projection = this.turnMemory.previewBatch(sessionId, source, inputBudget);
         if (!projection) break;
-        const request = buildActivityRequest(
+        const request = buildTurnMemoryExtractionRequest(
           this.options.model,
           projection,
-          this.options.memory.activity.maxOutputTokens,
+          this.options.memory.turnMemory.maxOutputTokens,
         );
-        const projectedInputTokens = (
-          await this.options.client.responses.inputTokens.count({
-            model: request.model,
-            instructions: request.instructions,
-            input: request.input,
-          }, { signal })
-        ).input_tokens;
-        const result = this.activity.ingestTurn({
+        const projectedInputTokens = await countModelRequestTokens(
+          this.options.client,
+          request,
+          signal,
+        );
+        const result = this.turnMemory.ingestTurn({
           sessionId,
           source,
           projectedInputTokens,
@@ -124,13 +129,13 @@ export class MemoryPipeline {
 
   scanSession(
     sessionId: string,
-    {
-      includeInterrupted = false,
-      signal,
-    }: { includeInterrupted?: boolean; signal?: AbortSignal } = {},
+    { includeInterrupted = false, signal }: {
+      includeInterrupted?: boolean;
+      signal?: AbortSignal;
+    } = {},
   ) {
     return this.enqueueScan(async () => {
-      const sources = await loadSessionActivitySources(
+      const sources = await loadSessionTurnMemorySources(
         this.options.sessionsDirectory,
         sessionId,
         { includeInterrupted },
@@ -142,40 +147,54 @@ export class MemoryPipeline {
   async captureSessionSources(
     { includeInterrupted = false }: { includeInterrupted?: boolean } = {},
   ) {
-    const sessions = await listSessions(this.options.sessionsDirectory);
+    const sessions = await listSessions(this.options.sessionsDirectory, {
+      reportInvalid: false,
+    });
     const captured: CapturedSessionSources[] = [];
     for (const session of sessions) {
+      if (!this.sessionScans.shouldScan(
+        session.id,
+        session.updatedAt,
+        includeInterrupted,
+      )) continue;
       try {
+        const sources = await loadSessionTurnMemorySources(
+          this.options.sessionsDirectory,
+          session.id,
+          { includeInterrupted },
+        );
         captured.push({
           sessionId: session.id,
-          sources: await loadSessionActivitySources(
-            this.options.sessionsDirectory,
-            session.id,
-            { includeInterrupted },
-          ),
+          sessionUpdatedAt: session.updatedAt,
+          includesInterrupted: includeInterrupted,
+          sources,
         });
       } catch (error) {
+        const message = error instanceof Error ? error.message : "unknown error";
+        this.sessionScans.recordFailure(
+          session.id,
+          session.updatedAt,
+          message,
+          this.now(),
+        );
         process.stderr.write(
-          `Memory skipped Session ${session.id}: ${
-            error instanceof Error ? error.message : "unknown error"
-          }\n`,
+          `Turn Memory skipped Session ${session.id}: ${message}\n`,
         );
       }
     }
     return captured;
   }
 
-  ingestCapturedSessions(
-    captured: CapturedSessionSources[],
-    signal?: AbortSignal,
-  ) {
+  ingestCapturedSessions(captured: CapturedSessionSources[], signal?: AbortSignal) {
     return this.enqueueScan(async () => {
       let count = 0;
       for (const session of captured) {
-        count += await this.ingestSessionSources(
+        count += await this.ingestSessionSources(session.sessionId, session.sources, signal);
+        this.sessionScans.recordSuccess(
           session.sessionId,
-          session.sources,
-          signal,
+          session.sessionUpdatedAt,
+          session.includesInterrupted,
+          this.now(),
         );
       }
       return count;
@@ -194,12 +213,11 @@ export class MemoryPipeline {
 
   async tick(signal?: AbortSignal) {
     await this.scanSessions({ includeInterrupted: false, signal });
-    this.activity.sealDueTurnBatches(this.now());
-    let activityJobs = 0;
-    while (activityJobs < this.options.memory.worker.maxJobsPerTick &&
-        !signal?.aborted) {
-      const result = await processNextActivity({
-        repository: this.activity,
+    this.turnMemory.sealDueBatches(this.now());
+    let chronicleJobs = 0;
+    while (chronicleJobs < this.options.memory.worker.maxJobsPerTick && !signal?.aborted) {
+      const result = await processNextChronicle({
+        repository: this.chronicle,
         client: this.options.client,
         model: this.options.model,
         workerId: this.options.workerId,
@@ -208,7 +226,22 @@ export class MemoryPipeline {
         signal,
       });
       if (result.status === "no_job") break;
-      activityJobs += 1;
+      chronicleJobs += 1;
+      await yieldToEventLoop();
+    }
+    let turnMemoryJobs = 0;
+    while (turnMemoryJobs < this.options.memory.worker.maxJobsPerTick && !signal?.aborted) {
+      const result = await processNextTurnMemory({
+        repository: this.turnMemory,
+        client: this.options.client,
+        model: this.options.model,
+        workerId: this.options.workerId,
+        contextWindowTokens: this.options.contextWindowTokens,
+        now: this.now,
+        signal,
+      });
+      if (result.status === "no_job") break;
+      turnMemoryJobs += 1;
       await yieldToEventLoop();
     }
     const consolidation = signal?.aborted
@@ -229,7 +262,7 @@ export class MemoryPipeline {
       this.options.memory.evidence,
       this.now(),
     ));
-    return { activityJobs, consolidation, evidenceDeleted };
+    return { chronicleJobs, turnMemoryJobs, consolidation, evidenceDeleted };
   }
 
   close() {

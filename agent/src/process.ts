@@ -18,7 +18,7 @@ import type {
   StoredSession,
 } from "./harness/session/types.js";
 import { withSessionLock } from "./harness/session/lock.js";
-import { ScreenObservationPlugin } from "./plugins/screen-observation/plugin.js";
+import { ScreenObservationExtension } from "./extensions/screen-observation/extension.js";
 import { MemoryWorkerClient } from "./harness/memory/worker/client.js";
 import {
   parseInputEnvelope,
@@ -98,8 +98,8 @@ async function run() {
   };
   const lines = createInterface({ input: process.stdin, crlfDelay: Infinity });
   const observationBundleIdentifier = process.env.OPENSCREEN_BUNDLE_ID;
-  const observationPlugin = config.screenObservation.enabled
-    ? new ScreenObservationPlugin({
+  const observationExtension = config.screenObservation.enabled
+    ? new ScreenObservationExtension({
       config: config.screenObservation,
       helperCommand: process.env.OPENSCREEN_HELPER_PATH ??
         join(process.cwd(), ".build", "debug", "ObservationHelper"),
@@ -118,7 +118,7 @@ async function run() {
       },
     })
     : undefined;
-  void observationPlugin?.start().catch((error) => {
+  void observationExtension?.start().catch((error) => {
     process.stderr.write(
       `OpenScreen observation unavailable: ${
         error instanceof Error ? error.message : "unknown error"
@@ -280,7 +280,7 @@ async function run() {
     }
     await Promise.allSettled([...active]);
   } finally {
-    await observationPlugin?.stop();
+    await observationExtension?.stop();
     await memoryWorker.stop();
   }
 }

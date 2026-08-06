@@ -11,6 +11,7 @@ import {
   parseConsolidationOutput,
   processConsolidation,
   renderConsolidatedMemory,
+  validateConsolidationEvidence,
 } from "../../src/harness/memory/consolidate/processor.js";
 import {
   ConsolidationRepository,
@@ -32,42 +33,43 @@ async function fixture(t: test.TestContext) {
   t.after(() => database.close());
   const connection = database.connection;
   connection.prepare(`
-    INSERT INTO source_items (
-      id, source_type, source_key, occurred_at, projection_json, ingested_at
-    ) VALUES ('observation:1', 'observation', 'observation:1', 1, '{}', 1)
+    INSERT INTO turn_memory_sources (
+      id, source_key, session_id, turn_id, occurred_at,
+      projection_json, ingested_at
+    ) VALUES ('turn:1', 'turn:1', 'session:1', 'turn:1', 1, '{}', 1)
   `).run();
   connection.prepare(`
-    INSERT INTO observation_windows (
-      id, start_at, end_at, eligible_at, source_generation, created_at, updated_at
-    ) VALUES ('window:1', 0, 60000, 75000, 1, 1, 1)
+    INSERT INTO turn_memory_batches (
+      id, session_id, first_pending_at, last_terminal_at, eligible_at,
+      status, close_reason, max_input_tokens, source_generation,
+      created_at, updated_at
+    ) VALUES (
+      'batch:1', 'session:1', 1, 1, 1, 'sealed', 'idle', 8000, 1, 1, 1
+    )
   `).run();
   connection.prepare(`
-    INSERT INTO observation_window_sources (window_id, source_id, ordinal)
-    VALUES ('window:1', 'observation:1', 0)
-  `).run();
-  connection.prepare(`
-    INSERT INTO activity_jobs (
-      job_key, source_kind, source_id, source_generation, status,
+    INSERT INTO memory_jobs (
+      job_key, kind, source_id, source_generation, status,
       eligible_at, retry_remaining
     ) VALUES (
-      'activity:window:1', 'observation_window', 'window:1', 1,
-      'succeeded', 75000, 3
+      'turn-memory:batch:1', 'turn_memory_extraction', 'batch:1', 1,
+      'succeeded', 1, 3
     )
   `).run();
   connection.prepare(`
-    INSERT INTO activity_summaries (
-      job_key, source_generation, source_updated_at, source_summary,
-      raw_memory, scope_json, generated_at
+    INSERT INTO turn_memory_extractions (
+      job_key, source_generation, source_updated_at, raw_memory,
+      turn_summary, turn_slug, generated_at
     ) VALUES (
-      'activity:window:1', 1, 1,
-      'The user reviewed the OpenScreen memory design.',
+      'turn-memory:batch:1', 1, 1,
       'The user is building the OpenScreen memory pipeline.',
-      '[{"type":"topic","key":"openscreen-memory"}]', 100000
+      'The user reviewed the OpenScreen memory design.',
+      'openscreen-memory-design', 100000
     )
   `).run();
   connection.prepare(`
-    INSERT INTO activity_summary_sources (job_key, source_id)
-    VALUES ('activity:window:1', 'observation:1')
+    INSERT INTO turn_memory_extraction_sources (job_key, source_id)
+    VALUES ('turn-memory:batch:1', 'turn:1')
   `).run();
   connection.prepare(`
     INSERT INTO consolidation_jobs (
@@ -89,18 +91,18 @@ test("validates structured consolidation output and renders current Markdown", (
       title: "OpenScreen memory pipeline",
       scope: { type: "topic", key: "openscreen-memory", label: "OpenScreen Memory" },
       content: "The user is building the OpenScreen memory pipeline.",
-      evidence_source_ids: ["activity:window:1"],
+      evidence_source_ids: ["turn-memory:batch:1"],
     }],
     summary: [{
       memory_key: "openscreen-memory-pipeline",
       text: "OpenScreen memory pipeline design and decisions.",
     }],
-  }), new Set(["activity:window:1"]));
+  }), new Set(["turn-memory:batch:1"]));
   const rendered = renderConsolidatedMemory(output);
 
   assert.match(rendered.memory, /^# OpenScreen Memory/m);
   assert.match(rendered.memory, /scope: topic:openscreen-memory/);
-  assert.match(rendered.memory, /evidence: activity:window:1/);
+  assert.match(rendered.memory, /evidence: turn-memory:batch:1/);
   assert.match(rendered.summary, /^v1\n/);
   assert.match(rendered.summary, /openscreen-memory-pipeline/);
 
@@ -113,10 +115,30 @@ test("validates structured consolidation output and renders current Markdown", (
       evidence_source_ids: ["unknown"],
     }],
     summary: [],
-  }), new Set(["activity:window:1"])), /unsupported memory scope|unknown evidence/);
+  }), new Set(["turn-memory:batch:1"])), /unsupported memory scope|unknown evidence/);
 });
 
-test("consolidates Activity inputs, publishes fenced artifacts, and resets the baseline", async (t) => {
+test("requires corroboration before passive Chronicle evidence becomes durable Memory", () => {
+  const output = parseConsolidationOutput(JSON.stringify({
+    memories: [{
+      key: "screen-fact",
+      title: "Screen fact",
+      scope: { type: "topic", key: "screen-fact" },
+      content: "A durable fact inferred from the screen.",
+      evidence_source_ids: ["chronicle:one"],
+    }],
+    summary: [],
+  }), new Set(["chronicle:one"]));
+
+  assert.throws(() => validateConsolidationEvidence(output, new Map([
+    ["chronicle:one", "passive_screen"],
+  ])), /passive Chronicle evidence requires corroboration/i);
+  assert.doesNotThrow(() => validateConsolidationEvidence(output, new Map([
+    ["chronicle:one", "user_turn"],
+  ])));
+});
+
+test("consolidates Memory source inputs, publishes fenced artifacts, and resets the baseline", async (t) => {
   const { root, database, repository } = await fixture(t);
   let generations = 0;
   let countedInput = "";
@@ -128,10 +150,15 @@ test("consolidates Activity inputs, publishes fenced artifacts, and resets the b
           return { input_tokens: 500 };
         },
       },
-      create: async (request: { instructions: string }) => {
+      create: async (request: {
+        instructions: string;
+        text?: { format?: { type?: string; strict?: boolean } };
+      }) => {
         generations += 1;
         assert.match(request.instructions, /passive screen content/i);
         assert.match(request.instructions, /conflict/i);
+        assert.equal(request.text?.format?.type, "json_schema");
+        assert.equal(request.text?.format?.strict, true);
         return {
           output_text: JSON.stringify({
             memories: [{
@@ -139,7 +166,7 @@ test("consolidates Activity inputs, publishes fenced artifacts, and resets the b
               title: "OpenScreen memory pipeline",
               scope: { type: "topic", key: "openscreen-memory" },
               content: "The user is building the OpenScreen memory pipeline.",
-              evidence_source_ids: ["activity:window:1"],
+              evidence_source_ids: ["turn-memory:batch:1"],
             }],
             summary: [{
               memory_key: "openscreen-memory-pipeline",
@@ -167,10 +194,9 @@ test("consolidates Activity inputs, publishes fenced artifacts, and resets the b
   assert.equal(generations, 1);
   assert.match(countedInput, /workspaceDiff/);
   assert.match(countedInput, /OpenScreen memory pipeline/);
-  assert.match(await readFile(join(root, "MEMORY.md"), "utf8"), /evidence: activity:window:1/);
+  assert.match(await readFile(join(root, "MEMORY.md"), "utf8"), /evidence: turn-memory:batch:1/);
   assert.match(await readFile(join(root, "memory_summary.md"), "utf8"), /^v1\n/);
   assert.equal((await memoryWorkspaceDiff(root)).hasChanges, false);
-  assert.equal((await memoryWorkspaceDiff(root)).commitCount, 1);
   assert.deepEqual({ ...database.connection.prepare(`
     SELECT status, last_success_watermark FROM consolidation_jobs
     WHERE job_key = 'global'
@@ -182,7 +208,7 @@ test("consolidates Activity inputs, publishes fenced artifacts, and resets the b
     "SELECT count(*) AS count FROM consolidation_publications",
   ).get()?.count, 0);
   assert.equal(database.connection.prepare(
-    "SELECT count(*) AS count FROM model_attempts WHERE stage = 'consolidation' AND status = 'succeeded'",
+    "SELECT count(*) AS count FROM model_attempts WHERE operation = 'global_memory_consolidation' AND status = 'succeeded'",
   ).get()?.count, 1);
 });
 
@@ -373,7 +399,7 @@ test("restores evidence if a crash happens after the Git baseline reset", async 
       title: "OpenScreen memory",
       scope: { type: "topic", key: "openscreen-memory" },
       content: "The user is building OpenScreen memory.",
-      evidenceSourceIds: ["activity:window:1"],
+      evidenceSourceIds: ["turn-memory:batch:1"],
     }],
     summary: [{ memoryKey: "openscreen-memory", text: "OpenScreen memory work." }],
   });
@@ -383,7 +409,7 @@ test("restores evidence if a crash happens after the Git baseline reset", async 
     stagingName: "stale-after-baseline",
     memorySha256: "memory-hash",
     summarySha256: "summary-hash",
-    evidence: { "openscreen-memory": ["activity:window:1"] },
+    evidence: { "openscreen-memory": ["turn-memory:batch:1"] },
     createdAt: startedAt,
   }, startedAt), true);
   assert.equal(repository.beginPublication(stale.claim, startedAt), true);
@@ -446,7 +472,7 @@ test("retains publication evidence when SQLite completion fails after the new ba
             title: "OpenScreen memory",
             scope: { type: "topic", key: "openscreen-memory" },
             content: "The user is building OpenScreen memory.",
-            evidence_source_ids: ["activity:window:1"],
+            evidence_source_ids: ["turn-memory:batch:1"],
           }],
           summary: [{
             memory_key: "openscreen-memory",

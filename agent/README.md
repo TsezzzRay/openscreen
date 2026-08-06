@@ -2,7 +2,7 @@
 
 The OpenScreen Agent is the local Node.js process behind the macOS app. It
 owns model requests, the Agent Loop, session persistence, context compaction,
-and the activity-memory core. See the [project README](../README.md) for
+and the background memory pipeline. See the [project README](../README.md) for
 product setup, requirements, privacy, and current limitations.
 
 ## Source layout
@@ -14,8 +14,8 @@ src/
 ├── types.ts                   shared Agent Loop and stream types
 ├── config.ts                  runtime configuration loading and validation
 ├── protocol.ts                wire request parsing and response serialization
-├── plugins/
-│   └── screen-observation/    background macOS observation capability
+├── extensions/
+│   └── screen-observation/    hosted macOS observation capability
 ├── tools/
 │   └── retrieve-memory/       model-facing retrieval contract
 └── harness/
@@ -29,8 +29,10 @@ src/
     ├── compaction/            retained-context compaction and summaries
     └── memory/
         ├── db/                SQLite connection, schema, attempts, helpers
-        ├── evidence.ts        raw Observation sidecars and cleanup
-        ├── activity/          intake, projection, jobs, summaries
+        ├── evidence.ts        structured/JPEG Observation evidence and cleanup
+        ├── chronicle/         passive screen activity organization
+        ├── turn-memory/       terminal Turn extraction and Session scan progress
+        ├── shared/            request, job, budget, and source-snapshot contracts
         ├── consolidate/       global merge, publication, Git baseline
         ├── worker/            independent Worker Thread orchestration
         └── types.ts           current long-term-memory contract
@@ -40,9 +42,8 @@ src/
 standard input and output. `protocol.ts` owns that wire format; harness code
 does not depend on it. Chat requests are mapped to session commands before
 entering `session/runner.ts`, which builds model context and invokes
-`loop.ts`. Activity and long-term memory are separate layers of the same memory
-capability. They run in a background Worker Thread and are not connected to the
-production tool registry.
+`loop.ts`. Chronicle, Turn Memory, and Global Memory Consolidation run in a
+background Worker Thread and are not connected to the production tool registry.
 
 ## Domain boundaries
 
@@ -54,26 +55,22 @@ The Agent is the composition center, but each capability owns its domain:
   Turn may have zero or more Agent Runs.
 - A conversation summary belongs only to retained model context. It is not an
   activity record or long-term memory.
-- `ScreenObservationPlugin` is a hosted background plugin. It owns native
+- `ScreenObservationExtension` is a hosted background extension. It owns native
   observation lifecycle and emits canonical `ScreenObservation` values. It is
   not callable by the model and is not an `AgentTool`.
-- An Activity record is a factual summary derived from one or more Observation
-  or Turn source IDs. Its time and terminal status come from code, not the
-  model.
-- `LongTermMemory` is current synthesized knowledge supported by Activity source
-  IDs. Conflicting evidence updates the current block; the pipeline does not
-  retain memory versions.
+- A Chronicle activity is a factual description derived only from passive
+  Observation source IDs. Chronicle cannot create a raw Memory candidate.
+- A Turn Memory extraction belongs only to a closed batch of terminal Turns and
+  contains exactly `raw_memory`, `turn_summary`, and `turn_slug`.
+- `LongTermMemory` is current synthesized knowledge supported by immutable
+  Chronicle or Turn Memory source snapshots. Conflicting or removed evidence
+  rewrites the current block; the pipeline does not retain Memory versions.
 - Model-initiated retrieval is an Agent Tool boundary under
   `tools/retrieve-memory`. Memory owns the data being queried; the Tool owns
   the model-facing arguments and results.
 
-The background evidence flow is
-`ScreenObservation | terminal Turn + AgentRun[] -> Activity summary -> Consolidation -> Markdown memory`.
-The model-initiated flow is
-`Agent -> retrieve-memory Tool -> memory query -> bounded results`.
-
 Runtime status remains local to its owner: session owns Turn and Run status,
-the observation plugin owns helper health, memory owns processing outcomes,
+the observation extension owns helper health, memory owns processing outcomes,
 and `process.ts` keeps request queues and abort controllers private. There is
 no shared runtime snapshot or centralized contracts directory.
 
@@ -95,10 +92,11 @@ Configuration is grouped by responsibility:
 - `session`: streaming event flush size and interval.
 - `memory.worker`: background interval, per-tick work limit, lease, heartbeat,
   retry delay, attempt limit, and expired-lease limit.
-- `memory.activity`: Activity model budgets, Observation windows, request size,
-  and Turn idle/hard-cap boundaries.
-- `memory.consolidation`: Consolidation model budgets and success cooldown.
-- `memory.evidence`: successful, failed, and abandoned evidence retention.
+- `memory.chronicle`: Chronicle model budgets, Observation windows, grace, and
+  sources per request.
+- `memory.turnMemory`: Turn extraction budgets and idle/hard-cap boundaries.
+- `memory.consolidation`: model budgets, selected-source cap, and success cooldown.
+- `memory.evidence`: structured/JPEG retention, abandoned-file grace, and disk cap.
 
 Configuration is loaded once when the Agent process starts. Invalid,
 incomplete, or internally inconsistent values stop startup with an explicit
@@ -114,24 +112,26 @@ events, streamed text, Agent Run steps, tool results, and compaction.
 The Session JSONL remains the fact source for Turns. Replay exposes a separate
 recorded-Turn view containing completed, failed, cancelled, and interrupted
 Turns; interrupted Turns stay outside future chat context but are still valid
-Activity evidence. The Memory Worker rescans Sessions on startup, so a durable
-terminal event is sufficient even if its notification was lost.
+Turn Memory evidence. The Memory Worker stores each Session file version and
+scan outcome in SQLite. Unchanged valid files are not reparsed every minute;
+unchanged invalid files are reported once and skipped across restarts. Startup
+still performs the one-time interrupted-Turn recovery pass.
 
-## Activity and memory persistence
+## Chronicle and memory persistence
 
 The single memory root is
 `~/Library/Application Support/OpenScreen/memory/` by default:
 
 ```text
 memory/
-├── activity-memory.sqlite3
-├── evidence/observations/
+├── memory.sqlite3
+├── evidence/
+│   ├── structured/
+│   └── screenshots/
 ├── MEMORY.md
 ├── memory_summary.md
 ├── raw_memories.md
-├── source_summaries/
-│   ├── observations/
-│   └── turns/
+├── rollout_summaries/
 └── .git/
 ```
 
@@ -141,30 +141,30 @@ only the memory root. That override must point to a dedicated directory.
 OpenScreen marks the directory and creates its own nested Git repository; it
 refuses to adopt an enclosing repository or an existing user-owned repository.
 
-SQLite is the structured truth for sources, Observation windows, Turn batches,
-Activity jobs and outputs, Activity records, model-attempt audits, Consolidation job
+SQLite is the structured truth for Chronicle sources/windows/activities, Turn
+sources/batches/extractions, producer jobs, durable Session scan progress,
+model-attempt audits, Consolidation job
 state, ownership tokens, watermarks, publication recovery, and evidence links.
 Connections enable foreign keys, WAL, a five-second busy timeout, and immediate
 write transactions. The directory is mode `0700` and the database is mode
 `0600`. Production SQLite access is confined to the Memory Worker Thread.
 
-Observation evidence is atomically written as a mode-`0600` JSON sidecar before
-the source row is inserted. The Activity request uses a compact projection and
-never reads the sidecar into the request. With the default configuration,
-successful evidence expires after 24 hours and failed evidence after seven
-days. Startup cleanup removes temp and unreferenced files after a one-hour
-abandonment grace. These values come from `memory.evidence`. Turn evidence
-remains in Session JSONL instead of being duplicated.
+Observation evidence is atomically written before the source row: a mode-`0600`
+JSON file without Base64 and a separate mode-`0600` JPEG. Chronicle requests use
+only the compact SQLite projection and never load either sidecar. JPEGs expire
+after 24 hours; structured evidence expires after 24 hours on success or seven
+days on failure. Cleanup also removes abandoned files after one hour and evicts
+the oldest Observation groups when the default 2 GiB cap is exceeded. Turn
+evidence remains in Session JSONL instead of being duplicated.
 
-Activity timing and input rules are deterministic and use the values under
-`memory.activity`:
+Producer timing and input rules are deterministic:
 
 - Observations use closed UTC one-minute windows, become eligible 15 seconds
-  after the window ends, and send no more than 30 sources per request. A late
+  after the window ends, and send no more than ten sources per request. A late
   Observation increments the processing generation, fences any old worker, and
   replaces the current result after a successful retry.
 - Terminal Turns from the same Session accumulate until 30 minutes of idle
-  time, a two-hour hard cap, or 70% of the effective Activity context budget.
+  time, a two-hour hard cap, or the effective Turn Memory context budget.
   The prospective complete batch is measured with `/responses/input_tokens`
   before each Turn is added. If the new Turn would exceed the budget, the
   existing batch is sealed without it and the Turn is measured again in a new
@@ -175,34 +175,37 @@ Activity timing and input rules are deterministic and use the values under
   times, code-owned status, user text, final assistant text, and compact tool
   names/results. Neither request includes reasoning, streaming deltas, response
   protocol fields, screenshots, full AX trees, or duplicate output items.
-- `/responses/input_tokens` is checked before every model generation. Activity
+- `/responses/input_tokens` is checked before every model generation. Turn Memory
   uses at most 70% of the model window and also reserves the configured output
   budget. An oversized single source becomes a persisted retryable error; it is
   not discarded and does not produce a heuristic fallback.
 
-Activity output must cover every input source exactly once and may not invent a
+Chronicle output must cover every input source exactly once and may not invent a
 source. Generated summaries are English; quoted evidence retains its source
-language. Activity describes what happened. Durable memory is limited to
+language. Chronicle describes what happened and cannot emit `raw_memory`.
+Durable memory is limited to
 explicit, stable user facts, preferences, long-term goals, project decisions,
 or lasting state. Ordinary browsing and one-off actions are skipped. A single
 passive screen observation cannot establish a preference, and an unsuccessful
 Turn cannot prove success.
 
-Consolidation follows the Codex global-consolidation pattern. SQLite contains one
-`memory_consolidate_global/global` job. A worker claims a one-hour lease and
+Consolidation follows the Codex global-consolidation pattern. SQLite contains
+one global job. A worker claims a one-hour lease and
 heartbeats every 90 seconds. Failures wait one hour and have three attempts.
 Lease expiry is tracked separately from model failure: after three consecutive
 abandoned leases the job waits one hour before another owner may try, without
 consuming the model-failure attempts. These are the defaults under
-`memory.worker`, and Activity uses the same job settings. Worker startup and
+`memory.worker`, and both producers use the same job settings. Worker startup and
 timer failures are written to stderr. After success, new input waits for the
 default six-hour cooldown from `memory.consolidation`. The claim snapshots an
-input watermark and copies the corresponding Activity rows and evidence links,
+input watermark and copies the corresponding generic source rows and evidence links,
 so replacements arriving during a run remain pending for the next run without
 changing the active request.
 
-Before consolidation, current Activity source summaries and raw candidates are
-mechanically synchronized into Markdown. A one-commit disposable Git repository
+Before consolidation, Chronicle and Turn summaries are synchronized to
+`rollout_summaries/`; only Turn `raw_memory` values enter `raw_memories.md`.
+SQLite retains the previous successful selection, so the next immutable
+snapshot explicitly marks sources as added, retained, or removed. A one-commit disposable Git repository
 provides the real change set; SQLite, WAL, evidence, and publication staging
 are ignored. No Git change with valid artifacts completes without a model call.
 Otherwise Consolidation sends the complete diff plus current memory and applies exact

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 import type {
+  AccessibilityNode,
   NativeCaptureResult,
   WindowMetadata,
 } from "./protocol.js";
@@ -33,14 +34,46 @@ export function axContentHash(snapshot: unknown) {
     .digest("hex");
 }
 
+function normalizedText(value?: string) {
+  const normalized = value?.replace(/\s+/gu, " ").trim();
+  return normalized ? normalized : undefined;
+}
+
+function semanticNode(node: AccessibilityNode): unknown {
+  const children = node.children?.map(semanticNode);
+  return {
+    role: node.role,
+    ...(normalizedText(node.subrole) === undefined
+      ? {}
+      : { subrole: normalizedText(node.subrole) }),
+    ...(normalizedText(node.title) === undefined
+      ? {}
+      : { title: normalizedText(node.title) }),
+    ...(normalizedText(node.value) === undefined
+      ? {}
+      : { value: normalizedText(node.value) }),
+    ...(normalizedText(node.description) === undefined
+      ? {}
+      : { description: normalizedText(node.description) }),
+    ...(node.focused === true ? { focused: true } : {}),
+    ...(children === undefined || children.length === 0 ? {} : { children }),
+  };
+}
+
 export function contentSignature(
   result: NativeCaptureResult,
 ): ObservationContentSignature {
+  const semanticAccessibility = result.accessibility.snapshot === undefined
+    ? `${result.accessibility.status}:${result.screenshot.status}`
+    : {
+        windowTitle: normalizedText(result.window.title),
+        root: semanticNode(result.accessibility.snapshot.root),
+      };
   return {
     windowKey: windowKey(result.window),
-    accessibilityHash: result.accessibility.snapshot === undefined
-      ? `${result.accessibility.status}:${result.screenshot.status}`
-      : axContentHash(result.accessibility.snapshot),
+    accessibilityHash: typeof semanticAccessibility === "string"
+      ? semanticAccessibility
+      : axContentHash(semanticAccessibility),
     visualSignature: result.visualSignature,
   };
 }
@@ -76,15 +109,18 @@ export class Dedupe {
     return this.previous?.windowKey !== windowKey(window);
   }
 
-  accept(result: NativeCaptureResult, boundary: boolean) {
+  candidate(result: NativeCaptureResult, boundary: boolean) {
     const current = contentSignature(result);
     if (!shouldEmitObservation(
       this.previous,
       current,
       boundary,
       this.visualThreshold,
-    )) return false;
-    this.previous = current;
-    return true;
+    )) return undefined;
+    return current;
+  }
+
+  commit(candidate: ObservationContentSignature) {
+    this.previous = candidate;
   }
 }

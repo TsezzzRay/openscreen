@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildObservation } from "../../src/plugins/screen-observation/observation.js";
+import { buildObservation } from "../../src/extensions/screen-observation/observation.js";
 import type {
   NativeActivitySignal,
   NativeCaptureResult,
-} from "../../src/plugins/screen-observation/protocol.js";
+} from "../../src/extensions/screen-observation/protocol.js";
 
 const signal: NativeActivitySignal = {
   kind: "mouseClick",

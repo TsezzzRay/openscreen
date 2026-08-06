@@ -11,7 +11,13 @@ import {
   type DatabaseRow as Row,
   type MemoryDatabase,
 } from "../db/database.js";
-import type { MemoryScopeHint } from "../activity/types.js";
+import type { MemoryScopeHint } from "../shared/memory-scope.js";
+import {
+  memorySourceArtifactPath,
+  memorySourceContentHash,
+  parseMemorySourceSnapshot,
+  type MemorySourceSnapshot,
+} from "../shared/memory-source.js";
 import type { MemoryPipelineConfig } from "../types.js";
 import { ConsolidationPublications } from "./publication.js";
 
@@ -28,7 +34,7 @@ export type ConsolidationClaim = {
 
 export type ConsolidationInput = {
   jobKey: string;
-  sourceKind: "observation_window" | "turn_batch";
+  sourceKind: "chronicle" | "turn_memory";
   sourceId: string;
   sourceGeneration: number;
   sourceUpdatedAt: number;
@@ -36,7 +42,7 @@ export type ConsolidationInput = {
   rawMemory: string | null;
   scopeHints: MemoryScopeHint[];
   generatedAt: number;
-};
+} & Omit<MemorySourceSnapshot, "id" | "kind">;
 
 export type ConsolidationClaimResult =
   | { status: "claimed"; claim: ConsolidationClaim }
@@ -158,40 +164,117 @@ export class ConsolidationRepository {
       if (!claimed) return { status: "skipped", reason: "running" };
       this.database.connection.prepare("DELETE FROM consolidation_inputs").run();
       const rows = this.database.connection.prepare(`
-        SELECT o.job_key, j.source_kind, j.source_id,
-               o.source_generation, o.source_updated_at, o.source_summary,
-               o.raw_memory, o.scope_json, o.generated_at
-        FROM activity_summaries o
-        JOIN activity_jobs j ON j.job_key = o.job_key
-        WHERE o.source_updated_at <= ?
-        ORDER BY o.job_key
-      `).all(integer(row.input_watermark, "Consolidation input watermark")) as Row[];
-      const sourceIds = this.database.connection.prepare(`
-        SELECT source_id FROM activity_summary_sources
+        WITH current_sources AS (
+          SELECT o.job_key, 'chronicle' AS source_kind, j.source_id,
+                 o.source_generation, o.source_updated_at, o.source_summary,
+                 NULL AS raw_memory, '[]' AS scope_json, o.generated_at,
+                 w.start_at, w.end_at, NULL AS artifact_label,
+                 'passive_screen' AS provenance
+          FROM chronicle_summaries o
+          JOIN memory_jobs j ON j.job_key = o.job_key
+          JOIN chronicle_windows w ON w.id = j.source_id
+          UNION ALL
+          SELECT o.job_key, 'turn_memory' AS source_kind, j.source_id,
+                 o.source_generation, o.source_updated_at,
+                 o.turn_summary AS source_summary,
+                 nullif(o.raw_memory, '') AS raw_memory,
+                 '[]' AS scope_json, o.generated_at,
+                 b.first_pending_at AS start_at, b.last_terminal_at AS end_at,
+                 o.turn_slug AS artifact_label, 'user_turn' AS provenance
+          FROM turn_memory_extractions o
+          JOIN memory_jobs j ON j.job_key = o.job_key
+          JOIN turn_memory_batches b ON b.id = j.source_id
+          WHERE o.raw_memory != '' OR o.turn_summary != ''
+        )
+        SELECT * FROM current_sources
+        WHERE source_updated_at <= ?
+        ORDER BY CASE source_kind WHEN 'turn_memory' THEN 0 ELSE 1 END,
+                 source_updated_at DESC, job_key DESC
+        LIMIT ?
+      `).all(
+        integer(row.input_watermark, "Consolidation input watermark"),
+        this.config.consolidation.maxSources,
+      ) as Row[];
+      const chronicleSourceIds = this.database.connection.prepare(`
+        SELECT source_id FROM chronicle_summary_sources
+        WHERE job_key = ? ORDER BY source_id
+      `);
+      const turnMemorySourceIds = this.database.connection.prepare(`
+        SELECT source_id FROM turn_memory_extraction_sources
         WHERE job_key = ? ORDER BY source_id
       `);
       const insertSnapshot = this.database.connection.prepare(`
         INSERT INTO consolidation_inputs (
           ownership_token, job_key, source_kind, source_id,
+          artifact_path, content_hash, started_at, ended_at,
+          provenance, selection_state,
           source_generation, source_updated_at, source_summary, raw_memory,
           scope_json, source_ids_json, generated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
+      const baselineRows = this.database.connection.prepare(`
+        SELECT * FROM consolidation_source_baseline ORDER BY job_key
+      `).all() as Row[];
+      const baseline = new Map(baselineRows.map((input) => [String(input.job_key), input]));
+      const snapshots: Row[] = [];
       for (const input of rows) {
+        const sourceIds = input.source_kind === "chronicle"
+          ? chronicleSourceIds
+          : turnMemorySourceIds;
         const ids = (sourceIds.all(String(input.job_key)) as Row[])
           .map(({ source_id }) => String(source_id));
+        const sourceKind = String(input.source_kind) as ConsolidationInput["sourceKind"];
+        const artifactPath = memorySourceArtifactPath({
+          id: String(input.job_key),
+          kind: sourceKind,
+          ...(input.artifact_label === null
+            ? {}
+            : { label: String(input.artifact_label) }),
+        });
+        const contentHash = memorySourceContentHash({
+          sourceKind,
+          sourceGeneration: input.source_generation,
+          sourceSummary: input.source_summary,
+          rawMemory: input.raw_memory,
+          startedAt: input.start_at,
+          endedAt: input.end_at,
+          sourceIds: ids,
+        });
+        const previous = baseline.get(String(input.job_key));
+        snapshots.push({
+          ...input,
+          artifact_path: artifactPath,
+          content_hash: contentHash,
+          source_ids_json: JSON.stringify(ids),
+          selection_state: previous && String(previous.content_hash) === contentHash
+            ? "retained"
+            : "added",
+        });
+        baseline.delete(String(input.job_key));
+      }
+      for (const removed of baseline.values()) {
+        snapshots.push({ ...removed, selection_state: "removed" });
+      }
+      snapshots.sort((left, right) => String(left.job_key).localeCompare(String(right.job_key)));
+      for (const input of snapshots) {
         insertSnapshot.run(
           ownershipToken,
           String(input.job_key),
           String(input.source_kind),
           String(input.source_id),
-          integer(input.source_generation, "Activity source generation"),
-          integer(input.source_updated_at, "Activity source watermark"),
+          String(input.artifact_path),
+          String(input.content_hash),
+          integer(input.start_at ?? input.started_at, "Memory source start time"),
+          integer(input.end_at ?? input.ended_at, "Memory source end time"),
+          String(input.provenance),
+          String(input.selection_state),
+          integer(input.source_generation, "Memory source generation"),
+          integer(input.source_updated_at, "Memory source watermark"),
           String(input.source_summary),
           input.raw_memory === null ? null : String(input.raw_memory),
           String(input.scope_json),
-          JSON.stringify(ids),
-          integer(input.generated_at, "Activity generated time"),
+          String(input.source_ids_json),
+          integer(input.generated_at, "Memory source generated time"),
         );
       }
       return {
@@ -236,24 +319,46 @@ export class ConsolidationRepository {
     `).get(JOB_KEY, claim.ownershipToken);
     if (!owned) throw new Error("Consolidation ownership lost");
     const rows = this.database.connection.prepare(`
-      SELECT job_key, source_kind, source_id, source_generation,
+      SELECT job_key, source_kind, source_id, artifact_path, content_hash,
+             started_at, ended_at, provenance, selection_state, source_generation,
              source_updated_at, source_summary, raw_memory, scope_json,
-             generated_at
+             source_ids_json, generated_at
       FROM consolidation_inputs
       WHERE ownership_token = ?
       ORDER BY job_key
     `).all(claim.ownershipToken) as Row[];
-    return rows.map((row) => ({
-      jobKey: String(row.job_key),
-      sourceKind: String(row.source_kind) as ConsolidationInput["sourceKind"],
-      sourceId: String(row.source_id),
-      sourceGeneration: integer(row.source_generation, "Activity source generation"),
-      sourceUpdatedAt: integer(row.source_updated_at, "Activity source watermark"),
-      sourceSummary: String(row.source_summary),
-      rawMemory: row.raw_memory === null ? null : String(row.raw_memory),
-      scopeHints: JSON.parse(String(row.scope_json)) as MemoryScopeHint[],
-      generatedAt: integer(row.generated_at, "Activity generated time"),
-    }));
+    return rows.map((row) => {
+      const sourceKind = String(row.source_kind) as ConsolidationInput["sourceKind"];
+      const snapshot = parseMemorySourceSnapshot({
+        id: String(row.job_key),
+        kind: sourceKind,
+        artifactPath: String(row.artifact_path),
+        contentHash: String(row.content_hash),
+        startedAt: integer(row.started_at, "Memory source start time"),
+        endedAt: integer(row.ended_at, "Memory source end time"),
+        provenance: String(row.provenance),
+        sourceIds: JSON.parse(String(row.source_ids_json)),
+        state: String(row.selection_state),
+      });
+      return {
+        jobKey: String(row.job_key),
+        sourceKind,
+        sourceId: String(row.source_id),
+        sourceGeneration: integer(row.source_generation, "Memory source generation"),
+        sourceUpdatedAt: integer(row.source_updated_at, "Memory source watermark"),
+        sourceSummary: String(row.source_summary),
+        rawMemory: row.raw_memory === null ? null : String(row.raw_memory),
+        scopeHints: JSON.parse(String(row.scope_json)) as MemoryScopeHint[],
+        generatedAt: integer(row.generated_at, "Memory source generated time"),
+        artifactPath: snapshot.artifactPath,
+        contentHash: snapshot.contentHash,
+        startedAt: snapshot.startedAt,
+        endedAt: snapshot.endedAt,
+        provenance: snapshot.provenance,
+        sourceIds: snapshot.sourceIds,
+        state: snapshot.state,
+      };
+    });
   }
 
   startModelAttempt({
@@ -262,18 +367,22 @@ export class ConsolidationRepository {
     requestHash,
     attemptedAt,
     inputTokens,
+    requestCharacters,
   }: {
     id: string;
     model: string;
     requestHash: string;
     attemptedAt: number;
     inputTokens: number;
+    requestCharacters: number;
   }) {
-    recordModelAttempt(this.database.connection, "consolidation", {
+    recordModelAttempt(this.database.connection, {
       id,
+      operation: "global_memory_consolidation",
       jobKey: JOB_KEY,
       model,
       requestHash,
+      requestCharacters,
       attemptedAt,
       inputTokens,
     });

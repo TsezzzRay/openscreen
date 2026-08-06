@@ -93,9 +93,14 @@ const sessionOverrides = {
   eventFlushMilliseconds: "OPENSCREEN_SESSION_EVENT_FLUSH_MS",
 } as const;
 
-const activityOverrides = {
-  maxInputTokens: "OPENSCREEN_ACTIVITY_MAX_INPUT_TOKENS",
-  maxOutputTokens: "OPENSCREEN_ACTIVITY_MAX_OUTPUT_TOKENS",
+const chronicleOverrides = {
+  maxInputTokens: "OPENSCREEN_CHRONICLE_MAX_INPUT_TOKENS",
+  maxOutputTokens: "OPENSCREEN_CHRONICLE_MAX_OUTPUT_TOKENS",
+} as const;
+
+const turnMemoryOverrides = {
+  maxInputTokens: "OPENSCREEN_TURN_MEMORY_MAX_INPUT_TOKENS",
+  maxOutputTokens: "OPENSCREEN_TURN_MEMORY_MAX_OUTPUT_TOKENS",
 } as const;
 
 const consolidationOverrides = {
@@ -416,18 +421,25 @@ function loadMemoryConfig(
 ): MemoryPipelineConfig {
   const root = object(value, "memory");
   const worker = object(root.worker, "memory.worker");
-  const activityFile = object(root.activity, "memory.activity");
+  const chronicleFile = object(root.chronicle, "memory.chronicle");
+  const turnMemoryFile = object(root.turnMemory, "memory.turnMemory");
   const consolidationFile = object(
     root.consolidation,
     "memory.consolidation",
   );
   const evidence = object(root.evidence, "memory.evidence");
-  const activityTokens = numericSection(
-    activityFile,
+  const chronicleTokens = numericSection(
+    chronicleFile,
     env,
-    "memory.activity",
-    activityOverrides,
-  ) as Pick<MemoryPipelineConfig["activity"], "maxInputTokens" | "maxOutputTokens">;
+    "memory.chronicle",
+    chronicleOverrides,
+  ) as Pick<MemoryPipelineConfig["chronicle"], "maxInputTokens" | "maxOutputTokens">;
+  const turnMemoryTokens = numericSection(
+    turnMemoryFile,
+    env,
+    "memory.turnMemory",
+    turnMemoryOverrides,
+  ) as Pick<MemoryPipelineConfig["turnMemory"], "maxInputTokens" | "maxOutputTokens">;
   const consolidationTokens = numericSection(
     consolidationFile,
     env,
@@ -468,31 +480,38 @@ function loadMemoryConfig(
         "memory.worker.maxConsecutiveExpiredLeases",
       ),
     },
-    activity: {
-      ...activityTokens,
+    chronicle: {
+      ...chronicleTokens,
       observationWindowMilliseconds: positiveJSONInteger(
-        activityFile.observationWindowMilliseconds,
-        "memory.activity.observationWindowMilliseconds",
+        chronicleFile.observationWindowMilliseconds,
+        "memory.chronicle.observationWindowMilliseconds",
       ),
       observationGraceMilliseconds: nonNegativeInteger(
-        activityFile.observationGraceMilliseconds,
-        "memory.activity.observationGraceMilliseconds",
+        chronicleFile.observationGraceMilliseconds,
+        "memory.chronicle.observationGraceMilliseconds",
       ),
-      maxObservationsPerRequest: positiveJSONInteger(
-        activityFile.maxObservationsPerRequest,
-        "memory.activity.maxObservationsPerRequest",
+      maxSourcesPerRequest: positiveJSONInteger(
+        chronicleFile.maxSourcesPerRequest,
+        "memory.chronicle.maxSourcesPerRequest",
       ),
+    },
+    turnMemory: {
+      ...turnMemoryTokens,
       turnIdleMilliseconds: positiveJSONInteger(
-        activityFile.turnIdleMilliseconds,
-        "memory.activity.turnIdleMilliseconds",
+        turnMemoryFile.turnIdleMilliseconds,
+        "memory.turnMemory.turnIdleMilliseconds",
       ),
       turnHardCapMilliseconds: positiveJSONInteger(
-        activityFile.turnHardCapMilliseconds,
-        "memory.activity.turnHardCapMilliseconds",
+        turnMemoryFile.turnHardCapMilliseconds,
+        "memory.turnMemory.turnHardCapMilliseconds",
       ),
     },
     consolidation: {
       ...consolidationTokens,
+      maxSources: positiveJSONInteger(
+        consolidationFile.maxSources,
+        "memory.consolidation.maxSources",
+      ),
       cooldownMilliseconds: nonNegativeInteger(
         consolidationFile.cooldownMilliseconds,
         "memory.consolidation.cooldownMilliseconds",
@@ -507,9 +526,17 @@ function loadMemoryConfig(
         evidence.failedRetentionMilliseconds,
         "memory.evidence.failedRetentionMilliseconds",
       ),
+      screenshotRetentionMilliseconds: nonNegativeInteger(
+        evidence.screenshotRetentionMilliseconds,
+        "memory.evidence.screenshotRetentionMilliseconds",
+      ),
       abandonedGraceMilliseconds: positiveJSONInteger(
         evidence.abandonedGraceMilliseconds,
         "memory.evidence.abandonedGraceMilliseconds",
+      ),
+      maxBytes: positiveJSONInteger(
+        evidence.maxBytes,
+        "memory.evidence.maxBytes",
       ),
     },
   };
@@ -570,9 +597,13 @@ export function loadRuntimeConfig(
   if (context.maxOutputTokens > context.windowTokens - context.compactAtTokens) {
     throw new Error("context.maxOutputTokens exceeds the available output budget");
   }
-  if (memory.activity.maxInputTokens + memory.activity.maxOutputTokens >
+  if (memory.chronicle.maxInputTokens + memory.chronicle.maxOutputTokens >
       context.windowTokens) {
-    throw new Error("memory.activity token budget exceeds context.windowTokens");
+    throw new Error("memory.chronicle token budget exceeds context.windowTokens");
+  }
+  if (memory.turnMemory.maxInputTokens + memory.turnMemory.maxOutputTokens >
+      context.windowTokens) {
+    throw new Error("memory.turnMemory token budget exceeds context.windowTokens");
   }
   if (memory.consolidation.maxInputTokens +
       memory.consolidation.maxOutputTokens > context.windowTokens) {

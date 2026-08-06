@@ -74,13 +74,4 @@ export class CapturePlanner {
     return due.map(([, { signal, dueAtMilliseconds }]) => ({ signal, dueAtMilliseconds }));
   }
 
-  nextDueAt(): number | undefined {
-    let next: number | undefined;
-    for (const capture of this.pending.values()) {
-      next = next === undefined
-        ? capture.dueAtMilliseconds
-        : Math.min(next, capture.dueAtMilliseconds);
-    }
-    return next;
-  }
 }

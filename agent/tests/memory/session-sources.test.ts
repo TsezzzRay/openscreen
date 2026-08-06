@@ -4,13 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { loadSessionActivitySources } from "../../src/harness/memory/activity/session-sources.js";
+import { loadSessionTurnMemorySources } from "../../src/harness/memory/turn-memory/session-scanner.js";
 import {
   appendSessionEvents,
   createSession,
 } from "../../src/harness/session/store.js";
 
-test("restores every terminal and interrupted Turn as a durable Activity source", async (t) => {
+test("restores every terminal and interrupted Turn as a Turn Memory source", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "openscreen-memory-session-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const session = await createSession(directory);
@@ -68,7 +68,7 @@ test("restores every terminal and interrupted Turn as a durable Activity source"
     { type: "answer_delta", turnId: "interrupted", delta: "Partial answer" },
   ]);
 
-  const sources = await loadSessionActivitySources(directory, session.id);
+  const sources = await loadSessionTurnMemorySources(directory, session.id);
 
   assert.deepEqual(sources.map(({ sourceId, turn }) => ({
     sourceId,

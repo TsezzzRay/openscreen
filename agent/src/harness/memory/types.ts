@@ -1,4 +1,4 @@
-import type { MemoryScopeHint } from "./activity/types.js";
+import type { MemoryScopeHint } from "./shared/memory-scope.js";
 
 export type MemoryPipelineConfig = {
   worker: {
@@ -10,24 +10,31 @@ export type MemoryPipelineConfig = {
     maxAttempts: number;
     maxConsecutiveExpiredLeases: number;
   };
-  activity: {
+  chronicle: {
     maxInputTokens: number;
     maxOutputTokens: number;
     observationWindowMilliseconds: number;
     observationGraceMilliseconds: number;
-    maxObservationsPerRequest: number;
+    maxSourcesPerRequest: number;
+  };
+  turnMemory: {
+    maxInputTokens: number;
+    maxOutputTokens: number;
     turnIdleMilliseconds: number;
     turnHardCapMilliseconds: number;
   };
   consolidation: {
     maxInputTokens: number;
     maxOutputTokens: number;
+    maxSources: number;
     cooldownMilliseconds: number;
   };
   evidence: {
     successRetentionMilliseconds: number;
     failedRetentionMilliseconds: number;
+    screenshotRetentionMilliseconds: number;
     abandonedGraceMilliseconds: number;
+    maxBytes: number;
   };
 };
 

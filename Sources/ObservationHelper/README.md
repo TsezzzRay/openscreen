@@ -40,7 +40,7 @@ they cannot corrupt the JSON Lines stream. Node ignores an accidental non-JSON
 stdout line but treats an incompatible version or malformed structured protocol
 message as a fatal helper error. The wire contract and validation on the Node
 side live in
-`agent/src/plugins/screen-observation/protocol.ts`. Node and the helper are built and
+`agent/src/extensions/screen-observation/protocol.ts`. Node and the helper are built and
 released together, so the current wire format has no version negotiation.
 
 ## Signal sources

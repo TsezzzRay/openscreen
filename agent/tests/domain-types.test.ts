@@ -53,7 +53,7 @@ test("connects the public Turn, Run, memory, and retrieval contracts", () => {
     key: "memory-1",
     title: "Architecture",
     scope: { type: "topic", key: "screen-observation" },
-    content: "Screen observation is an Agent plugin.",
+    content: "Screen observation is an Agent extension.",
     evidenceSourceIds: ["activity:activity-1"],
   };
   const argumentsValue: RetrieveMemoryArguments = {

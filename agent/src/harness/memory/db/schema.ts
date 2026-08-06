@@ -1,26 +1,22 @@
-export const MEMORY_SCHEMA_VERSION = 1;
+export const MEMORY_SCHEMA_VERSION = 4;
 
 export const MEMORY_SCHEMA = `
-CREATE TABLE source_items (
+CREATE TABLE chronicle_sources (
   id TEXT PRIMARY KEY,
-  source_type TEXT NOT NULL CHECK (source_type IN ('observation', 'turn')),
   source_key TEXT NOT NULL UNIQUE,
-  session_id TEXT,
-  turn_id TEXT,
   occurred_at INTEGER NOT NULL,
-  captured_at INTEGER,
+  captured_at INTEGER NOT NULL,
   projection_json TEXT NOT NULL CHECK (json_valid(projection_json)),
-  sidecar_path TEXT,
-  sidecar_sha256 TEXT,
-  sidecar_delete_after INTEGER,
-  ingested_at INTEGER NOT NULL,
-  CHECK (
-    (source_type = 'observation' AND session_id IS NULL AND turn_id IS NULL) OR
-    (source_type = 'turn' AND session_id IS NOT NULL AND turn_id IS NOT NULL)
-  )
+  structured_path TEXT,
+  structured_sha256 TEXT,
+  screenshot_path TEXT,
+  screenshot_sha256 TEXT,
+  structured_delete_after INTEGER,
+  screenshot_delete_after INTEGER,
+  ingested_at INTEGER NOT NULL
 ) STRICT;
 
-CREATE TABLE observation_windows (
+CREATE TABLE chronicle_windows (
   id TEXT PRIMARY KEY,
   start_at INTEGER NOT NULL,
   end_at INTEGER NOT NULL,
@@ -33,15 +29,35 @@ CREATE TABLE observation_windows (
   CHECK (eligible_at >= end_at)
 ) STRICT;
 
-CREATE TABLE observation_window_sources (
-  window_id TEXT NOT NULL REFERENCES observation_windows(id) ON DELETE CASCADE,
-  source_id TEXT NOT NULL REFERENCES source_items(id) ON DELETE CASCADE,
+CREATE TABLE chronicle_window_sources (
+  window_id TEXT NOT NULL REFERENCES chronicle_windows(id) ON DELETE CASCADE,
+  source_id TEXT NOT NULL REFERENCES chronicle_sources(id) ON DELETE CASCADE,
   ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
   PRIMARY KEY (window_id, source_id),
   UNIQUE (window_id, ordinal)
 ) STRICT;
 
-CREATE TABLE turn_batches (
+CREATE TABLE turn_memory_sources (
+  id TEXT PRIMARY KEY,
+  source_key TEXT NOT NULL UNIQUE,
+  session_id TEXT NOT NULL,
+  turn_id TEXT NOT NULL,
+  occurred_at INTEGER NOT NULL,
+  projection_json TEXT NOT NULL CHECK (json_valid(projection_json)),
+  ingested_at INTEGER NOT NULL,
+  UNIQUE (session_id, turn_id)
+) STRICT;
+
+CREATE TABLE turn_memory_session_scans (
+  session_id TEXT PRIMARY KEY,
+  file_version TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('valid', 'invalid')),
+  includes_interrupted INTEGER NOT NULL CHECK (includes_interrupted IN (0, 1)),
+  last_error TEXT,
+  scanned_at INTEGER NOT NULL
+) STRICT;
+
+CREATE TABLE turn_memory_batches (
   id TEXT PRIMARY KEY,
   session_id TEXT NOT NULL,
   first_pending_at INTEGER NOT NULL,
@@ -58,20 +74,20 @@ CREATE TABLE turn_batches (
   updated_at INTEGER NOT NULL
 ) STRICT;
 
-CREATE UNIQUE INDEX one_open_turn_batch_per_session
-ON turn_batches(session_id) WHERE status = 'open';
+CREATE UNIQUE INDEX one_open_turn_memory_batch_per_session
+ON turn_memory_batches(session_id) WHERE status = 'open';
 
-CREATE TABLE turn_batch_sources (
-  batch_id TEXT NOT NULL REFERENCES turn_batches(id) ON DELETE CASCADE,
-  source_id TEXT NOT NULL REFERENCES source_items(id) ON DELETE CASCADE,
+CREATE TABLE turn_memory_batch_sources (
+  batch_id TEXT NOT NULL REFERENCES turn_memory_batches(id) ON DELETE CASCADE,
+  source_id TEXT NOT NULL REFERENCES turn_memory_sources(id) ON DELETE CASCADE,
   ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
   PRIMARY KEY (batch_id, source_id),
   UNIQUE (batch_id, ordinal)
 ) STRICT;
 
-CREATE TABLE activity_jobs (
+CREATE TABLE memory_jobs (
   job_key TEXT PRIMARY KEY,
-  source_kind TEXT NOT NULL CHECK (source_kind IN ('observation_window', 'turn_batch')),
+  kind TEXT NOT NULL CHECK (kind IN ('chronicle_summarization', 'turn_memory_extraction')),
   source_id TEXT NOT NULL,
   source_generation INTEGER NOT NULL CHECK (source_generation >= 0),
   status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'succeeded', 'error')),
@@ -86,51 +102,56 @@ CREATE TABLE activity_jobs (
   attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
   last_error TEXT,
   abandonment_count INTEGER NOT NULL DEFAULT 0 CHECK (abandonment_count >= 0),
-  UNIQUE (source_kind, source_id)
+  UNIQUE (kind, source_id)
 ) STRICT;
 
-CREATE INDEX activity_jobs_due
-ON activity_jobs(status, eligible_at, retry_at, lease_until);
+CREATE INDEX memory_jobs_due
+ON memory_jobs(kind, status, eligible_at, retry_at, lease_until);
 
-CREATE TABLE activity_summaries (
-  job_key TEXT PRIMARY KEY REFERENCES activity_jobs(job_key) ON DELETE CASCADE,
+CREATE TABLE chronicle_summaries (
+  job_key TEXT PRIMARY KEY REFERENCES memory_jobs(job_key) ON DELETE CASCADE,
   source_generation INTEGER NOT NULL CHECK (source_generation >= 0),
   source_updated_at INTEGER NOT NULL,
   source_summary TEXT NOT NULL,
-  raw_memory TEXT,
-  scope_json TEXT NOT NULL CHECK (json_valid(scope_json)),
-  generated_at INTEGER NOT NULL,
-  selected_for_consolidation INTEGER NOT NULL DEFAULT 0
-    CHECK (selected_for_consolidation IN (0, 1)),
-  selected_for_consolidation_source_updated_at INTEGER
+  generated_at INTEGER NOT NULL
 ) STRICT;
 
-CREATE TABLE activity_summary_sources (
-  job_key TEXT NOT NULL REFERENCES activity_summaries(job_key) ON DELETE CASCADE,
-  source_id TEXT NOT NULL REFERENCES source_items(id) ON DELETE RESTRICT,
+CREATE TABLE chronicle_summary_sources (
+  job_key TEXT NOT NULL REFERENCES chronicle_summaries(job_key) ON DELETE CASCADE,
+  source_id TEXT NOT NULL REFERENCES chronicle_sources(id) ON DELETE RESTRICT,
   PRIMARY KEY (job_key, source_id)
 ) STRICT;
 
-CREATE TABLE activity_records (
+CREATE TABLE chronicle_activities (
   id TEXT PRIMARY KEY,
-  activity_job_key TEXT NOT NULL REFERENCES activity_summaries(job_key) ON DELETE CASCADE,
+  job_key TEXT NOT NULL REFERENCES chronicle_summaries(job_key) ON DELETE CASCADE,
   occurred_at INTEGER NOT NULL,
-  created_at INTEGER NOT NULL,
-  status TEXT NOT NULL CHECK (
-    status IN ('observed', 'completed', 'failed', 'cancelled', 'interrupted')
-  ),
   summary TEXT NOT NULL,
   application TEXT,
   window_title TEXT,
-  entities_json TEXT NOT NULL CHECK (json_valid(entities_json)),
-  verbatim_evidence_json TEXT NOT NULL CHECK (json_valid(verbatim_evidence_json)),
-  scope_json TEXT NOT NULL CHECK (json_valid(scope_json))
+  created_at INTEGER NOT NULL
 ) STRICT;
 
-CREATE TABLE activity_record_sources (
-  activity_id TEXT NOT NULL REFERENCES activity_records(id) ON DELETE CASCADE,
-  source_id TEXT NOT NULL REFERENCES source_items(id) ON DELETE RESTRICT,
+CREATE TABLE chronicle_activity_sources (
+  activity_id TEXT NOT NULL REFERENCES chronicle_activities(id) ON DELETE CASCADE,
+  source_id TEXT NOT NULL REFERENCES chronicle_sources(id) ON DELETE RESTRICT,
   PRIMARY KEY (activity_id, source_id)
+) STRICT;
+
+CREATE TABLE turn_memory_extractions (
+  job_key TEXT PRIMARY KEY REFERENCES memory_jobs(job_key) ON DELETE CASCADE,
+  source_generation INTEGER NOT NULL CHECK (source_generation >= 0),
+  source_updated_at INTEGER NOT NULL,
+  raw_memory TEXT NOT NULL,
+  turn_summary TEXT NOT NULL,
+  turn_slug TEXT NOT NULL,
+  generated_at INTEGER NOT NULL
+) STRICT;
+
+CREATE TABLE turn_memory_extraction_sources (
+  job_key TEXT NOT NULL REFERENCES turn_memory_extractions(job_key) ON DELETE CASCADE,
+  source_id TEXT NOT NULL REFERENCES turn_memory_sources(id) ON DELETE RESTRICT,
+  PRIMARY KEY (job_key, source_id)
 ) STRICT;
 
 CREATE TABLE consolidation_jobs (
@@ -152,9 +173,15 @@ CREATE TABLE consolidation_jobs (
 
 CREATE TABLE consolidation_inputs (
   ownership_token TEXT NOT NULL,
-  job_key TEXT NOT NULL REFERENCES activity_summaries(job_key) ON DELETE RESTRICT,
-  source_kind TEXT NOT NULL CHECK (source_kind IN ('observation_window', 'turn_batch')),
+  job_key TEXT NOT NULL,
+  source_kind TEXT NOT NULL CHECK (source_kind IN ('chronicle', 'turn_memory')),
   source_id TEXT NOT NULL,
+  artifact_path TEXT NOT NULL,
+  content_hash TEXT NOT NULL,
+  started_at INTEGER NOT NULL,
+  ended_at INTEGER NOT NULL,
+  provenance TEXT NOT NULL CHECK (provenance IN ('passive_screen', 'user_turn')),
+  selection_state TEXT NOT NULL CHECK (selection_state IN ('added', 'retained', 'removed')),
   source_generation INTEGER NOT NULL CHECK (source_generation >= 0),
   source_updated_at INTEGER NOT NULL,
   source_summary TEXT NOT NULL,
@@ -165,30 +192,58 @@ CREATE TABLE consolidation_inputs (
   PRIMARY KEY (ownership_token, job_key)
 ) STRICT;
 
+CREATE TABLE consolidation_source_baseline (
+  job_key TEXT PRIMARY KEY,
+  source_kind TEXT NOT NULL CHECK (source_kind IN ('chronicle', 'turn_memory')),
+  source_id TEXT NOT NULL,
+  artifact_path TEXT NOT NULL,
+  content_hash TEXT NOT NULL,
+  started_at INTEGER NOT NULL,
+  ended_at INTEGER NOT NULL,
+  provenance TEXT NOT NULL CHECK (provenance IN ('passive_screen', 'user_turn')),
+  source_generation INTEGER NOT NULL CHECK (source_generation >= 0),
+  source_updated_at INTEGER NOT NULL,
+  source_summary TEXT NOT NULL,
+  raw_memory TEXT,
+  scope_json TEXT NOT NULL CHECK (json_valid(scope_json)),
+  source_ids_json TEXT NOT NULL CHECK (json_valid(source_ids_json)),
+  generated_at INTEGER NOT NULL
+) STRICT;
+
 CREATE TABLE model_attempts (
   id TEXT PRIMARY KEY,
-  stage TEXT NOT NULL CHECK (stage IN ('activity', 'consolidation')),
+  operation TEXT NOT NULL CHECK (operation IN (
+    'chronicle_summarization',
+    'turn_memory_extraction',
+    'global_memory_consolidation'
+  )),
   job_key TEXT NOT NULL,
   attempted_at INTEGER NOT NULL,
   finished_at INTEGER,
   model TEXT NOT NULL,
   request_hash TEXT NOT NULL,
+  request_characters INTEGER NOT NULL CHECK (request_characters >= 0),
   input_tokens INTEGER CHECK (input_tokens IS NULL OR input_tokens >= 0),
   output_tokens INTEGER CHECK (output_tokens IS NULL OR output_tokens >= 0),
+  output_characters INTEGER CHECK (output_characters IS NULL OR output_characters >= 0),
   duration_milliseconds INTEGER CHECK (
     duration_milliseconds IS NULL OR duration_milliseconds >= 0
   ),
   status TEXT NOT NULL CHECK (status IN ('running', 'succeeded', 'failed', 'cancelled')),
-  error TEXT
+  response_status TEXT,
+  incomplete_reason TEXT,
+  error_code TEXT,
+  error_path TEXT,
+  error_message TEXT
 ) STRICT;
 
-CREATE INDEX model_attempts_by_job ON model_attempts(stage, job_key, attempted_at);
+CREATE INDEX model_attempts_by_job ON model_attempts(operation, job_key, attempted_at);
 
 CREATE TABLE memory_evidence (
   memory_key TEXT NOT NULL,
-  activity_job_key TEXT NOT NULL REFERENCES activity_summaries(job_key) ON DELETE RESTRICT,
-  source_id TEXT NOT NULL REFERENCES source_items(id) ON DELETE RESTRICT,
-  PRIMARY KEY (memory_key, activity_job_key, source_id)
+  memory_source_id TEXT NOT NULL,
+  source_id TEXT NOT NULL,
+  PRIMARY KEY (memory_key, memory_source_id, source_id)
 ) STRICT;
 
 CREATE TABLE consolidation_publications (

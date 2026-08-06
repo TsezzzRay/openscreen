@@ -12,7 +12,7 @@ import type {
 } from "./protocol.js";
 import type { ScreenObservation } from "./types.js";
 
-export type ScreenObservationPluginOptions = {
+export type ScreenObservationExtensionOptions = {
   config: ScreenObservationConfig;
   helperCommand: string;
   helperArguments?: string[];
@@ -25,14 +25,14 @@ export type ScreenObservationPluginOptions = {
   onFatalError?: (error: Error) => void;
 };
 
-export class ScreenObservationPlugin {
+export class ScreenObservationExtension {
   private readonly helper: NativeHelperClient;
   private readonly service: ScreenObservationService;
   private readonly tickIntervalMilliseconds: number;
   private timer?: NodeJS.Timeout;
   private readonly activeTicks = new Set<Promise<void>>();
 
-  constructor(options: ScreenObservationPluginOptions) {
+  constructor(options: ScreenObservationExtensionOptions) {
     this.tickIntervalMilliseconds = options.config.scheduling.tickIntervalMilliseconds;
     const helper = new NativeHelperClient({
       command: options.helperCommand,

@@ -1,5 +1,6 @@
 import {
   Dedupe,
+  type ObservationContentSignature,
   windowKey,
 } from "./dedupe.js";
 import { buildObservation } from "./observation.js";
@@ -28,6 +29,11 @@ export class ScreenObservationService {
   private readonly planner: CapturePlanner;
   private readonly dedupe: Dedupe;
   private deferredSignal?: NativeActivitySignal;
+  private pendingDelivery?: {
+    observation: ScreenObservation;
+    signature: ObservationContentSignature;
+    retryAtMilliseconds: number;
+  };
   private lastCaptureAtMilliseconds = Number.NEGATIVE_INFINITY;
   private capturing = false;
 
@@ -45,6 +51,23 @@ export class ScreenObservationService {
 
   async tick(nowMilliseconds = Date.now()) {
     if (this.capturing) return;
+    const pendingDelivery = this.pendingDelivery;
+    if (pendingDelivery !== undefined) {
+      if (pendingDelivery.retryAtMilliseconds > nowMilliseconds) return;
+      this.capturing = true;
+      try {
+        await this.options.onObservation(pendingDelivery.observation);
+        this.dedupe.commit(pendingDelivery.signature);
+        this.pendingDelivery = undefined;
+      } catch (error) {
+        pendingDelivery.retryAtMilliseconds = nowMilliseconds +
+          this.options.config.scheduling.ordinaryCaptureGapMilliseconds;
+        throw error;
+      } finally {
+        this.capturing = false;
+      }
+      return;
+    }
     const due = this.planner.takeDue(nowMilliseconds);
     if (due.length > 0) {
       this.deferredSignal = due
@@ -69,8 +92,23 @@ export class ScreenObservationService {
     try {
       const result = await this.options.capture(signal);
       if (windowKey(result.window) !== windowKey(signal.window)) return;
-      if (!this.dedupe.accept(result, boundaryRequested)) return;
-      await this.options.onObservation(buildObservation(signal, result));
+      const signature = this.dedupe.candidate(result, boundaryRequested);
+      if (signature === undefined) return;
+      const delivery = {
+        observation: buildObservation(signal, result),
+        signature,
+        retryAtMilliseconds: nowMilliseconds,
+      };
+      this.pendingDelivery = delivery;
+      try {
+        await this.options.onObservation(delivery.observation);
+        this.dedupe.commit(signature);
+        this.pendingDelivery = undefined;
+      } catch (error) {
+        delivery.retryAtMilliseconds = nowMilliseconds +
+          this.options.config.scheduling.ordinaryCaptureGapMilliseconds;
+        throw error;
+      }
     } finally {
       this.capturing = false;
     }

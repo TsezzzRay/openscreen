@@ -12,7 +12,7 @@ import {
   appendSessionEvents,
   createSession,
 } from "../../src/harness/session/store.js";
-import type { ScreenObservation } from "../../src/plugins/screen-observation/types.js";
+import type { ScreenObservation } from "../../src/extensions/screen-observation/types.js";
 import { testMemoryConfig } from "./test-config.js";
 
 const observation: ScreenObservation = {
@@ -36,7 +36,7 @@ const observation: ScreenObservation = {
   },
 };
 
-test("recovers Session Turns and runs Observation -> Activity -> consolidation", async (t) => {
+test("recovers Turns and independently runs Chronicle, Turn Memory, and consolidation", async (t) => {
   const dataRoot = await mkdtemp(join(tmpdir(), "openscreen-memory-worker-"));
   t.after(() => rm(dataRoot, { recursive: true, force: true }));
   const sessionsDirectory = join(dataRoot, "sessions");
@@ -71,23 +71,30 @@ test("recovers Session Turns and runs Observation -> Activity -> consolidation",
       inputTokens: { count: async () => ({ input_tokens: 100 }) },
       create: async (request: { instructions: string; input: Array<{ content: string }> }) => {
         const payload = JSON.parse(request.input[0]?.content ?? "{}");
-        if (request.instructions.includes("Every supplied source ID")) {
+        if (request.instructions.includes("Organize a closed window")) {
           activityRequests += 1;
-          const sources = payload.type === "observation_window"
-            ? payload.observations
-            : payload.turns;
           return {
             output_text: JSON.stringify({
               activities: [{
                 summary: "The user worked on OpenScreen memory.",
-                source_ids: sources.map(({ sourceId }: { sourceId: string }) => sourceId),
-                entities: ["OpenScreen"],
-                verbatim_evidence: [],
-                scope_hints: [{ type: "topic", key: "openscreen-memory" }],
+                source_ids: payload.observations.map(
+                  ({ sourceId }: { sourceId: string }) => sourceId,
+                ),
+                application: "Safari",
+                window_title: null,
               }],
               source_summary: "OpenScreen memory activity.",
-              raw_memory: "The user is working on OpenScreen memory.",
-              scope_hints: [{ type: "topic", key: "openscreen-memory" }],
+            }),
+            usage: { input_tokens: 100, output_tokens: 50, total_tokens: 150 },
+          };
+        }
+        if (request.instructions.includes("Extract durable memory")) {
+          activityRequests += 1;
+          return {
+            output_text: JSON.stringify({
+              raw_memory: "The user asked OpenScreen to remember the pipeline.",
+              turn_summary: "The user asked to remember the OpenScreen pipeline.",
+              turn_slug: "remember-pipeline",
             }),
             usage: { input_tokens: 100, output_tokens: 50, total_tokens: 150 },
           };
@@ -125,9 +132,11 @@ test("recovers Session Turns and runs Observation -> Activity -> consolidation",
 
   await pipeline.scanSessions({ includeInterrupted: true });
   await pipeline.ingestObservation(observation);
-  assert.equal(pipeline.database.connection.prepare(
-    "SELECT count(*) AS count FROM source_items",
-  ).get()?.count, 3);
+  assert.equal(pipeline.database.connection.prepare(`
+    SELECT
+      (SELECT count(*) FROM chronicle_sources) +
+      (SELECT count(*) FROM turn_memory_sources) AS count
+  `).get()?.count, 3);
 
   now = Date.parse("2026-08-04T12:00:00.000Z");
   await pipeline.tick();
@@ -137,8 +146,9 @@ test("recovers Session Turns and runs Observation -> Activity -> consolidation",
   assert.match(await readFile(join(memoryRoot, "MEMORY.md"), "utf8"), /OpenScreen memory/);
   assert.match(await readFile(join(memoryRoot, "memory_summary.md"), "utf8"), /^v1\n/);
   const sidecar = pipeline.database.connection.prepare(`
-    SELECT sidecar_path FROM source_items WHERE id = 'observation:observation-1'
-  `).get()?.sidecar_path;
+    SELECT structured_path FROM chronicle_sources
+    WHERE id = 'observation:observation-1'
+  `).get()?.structured_path;
   assert.equal(typeof sidecar, "string");
   await access(join(memoryRoot, String(sidecar)));
 });
@@ -186,8 +196,8 @@ test("does not let cleanup delete a durable sidecar before its source row commit
   await cleanup;
 
   const sidecar = pipeline.database.connection.prepare(`
-    SELECT sidecar_path FROM source_items WHERE id = 'observation:cleanup-race'
-  `).get()?.sidecar_path;
+    SELECT structured_path FROM chronicle_sources WHERE id = 'observation:cleanup-race'
+  `).get()?.structured_path;
   assert.equal(typeof sidecar, "string");
   await access(join(memoryRoot, String(sidecar)));
 });
@@ -215,7 +225,7 @@ test("normal scans do not mistake an active Turn for a crashed interrupted Turn"
   await pipeline.scanSession(session.id, { includeInterrupted: false });
 
   assert.equal(pipeline.database.connection.prepare(
-    "SELECT count(*) AS count FROM source_items",
+    "SELECT count(*) AS count FROM turn_memory_sources",
   ).get()?.count, 0);
 });
 
@@ -258,15 +268,15 @@ test("retries the frozen startup snapshot after exact token counting fails", asy
     /temporary token counter failure/,
   );
   assert.equal(pipeline.database.connection.prepare(
-    "SELECT count(*) AS count FROM source_items",
+    "SELECT count(*) AS count FROM turn_memory_sources",
   ).get()?.count, 0);
   await pipeline.ingestCapturedSessions(startup);
   assert.equal(pipeline.database.connection.prepare(
-    "SELECT count(*) AS count FROM source_items",
+    "SELECT count(*) AS count FROM turn_memory_sources",
   ).get()?.count, 1);
 });
 
-test("uses exact model token counting and the effective Activity budget for Turn batching", async (t) => {
+test("uses exact model token counting and the effective Turn Memory budget", async (t) => {
   const dataRoot = await mkdtemp(join(tmpdir(), "openscreen-memory-worker-"));
   t.after(() => rm(dataRoot, { recursive: true, force: true }));
   const sessionsDirectory = join(dataRoot, "sessions");
@@ -315,14 +325,14 @@ test("uses exact model token counting and the effective Activity budget for Turn
 
   assert.equal(countCalls, 1);
   assert.deepEqual({ ...pipeline.database.connection.prepare(`
-    SELECT projected_input_tokens, max_input_tokens FROM turn_batches
+    SELECT projected_input_tokens, max_input_tokens FROM turn_memory_batches
   `).get() }, {
     projected_input_tokens: 321,
     max_input_tokens: 7000,
   });
 });
 
-test("isolates a Turn that exceeds the Activity budget from adjacent Turns", async (t) => {
+test("isolates a Turn that exceeds the Turn Memory budget from adjacent Turns", async (t) => {
   const dataRoot = await mkdtemp(join(tmpdir(), "openscreen-memory-worker-"));
   t.after(() => rm(dataRoot, { recursive: true, force: true }));
   const sessionsDirectory = join(dataRoot, "sessions");
@@ -374,7 +384,7 @@ test("isolates a Turn that exceeds the Activity budget from adjacent Turns", asy
     workerId: "memory-worker-test",
     contextWindowTokens: 1_000,
     memory: testMemoryConfig({
-      activity: { maxInputTokens: 900, maxOutputTokens: 100 },
+      turnMemory: { maxInputTokens: 900, maxOutputTokens: 100 },
       consolidation: { maxInputTokens: 900, maxOutputTokens: 100 },
     }),
   });
@@ -391,9 +401,9 @@ test("isolates a Turn that exceeds the Activity budget from adjacent Turns", asy
   assert.deepEqual(pipeline.database.connection.prepare(`
     SELECT b.status, b.close_reason,
            group_concat(s.turn_id, ',') AS turn_ids
-    FROM turn_batches b
-    JOIN turn_batch_sources bs ON bs.batch_id = b.id
-    JOIN source_items s ON s.id = bs.source_id
+    FROM turn_memory_batches b
+    JOIN turn_memory_batch_sources bs ON bs.batch_id = b.id
+    JOIN turn_memory_sources s ON s.id = bs.source_id
     GROUP BY b.id
     ORDER BY b.first_pending_at
   `).all().map((row) => ({ ...row })), [

@@ -11,7 +11,7 @@ import {
   appendSessionEvents,
   createSession,
 } from "../../src/harness/session/store.js";
-import type { ScreenObservation } from "../../src/plugins/screen-observation/types.js";
+import type { ScreenObservation } from "../../src/extensions/screen-observation/types.js";
 import { testMemoryConfig } from "./test-config.js";
 
 test("persists Observation messages in an independent Node Worker thread", async (t) => {
@@ -54,7 +54,7 @@ test("persists Observation messages in an independent Node Worker thread", async
   const database = openMemoryDatabase(memoryRoot);
   t.after(() => database.close());
   assert.equal(database.connection.prepare(
-    "SELECT count(*) AS count FROM source_items WHERE id = 'observation:thread-observation'",
+    "SELECT count(*) AS count FROM chronicle_sources WHERE id = 'observation:thread-observation'",
   ).get()?.count, 1);
 });
 
@@ -140,7 +140,7 @@ test("persists new Observations while a background model request is running", as
   const database = openMemoryDatabase(memoryRoot);
   t.after(() => database.close());
   assert.equal(database.connection.prepare(`
-    SELECT count(*) AS count FROM source_items
+    SELECT count(*) AS count FROM chronicle_sources
     WHERE id IN ('observation:before-model', 'observation:during-model')
   `).get()?.count, 2);
 });

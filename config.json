@@ -23,24 +23,31 @@
       "maxAttempts": 3,
       "maxConsecutiveExpiredLeases": 3
     },
-    "activity": {
+    "chronicle": {
       "maxInputTokens": 244800,
       "maxOutputTokens": 4096,
       "observationWindowMilliseconds": 60000,
       "observationGraceMilliseconds": 15000,
-      "maxObservationsPerRequest": 30,
+      "maxSourcesPerRequest": 10
+    },
+    "turnMemory": {
+      "maxInputTokens": 244800,
+      "maxOutputTokens": 4096,
       "turnIdleMilliseconds": 1800000,
       "turnHardCapMilliseconds": 7200000
     },
     "consolidation": {
       "maxInputTokens": 244800,
       "maxOutputTokens": 4096,
+      "maxSources": 512,
       "cooldownMilliseconds": 21600000
     },
     "evidence": {
       "successRetentionMilliseconds": 86400000,
       "failedRetentionMilliseconds": 604800000,
-      "abandonedGraceMilliseconds": 3600000
+      "screenshotRetentionMilliseconds": 86400000,
+      "abandonedGraceMilliseconds": 3600000,
+      "maxBytes": 2147483648
     }
   },
   "screenObservation": {

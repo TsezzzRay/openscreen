@@ -31,24 +31,31 @@ const fileConfig = {
       maxAttempts: 3,
       maxConsecutiveExpiredLeases: 3,
     },
-    activity: {
+    chronicle: {
       maxInputTokens: 244_800,
       maxOutputTokens: 4_096,
       observationWindowMilliseconds: 60_000,
       observationGraceMilliseconds: 15_000,
-      maxObservationsPerRequest: 30,
+      maxSourcesPerRequest: 10,
+    },
+    turnMemory: {
+      maxInputTokens: 244_800,
+      maxOutputTokens: 4_096,
       turnIdleMilliseconds: 30 * 60_000,
       turnHardCapMilliseconds: 2 * 60 * 60_000,
     },
     consolidation: {
       maxInputTokens: 244_800,
       maxOutputTokens: 4_096,
+      maxSources: 512,
       cooldownMilliseconds: 6 * 60 * 60_000,
     },
     evidence: {
       successRetentionMilliseconds: 24 * 60 * 60_000,
       failedRetentionMilliseconds: 7 * 24 * 60 * 60_000,
+      screenshotRetentionMilliseconds: 24 * 60 * 60_000,
       abandonedGraceMilliseconds: 60 * 60_000,
+      maxBytes: 2 * 1024 * 1024 * 1024,
     },
   },
   screenObservation: {
@@ -142,8 +149,10 @@ test("overrides every JSON setting from environment variables", (t) => {
     OPENSCREEN_MIN_RECENT_TURNS: "3",
     OPENSCREEN_SESSION_EVENT_FLUSH_BYTES: "8192",
     OPENSCREEN_SESSION_EVENT_FLUSH_MS: "100",
-    OPENSCREEN_ACTIVITY_MAX_INPUT_TOKENS: "90000",
-    OPENSCREEN_ACTIVITY_MAX_OUTPUT_TOKENS: "2000",
+    OPENSCREEN_CHRONICLE_MAX_INPUT_TOKENS: "90000",
+    OPENSCREEN_CHRONICLE_MAX_OUTPUT_TOKENS: "2000",
+    OPENSCREEN_TURN_MEMORY_MAX_INPUT_TOKENS: "85000",
+    OPENSCREEN_TURN_MEMORY_MAX_OUTPUT_TOKENS: "1800",
     OPENSCREEN_CONSOLIDATION_MAX_INPUT_TOKENS: "80000",
     OPENSCREEN_CONSOLIDATION_MAX_OUTPUT_TOKENS: "1500",
   }), {
@@ -164,10 +173,15 @@ test("overrides every JSON setting from environment variables", (t) => {
     },
     memory: {
       ...fileConfig.memory,
-      activity: {
-        ...fileConfig.memory.activity,
+      chronicle: {
+        ...fileConfig.memory.chronicle,
         maxInputTokens: 90_000,
         maxOutputTokens: 2_000,
+      },
+      turnMemory: {
+        ...fileConfig.memory.turnMemory,
+        maxInputTokens: 85_000,
+        maxOutputTokens: 1_800,
       },
       consolidation: {
         ...fileConfig.memory.consolidation,
@@ -254,33 +268,35 @@ test("rejects inconsistent context limits", (t) => {
 });
 
 test("rejects invalid harness limits", (t) => {
-  const invalidActivityBudget = withConfig(t, {
+  const invalidChronicleBudget = withConfig(t, {
     ...fileConfig,
     memory: {
       ...fileConfig.memory,
-      activity: {
-        ...fileConfig.memory.activity,
+      chronicle: {
+        ...fileConfig.memory.chronicle,
         maxInputTokens: 270_000,
       },
     },
   });
   assert.throws(
-    () => loadRuntimeConfig(invalidActivityBudget.path, { OPENAI_API_KEY: "secret" }),
-    /memory.activity token budget exceeds context.windowTokens/,
+    () => loadRuntimeConfig(invalidChronicleBudget.path, { OPENAI_API_KEY: "secret" }),
+    /memory.chronicle token budget exceeds context.windowTokens/,
   );
 });
 
-test("does not accept the removed top-level Activity configuration", (t) => {
-  const { activity: removedActivity, ...memoryWithoutActivity } = fileConfig.memory;
+test("does not accept the removed generic Activity configuration", (t) => {
   const { path } = withConfig(t, {
     ...fileConfig,
-    activity: removedActivity,
-    memory: memoryWithoutActivity,
+    memory: {
+      ...fileConfig.memory,
+      chronicle: undefined,
+      activity: fileConfig.memory.chronicle,
+    },
   });
 
   assert.throws(
     () => loadRuntimeConfig(path, { OPENAI_API_KEY: "secret" }),
-    /memory.activity must be an object/,
+    /memory.chronicle must be an object/,
   );
 });
 

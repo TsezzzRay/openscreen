@@ -141,29 +141,33 @@ test("an expired Consolidation owner cannot enter the filesystem publication cal
   assert.equal(callbacks, 0);
 });
 
-test("materializes an immutable Activity input snapshot when Consolidation claims", async (t) => {
+test("materializes an immutable Memory source snapshot when Consolidation claims", async (t) => {
   const { database, repository } = await fixture(t);
   database.connection.prepare(`
-    INSERT INTO source_items (
-      id, source_type, source_key, occurred_at, projection_json, ingested_at
-    ) VALUES ('observation:1', 'observation', 'observation:1', 1, '{}', 1)
+    INSERT INTO chronicle_sources (
+      id, source_key, occurred_at, captured_at, projection_json, ingested_at
+    ) VALUES ('observation:1', 'observation:1', 1, 1, '{}', 1)
   `).run();
   database.connection.prepare(`
-    INSERT INTO activity_jobs (
-      job_key, source_kind, source_id, source_generation, status,
+    INSERT INTO chronicle_windows (
+      id, start_at, end_at, eligible_at, source_generation, created_at, updated_at
+    ) VALUES ('window:1', 1, 2, 2, 1, 1, 1)
+  `).run();
+  database.connection.prepare(`
+    INSERT INTO memory_jobs (
+      job_key, kind, source_id, source_generation, status,
       eligible_at, retry_remaining
-    ) VALUES ('activity:window:1', 'observation_window', 'window:1', 1,
+    ) VALUES ('chronicle:window:1', 'chronicle_summarization', 'window:1', 1,
               'succeeded', 1, 3)
   `).run();
   database.connection.prepare(`
-    INSERT INTO activity_summaries (
-      job_key, source_generation, source_updated_at, source_summary,
-      raw_memory, scope_json, generated_at
-    ) VALUES ('activity:window:1', 1, 1, 'old summary', 'old memory', '[]', 1)
+    INSERT INTO chronicle_summaries (
+      job_key, source_generation, source_updated_at, source_summary, generated_at
+    ) VALUES ('chronicle:window:1', 1, 1, 'old summary', 1)
   `).run();
   database.connection.prepare(`
-    INSERT INTO activity_summary_sources (job_key, source_id)
-    VALUES ('activity:window:1', 'observation:1')
+    INSERT INTO chronicle_summary_sources (job_key, source_id)
+    VALUES ('chronicle:window:1', 'observation:1')
   `).run();
   const claimed = repository.claim("worker-1", 100);
   assert.equal(claimed.status, "claimed");
@@ -171,9 +175,9 @@ test("materializes an immutable Activity input snapshot when Consolidation claim
 
   database.transaction(() => {
     database.connection.prepare(`
-      UPDATE activity_summaries SET source_generation = 2, source_updated_at = 2,
-        source_summary = 'new summary', raw_memory = 'new memory', generated_at = 2
-      WHERE job_key = 'activity:window:1'
+      UPDATE chronicle_summaries SET source_generation = 2, source_updated_at = 2,
+        source_summary = 'new summary', generated_at = 2
+      WHERE job_key = 'chronicle:window:1'
     `).run();
     database.connection.prepare(`
       UPDATE consolidation_jobs SET input_watermark = 2
@@ -185,13 +189,31 @@ test("materializes an immutable Activity input snapshot when Consolidation claim
   assert.equal(inputs.length, 1);
   assert.equal(inputs[0]?.sourceSummary, "old summary");
   assert.equal(inputs[0]?.sourceUpdatedAt, 1);
-  assert.throws(() => database.connection.prepare(`
-    DELETE FROM activity_summaries WHERE job_key = 'activity:window:1'
-  `).run(), /foreign key constraint/i);
+  assert.equal(inputs[0]?.state, "added");
+  assert.equal(inputs[0]?.provenance, "passive_screen");
+  assert.match(inputs[0]?.artifactPath ?? "", /^rollout_summaries\/chronicle-/);
+  assert.doesNotThrow(() => database.connection.prepare(`
+    DELETE FROM chronicle_summaries WHERE job_key = 'chronicle:window:1'
+  `).run());
   assert.equal(repository.loadInputs(claimed.claim).length, 1);
+  assert.equal(repository.succeed(claimed.claim, 101), true);
+  assert.equal(database.connection.prepare(`
+    SELECT count(*) AS count FROM consolidation_source_baseline
+  `).get()?.count, 1);
+  database.connection.prepare(`
+    UPDATE consolidation_jobs SET status = 'pending', input_watermark = 2
+    WHERE job_key = 'global'
+  `).run();
+  const forgetting = repository.claim(
+    "worker-2",
+    102 + memory.consolidation.cooldownMilliseconds,
+  );
+  assert.equal(forgetting.status, "claimed");
+  if (forgetting.status !== "claimed") return;
+  assert.equal(repository.loadInputs(forgetting.claim)[0]?.state, "removed");
 });
 
-test("enforces six-hour success cooldown even when new Activity input is pending", async (t) => {
+test("enforces six-hour success cooldown even when new Memory input is pending", async (t) => {
   const { database, repository } = await fixture(t);
   const now = Date.parse("2026-08-04T12:00:00.000Z");
   const claimed = repository.claim("worker-1", now);
@@ -223,7 +245,7 @@ test("enforces six-hour success cooldown even when new Activity input is pending
   );
 });
 
-test("keeps Activity input that arrives during a Consolidation run for the next snapshot", async (t) => {
+test("keeps Memory input that arrives during a Consolidation run for the next snapshot", async (t) => {
   const { database, repository } = await fixture(t);
   const now = Date.parse("2026-08-04T12:00:00.000Z");
   const claimed = repository.claim("worker-1", now);

@@ -8,6 +8,16 @@ import type { MemoryPipelineConfig } from "../types.js";
 import type { ConsolidationClaim } from "./repository.js";
 
 const JOB_KEY = "global";
+const PUBLICATION_STATES = ["prepared", "publishing"] as const;
+
+function publicationState(value: unknown): ConsolidationPublication["state"] {
+  if (typeof value !== "string" || !PUBLICATION_STATES.includes(
+    value as typeof PUBLICATION_STATES[number],
+  )) {
+    throw new Error("Invalid Consolidation publication state");
+  }
+  return value as ConsolidationPublication["state"];
+}
 
 export type ConsolidationPublication = {
   ownershipToken: string;
@@ -33,7 +43,7 @@ export class ConsolidationPublications {
     `).get(JOB_KEY) as DatabaseRow | undefined;
     return row ? {
       ownershipToken: String(row.ownership_token),
-      state: String(row.state) as ConsolidationPublication["state"],
+      state: publicationState(row.state),
       stagingName: String(row.staging_name),
       memorySha256: String(row.memory_sha256),
       summarySha256: String(row.summary_sha256),
@@ -114,36 +124,25 @@ export class ConsolidationPublications {
     finishedAt: number,
     evidence?: ReadonlyMap<string, readonly string[]>,
   ) {
-    this.database.connection.prepare(`
-      UPDATE activity_summaries SET
-        selected_for_consolidation = 1,
-        selected_for_consolidation_source_updated_at = source_updated_at
-      WHERE EXISTS (
-        SELECT 1 FROM consolidation_inputs snapshot
-        WHERE snapshot.ownership_token = ?
-          AND snapshot.job_key = activity_summaries.job_key
-          AND snapshot.source_updated_at = activity_summaries.source_updated_at
-      )
-    `).run(claim.ownershipToken);
     if (evidence) {
       this.database.connection.prepare("DELETE FROM memory_evidence").run();
       const insert = this.database.connection.prepare(`
-        INSERT INTO memory_evidence (memory_key, activity_job_key, source_id)
+        INSERT INTO memory_evidence (memory_key, memory_source_id, source_id)
         VALUES (?, ?, ?)
       `);
-      for (const [memoryKey, activityJobKeys] of evidence) {
-        for (const activityJobKey of activityJobKeys) {
+      for (const [memoryKey, memorySourceIds] of evidence) {
+        for (const memorySourceId of memorySourceIds) {
           const snapshot = this.database.connection.prepare(`
             SELECT source_ids_json FROM consolidation_inputs
             WHERE ownership_token = ? AND job_key = ?
-          `).get(claim.ownershipToken, activityJobKey) as DatabaseRow | undefined;
+          `).get(claim.ownershipToken, memorySourceId) as DatabaseRow | undefined;
           if (!snapshot) {
-            throw new Error(`Missing Consolidation snapshot ${activityJobKey}`);
+            throw new Error(`Missing Consolidation snapshot ${memorySourceId}`);
           }
           for (const sourceId of JSON.parse(
             String(snapshot.source_ids_json),
           ) as string[]) {
-            insert.run(memoryKey, activityJobKey, sourceId);
+            insert.run(memoryKey, memorySourceId, sourceId);
           }
         }
       }
@@ -169,6 +168,23 @@ export class ConsolidationPublications {
       claim.ownershipToken,
     ));
     if (succeeded) {
+      this.database.connection.prepare(
+        "DELETE FROM consolidation_source_baseline",
+      ).run();
+      this.database.connection.prepare(`
+        INSERT INTO consolidation_source_baseline (
+          job_key, source_kind, source_id, artifact_path, content_hash,
+          started_at, ended_at, provenance, source_generation,
+          source_updated_at, source_summary, raw_memory, scope_json,
+          source_ids_json, generated_at
+        )
+        SELECT job_key, source_kind, source_id, artifact_path, content_hash,
+               started_at, ended_at, provenance, source_generation,
+               source_updated_at, source_summary, raw_memory, scope_json,
+               source_ids_json, generated_at
+        FROM consolidation_inputs
+        WHERE ownership_token = ? AND selection_state != 'removed'
+      `).run(claim.ownershipToken);
       this.database.connection.prepare(`
         DELETE FROM consolidation_inputs WHERE ownership_token = ?
       `).run(claim.ownershipToken);

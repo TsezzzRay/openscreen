@@ -1,4 +1,4 @@
-import type { ScreenObservation } from "../../../plugins/screen-observation/types.js";
+import type { ScreenObservation } from "../../../extensions/screen-observation/types.js";
 import type { MemoryPipelineConfig } from "../types.js";
 
 export type MemoryWorkerData = {

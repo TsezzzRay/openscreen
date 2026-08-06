@@ -35,7 +35,7 @@ test("opens a private WAL database with the complete memory schema", async (t) =
     (database.connection.prepare(
       "SELECT version FROM schema_migrations ORDER BY version",
     ).all() as Array<{ version: number }>).map(({ version }) => version),
-    [1],
+    [4],
   );
 
   const tables = (database.connection.prepare(`
@@ -44,34 +44,50 @@ test("opens a private WAL database with the complete memory schema", async (t) =
     ORDER BY name
   `).all() as Array<{ name: string }>).map(({ name }) => name);
   assert.deepEqual(tables, [
-    "activity_jobs",
-    "activity_record_sources",
-    "activity_records",
-    "activity_summaries",
-    "activity_summary_sources",
+    "chronicle_activities",
+    "chronicle_activity_sources",
+    "chronicle_sources",
+    "chronicle_summaries",
+    "chronicle_summary_sources",
+    "chronicle_window_sources",
+    "chronicle_windows",
     "consolidation_inputs",
     "consolidation_jobs",
     "consolidation_publications",
+    "consolidation_source_baseline",
     "memory_evidence",
+    "memory_jobs",
     "model_attempts",
-    "observation_window_sources",
-    "observation_windows",
     "schema_migrations",
-    "source_items",
-    "turn_batch_sources",
-    "turn_batches",
+    "turn_memory_batch_sources",
+    "turn_memory_batches",
+    "turn_memory_extraction_sources",
+    "turn_memory_extractions",
+    "turn_memory_session_scans",
+    "turn_memory_sources",
   ]);
   const sourceColumns = (database.connection.prepare(
-    "PRAGMA table_info(source_items)",
+    "PRAGMA table_info(chronicle_sources)",
   ).all() as Array<{ name: string }>).map(({ name }) => name);
   assert.equal(sourceColumns.includes("payload_json"), false);
   assert.equal(sourceColumns.includes("projected_input_tokens"), false);
+  const attemptColumns = (database.connection.prepare(
+    "PRAGMA table_info(model_attempts)",
+  ).all() as Array<{ name: string }>).map(({ name }) => name);
+  assert.equal(attemptColumns.includes("stage"), false);
+  assert.equal(attemptColumns.includes("operation"), true);
+  assert.equal(attemptColumns.includes("request_characters"), true);
+  assert.equal(attemptColumns.includes("output_characters"), true);
+  assert.equal(attemptColumns.includes("response_status"), true);
+  assert.equal(attemptColumns.includes("incomplete_reason"), true);
+  assert.equal(attemptColumns.includes("error_code"), true);
+  assert.equal(attemptColumns.includes("error_path"), true);
   assert.throws(() => database.connection.prepare(`
-    INSERT INTO activity_jobs (
-      job_key, source_kind, source_id, source_generation,
+    INSERT INTO memory_jobs (
+      job_key, kind, source_id, source_generation,
       status, eligible_at, retry_remaining
     ) VALUES (
-      'unused-status', 'observation_window', 'window:unused', 1,
+      'unused-status', 'chronicle_summarization', 'window:unused', 1,
       'succeeded_no_output', 1, 3
     )
   `).run(), /check constraint/i);
@@ -85,15 +101,15 @@ test("rolls back an immediate memory transaction after an exception", async (t) 
 
   assert.throws(() => database.transaction(() => {
     database.connection.prepare(`
-      INSERT INTO source_items (
-        id, source_type, source_key, occurred_at, projection_json, ingested_at
-      ) VALUES (?, 'observation', ?, ?, '{}', ?)
-    `).run("source-1", "observation:1", 1, 1);
+      INSERT INTO chronicle_sources (
+        id, source_key, occurred_at, captured_at, projection_json, ingested_at
+      ) VALUES (?, ?, ?, ?, '{}', ?)
+    `).run("source-1", "observation:1", 1, 1, 1);
     throw new Error("stop");
   }), /stop/);
 
   assert.equal(
-    database.connection.prepare("SELECT count(*) AS count FROM source_items").get()?.count,
+    database.connection.prepare("SELECT count(*) AS count FROM chronicle_sources").get()?.count,
     0,
   );
 });
@@ -118,13 +134,13 @@ test("rejects an existing database from an unreleased schema", async (t) => {
       version INTEGER PRIMARY KEY,
       applied_at INTEGER NOT NULL
     ) STRICT;
-    INSERT INTO schema_migrations (version, applied_at) VALUES (4, 1);
+    INSERT INTO schema_migrations (version, applied_at) VALUES (3, 1);
   `);
   legacy.close();
 
   assert.throws(
     () => openMemoryDatabase(root),
-    /unsupported.*schema version 4/i,
+    /unsupported.*schema version 3/i,
   );
 });
 

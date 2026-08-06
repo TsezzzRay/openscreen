@@ -4,7 +4,7 @@ import { DatabaseSync } from "node:sqlite";
 
 import { MEMORY_SCHEMA, MEMORY_SCHEMA_VERSION } from "./schema.js";
 
-const DATABASE_FILENAME = "activity-memory.sqlite3";
+const DATABASE_FILENAME = "memory.sqlite3";
 const BUSY_TIMEOUT_MILLISECONDS = 5_000;
 
 export type DatabaseRow = Record<string, unknown>;

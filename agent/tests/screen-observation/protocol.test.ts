@@ -5,7 +5,7 @@ import {
   encodeHelperCommand,
   parseHelperOutput,
   type NativeHelperConfiguration,
-} from "../../src/plugins/screen-observation/protocol.js";
+} from "../../src/extensions/screen-observation/protocol.js";
 
 const configuration = {
   activityMonitoring: {

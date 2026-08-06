@@ -4,11 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { NativeHelperClient } from "../../src/plugins/screen-observation/helper.js";
+import { NativeHelperClient } from "../../src/extensions/screen-observation/helper.js";
 import type {
   NativeActivitySignal,
   NativeHelperConfiguration,
-} from "../../src/plugins/screen-observation/protocol.js";
+} from "../../src/extensions/screen-observation/protocol.js";
 
 const configuration = {
   activityMonitoring: {

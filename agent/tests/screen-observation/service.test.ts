@@ -2,14 +2,14 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import type { ScreenObservationConfig } from "../../src/config.js";
-import { ScreenObservationService } from "../../src/plugins/screen-observation/service.js";
+import { ScreenObservationService } from "../../src/extensions/screen-observation/service.js";
 import type {
   NativeActivitySignal,
   NativeCaptureResult,
-} from "../../src/plugins/screen-observation/protocol.js";
+} from "../../src/extensions/screen-observation/protocol.js";
 import type {
   ScreenObservation,
-} from "../../src/plugins/screen-observation/types.js";
+} from "../../src/extensions/screen-observation/types.js";
 
 const config = {
   enabled: true,
@@ -242,4 +242,33 @@ test("uses the ordinary capture gap supplied by startup configuration", async ()
   await service.tick(900);
 
   assert.equal(captureCount, 2);
+});
+
+test("retries the same observation after persistence fails before advancing dedupe", async () => {
+  const observationIds: string[] = [];
+  let deliveryAttempts = 0;
+  const service = new ScreenObservationService({
+    config,
+    capture: async () => result(),
+    onObservation: (observation) => {
+      observationIds.push(observation.id);
+      deliveryAttempts += 1;
+      if (deliveryAttempts === 1) {
+        throw new Error("transient persistence failure");
+      }
+    },
+  });
+
+  service.push(signal("mouseClick"), 0);
+  await assert.rejects(service.tick(400), /transient persistence failure/);
+  await service.tick(2_399);
+  assert.equal(deliveryAttempts, 1);
+
+  await service.tick(2_400);
+  assert.equal(deliveryAttempts, 2);
+  assert.equal(observationIds[0], observationIds[1]);
+
+  service.push(signal("mouseClick", windowA, 4_100), 4_100);
+  await service.tick(4_500);
+  assert.equal(deliveryAttempts, 2);
 });

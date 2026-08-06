@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { Worker } from "node:worker_threads";
 
-import type { ScreenObservation } from "../../../plugins/screen-observation/types.js";
+import type { ScreenObservation } from "../../../extensions/screen-observation/types.js";
 import type {
   MemoryWorkerData,
   MemoryWorkerCommand,

@@ -4,12 +4,13 @@ import test from "node:test";
 import {
   Dedupe,
   axContentHash,
+  contentSignature,
   shouldEmitObservation,
   visualDistance,
-} from "../../src/plugins/screen-observation/dedupe.js";
+} from "../../src/extensions/screen-observation/dedupe.js";
 import type {
   ObservationContentSignature,
-} from "../../src/plugins/screen-observation/dedupe.js";
+} from "../../src/extensions/screen-observation/dedupe.js";
 
 test("AX content hashing is independent of object key order", () => {
   assert.equal(
@@ -23,6 +24,62 @@ test("AX content hashing is independent of object key order", () => {
       title: "Document",
       role: "AXWindow",
     }),
+  );
+});
+
+test("semantic AX dedup ignores frames and capture bookkeeping", () => {
+  const capture = {
+    capturedAt: "2026-07-27T00:00:01.000Z",
+    window: {
+      processIdentifier: 101,
+      applicationName: "Editor",
+      windowIdentifier: 7,
+      title: "Document",
+    },
+    screenshot: {
+      status: "complete" as const,
+      durationMilliseconds: 10,
+      mimeType: "image/jpeg" as const,
+      dataBase64: "AA==",
+      width: 1,
+      height: 1,
+    },
+    accessibility: {
+      status: "complete" as const,
+      durationMilliseconds: 10,
+      snapshot: {
+        root: {
+          role: "AXWindow",
+          title: "Document",
+          frame: { x: 0, y: 0, width: 100, height: 100 },
+        },
+        nodeCount: 1,
+        truncated: false,
+      },
+    },
+    visualSignature: [0, 0],
+  };
+  const moved = {
+    ...capture,
+    capturedAt: "2026-07-27T00:00:02.000Z",
+    accessibility: {
+      ...capture.accessibility,
+      durationMilliseconds: 99,
+      snapshot: {
+        ...capture.accessibility.snapshot,
+        nodeCount: 500,
+        truncated: true,
+        root: {
+          ...capture.accessibility.snapshot.root,
+          frame: { x: 20, y: 20, width: 100, height: 100 },
+        },
+      },
+    },
+  };
+
+  assert.equal(
+    contentSignature(capture).accessibilityHash,
+    contentSignature(moved).accessibilityHash,
   );
 });
 
@@ -60,7 +117,7 @@ test("visual distance is normalized mean absolute pixel difference", () => {
   assert.equal(visualDistance([0], [0, 1]), 1);
 });
 
-test("dedupe owns the last emitted signature", () => {
+test("dedupe advances only after an emitted signature is committed", () => {
   const dedupe = new Dedupe(0.08);
   const result = {
     capturedAt: "2026-07-27T00:00:01.000Z",
@@ -90,8 +147,11 @@ test("dedupe owns the last emitted signature", () => {
   };
 
   assert.equal(dedupe.isNewWindow(result.window), true);
-  assert.equal(dedupe.accept(result, false), true);
+  const candidate = dedupe.candidate(result, false);
+  assert.ok(candidate);
+  assert.equal(dedupe.isNewWindow(result.window), true);
+  dedupe.commit(candidate);
   assert.equal(dedupe.isNewWindow(result.window), false);
-  assert.equal(dedupe.accept(result, false), false);
-  assert.equal(dedupe.accept(result, true), true);
+  assert.equal(dedupe.candidate(result, false), undefined);
+  assert.ok(dedupe.candidate(result, true));
 });

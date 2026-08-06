@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { execFile, execFileSync } from "node:child_process";
 import {
   existsSync,
@@ -24,10 +24,12 @@ import type { ConsolidationInput } from "./repository.js";
 const execFileAsync = promisify(execFile);
 const ROOT_MARKER = ".openscreen-memory-root";
 const ROOT_MARKER_CONTENTS = "openscreen-memory-root-v1\n";
-const GIT_IGNORE = `activity-memory.sqlite3
-activity-memory.sqlite3-*
+const GIT_IGNORE = `memory.sqlite3
+memory.sqlite3-*
 evidence/
 .consolidation-staging/
+.DS_Store
+**/.DS_Store
 `;
 
 async function atomicWrite(path: string, contents: string) {
@@ -135,7 +137,7 @@ async function markDedicatedRoot(root: string) {
     }
     return;
   }
-  const allowed = /^(activity-memory\.sqlite3(?:-(?:wal|shm))?|evidence|\.consolidation-staging)$/;
+  const allowed = /^(memory\.sqlite3(?:-(?:wal|shm))?|evidence|\.consolidation-staging)$/;
   const foreign = (await readdir(root)).filter((entry) => !allowed.test(entry));
   if (foreign.length > 0) {
     throw new Error(
@@ -233,27 +235,33 @@ export async function prepareMemoryWorkspace(root: string) {
   }
 }
 
-function sourceFilename(input: ConsolidationInput) {
-  return `${createHash("sha256").update(input.jobKey).digest("hex").slice(0, 24)}.md`;
-}
-
 function renderSourceSummary(input: ConsolidationInput) {
-  return `# Source Summary
+  const title = input.sourceKind === "chronicle"
+    ? "Chronicle Activity Summary"
+    : "Turn Memory Summary";
+  return `# ${title}
 
 - job_key: ${input.jobKey}
 - source_kind: ${input.sourceKind}
+- provenance: ${input.provenance}
+- started_at: ${new Date(input.startedAt).toISOString()}
+- ended_at: ${new Date(input.endedAt).toISOString()}
 - source_id: ${input.sourceId}
 - source_generation: ${input.sourceGeneration}
 - source_updated_at: ${input.sourceUpdatedAt}
 - generated_at: ${new Date(input.generatedAt).toISOString()}
 - scope_hints: ${JSON.stringify(input.scopeHints)}
+- evidence_source_ids: ${JSON.stringify(input.sourceIds)}
 
 ${input.sourceSummary.trim()}
 `;
 }
 
 function renderRawMemories(inputs: ConsolidationInput[]) {
-  const candidates = inputs.filter(({ rawMemory }) => Boolean(rawMemory));
+  const candidates = inputs.filter((input) =>
+    input.sourceKind === "turn_memory" &&
+    input.state !== "removed" &&
+    Boolean(input.rawMemory));
   if (candidates.length === 0) {
     return "# Raw Memories\n\n_No durable memory candidates._\n";
   }
@@ -284,27 +292,23 @@ async function removeStaleSummaries(directory: string, desired: Set<string>) {
 export async function syncConsolidationInputs(root: string, values: ConsolidationInput[]) {
   const inputs = [...values].sort((left, right) =>
     left.jobKey.localeCompare(right.jobKey));
-  const summariesRoot = join(root, "source_summaries");
-  const observations = join(summariesRoot, "observations");
-  const turns = join(summariesRoot, "turns");
-  await mkdir(observations, { recursive: true, mode: 0o700 });
-  await mkdir(turns, { recursive: true, mode: 0o700 });
-  const desiredObservations = new Set<string>();
-  const desiredTurns = new Set<string>();
+  const summariesRoot = join(root, "rollout_summaries");
+  await mkdir(summariesRoot, { recursive: true, mode: 0o700 });
+  const desired = new Set<string>();
   const sourceSummaryFiles: string[] = [];
-  for (const input of inputs) {
-    const filename = sourceFilename(input);
-    const directory = input.sourceKind === "observation_window" ? observations : turns;
-    const desired = input.sourceKind === "observation_window"
-      ? desiredObservations
-      : desiredTurns;
+  for (const input of inputs.filter(({ state }) => state !== "removed")) {
+    if (!input.artifactPath.startsWith("rollout_summaries/") ||
+        !input.artifactPath.endsWith(".md") ||
+        input.artifactPath.slice("rollout_summaries/".length).includes("/")) {
+      throw new Error(`Invalid Consolidation artifact path ${input.artifactPath}`);
+    }
+    const filename = input.artifactPath.slice("rollout_summaries/".length);
     desired.add(filename);
-    const path = join(directory, filename);
+    const path = join(summariesRoot, filename);
     await atomicWrite(path, renderSourceSummary(input));
     sourceSummaryFiles.push(relative(root, path));
   }
-  await removeStaleSummaries(observations, desiredObservations);
-  await removeStaleSummaries(turns, desiredTurns);
+  await removeStaleSummaries(summariesRoot, desired);
   await atomicWrite(join(root, "raw_memories.md"), renderRawMemories(inputs));
   return { sourceSummaryFiles };
 }
@@ -322,10 +326,7 @@ export async function memoryWorkspaceDiff(root: string) {
   const status = (await git(root, [
     "status", "--porcelain=v1", "--untracked-files=all",
   ])).stdout;
-  const commitCount = Number((await git(root, [
-    "rev-list", "--count", "HEAD",
-  ])).stdout.trim());
-  if (!status.trim()) return { hasChanges: false, diff: "", commitCount };
+  if (!status.trim()) return { hasChanges: false, diff: "" };
   let diff = (await git(root, [
     "diff", "--no-ext-diff", "--no-color", "HEAD", "--", ".",
   ])).stdout;
@@ -339,7 +340,7 @@ export async function memoryWorkspaceDiff(root: string) {
       "diff", "--no-index", "--no-color", "--", "/dev/null", absolute,
     ], true)).stdout;
   }
-  return { hasChanges: true, diff, commitCount };
+  return { hasChanges: true, diff };
 }
 
 export async function resetMemoryWorkspaceBaseline(root: string) {

@@ -5,8 +5,8 @@ import { join } from "node:path";
 import test from "node:test";
 
 import type { ScreenObservationConfig } from "../../src/config.js";
-import { ScreenObservationPlugin } from "../../src/plugins/screen-observation/plugin.js";
-import type { ScreenObservation } from "../../src/plugins/screen-observation/types.js";
+import { ScreenObservationExtension } from "../../src/extensions/screen-observation/extension.js";
+import type { ScreenObservation } from "../../src/extensions/screen-observation/types.js";
 
 const config = {
   enabled: true,
@@ -64,7 +64,7 @@ const config = {
 } satisfies ScreenObservationConfig;
 
 test("forwards helper observations without retaining image data", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "openscreen-observation-plugin-"));
+  const directory = await mkdtemp(join(tmpdir(), "openscreen-observation-extension-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const helperPath = join(directory, "helper.mjs");
   await writeFile(helperPath, `
@@ -138,7 +138,7 @@ test("forwards helper observations without retaining image data", async (t) => {
 
   const statuses: string[] = [];
   const observations: ScreenObservation[] = [];
-  const plugin = new ScreenObservationPlugin({
+  const extension = new ScreenObservationExtension({
     config,
     helperCommand: process.execPath,
     helperArguments: [helperPath],
@@ -152,17 +152,17 @@ test("forwards helper observations without retaining image data", async (t) => {
       statuses.push(`${status.component}:${status.status}`);
     },
   });
-  t.after(() => plugin.stop());
+  t.after(() => extension.stop());
 
-  await plugin.start();
+  await extension.start();
   await waitFor(() => observations.length === 1);
 
   assert.equal(observations[0]?.window.windowIdentifier, 7);
   assert.equal(observations[0]?.visibleText, "Document");
   assert.equal(observations[0]?.screenshot.status, "permissionDenied");
   assert.deepEqual(statuses, ["eventTap:degraded"]);
-  assert.equal("latestObservation" in plugin, false);
-  await plugin.stop();
+  assert.equal("latestObservation" in extension, false);
+  await extension.stop();
 });
 
 async function waitFor(check: () => boolean) {
