@@ -74,7 +74,7 @@ test("persists a valid empty Turn Memory extraction", async (t) => {
   `).get() }, { raw_memory: "", turn_summary: "", turn_slug: "" });
 });
 
-test("does not submit Turn Memory when token counting returns zero", async (t) => {
+test("submits Turn Memory with the local estimate when token counting returns zero", async (t) => {
   const { repository, due } = await fixture(t);
   let generations = 0;
   const client = {
@@ -82,7 +82,15 @@ test("does not submit Turn Memory when token counting returns zero", async (t) =
       inputTokens: { count: async () => ({ input_tokens: 0 }) },
       create: async () => {
         generations += 1;
-        return { output_text: "{}" };
+        return {
+          status: "completed",
+          output_text: JSON.stringify({
+            raw_memory: "",
+            turn_summary: "",
+            turn_slug: "",
+          }),
+          usage: { input_tokens: 100, output_tokens: 10, total_tokens: 110 },
+        };
       },
     },
   } as unknown as OpenAI;
@@ -95,7 +103,6 @@ test("does not submit Turn Memory when token counting returns zero", async (t) =
     contextWindowTokens: 10_000,
     now: () => due,
   });
-  assert.equal(result.status, "failed");
-  assert.match(result.status === "failed" ? result.error : "", /zero input tokens/i);
-  assert.equal(generations, 0);
+  assert.equal(result.status, "processed");
+  assert.equal(generations, 1);
 });

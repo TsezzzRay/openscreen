@@ -100,7 +100,7 @@ final class Monitor {
             refresh(kind: .focusedWindowChanged)
         case .focusedElement:
             emitCached(kind: .focusedElementChanged)
-        case .changed:
+        case .valueChanged:
             emitCoalesced(kind: .accessibilityChanged)
         }
     }

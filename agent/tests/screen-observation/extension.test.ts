@@ -13,6 +13,8 @@ const config = {
   scheduling: {
     tickIntervalMilliseconds: 5,
     ordinaryCaptureGapMilliseconds: 2_000,
+    eventDeduplicationWindowMilliseconds: 1_000,
+    sameWindowCaptureGapMilliseconds: 5_000,
     delaysMilliseconds: {
       mouseClick: 400,
       focusedElementChanged: 500,
@@ -24,9 +26,6 @@ const config = {
       keyActivity: 30_000,
       visualChanged: 10_000,
     },
-  },
-  deduplication: {
-    visualDifferenceThreshold: 0.08,
   },
   capture: {
     requestTimeoutMilliseconds: 10_000,

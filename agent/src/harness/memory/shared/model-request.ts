@@ -2,12 +2,12 @@ import { createHash, randomUUID } from "node:crypto";
 
 import type OpenAI from "openai";
 
+import { countResponseRequestTokens } from "../../../model-token-count.js";
 import type {
   FinishModelAttempt,
   ModelOperation,
   StartModelAttempt,
 } from "../db/attempts.js";
-import { requireValidInputTokenCount } from "./request-budget.js";
 
 export type ModelAttemptRecorder = {
   startModelAttempt(attempt: StartModelAttempt): void;
@@ -39,13 +39,7 @@ export async function countModelRequestTokens(
   request: OpenAI.Responses.ResponseCreateParamsNonStreaming,
   signal?: AbortSignal,
 ) {
-  return requireValidInputTokenCount((
-    await client.responses.inputTokens.count({
-      model: request.model,
-      instructions: request.instructions,
-      input: request.input,
-    }, { signal })
-  ).input_tokens, modelRequestCharacters(request));
+  return countResponseRequestTokens(client, request, signal);
 }
 
 export async function executeModelRequest<T>({

@@ -84,6 +84,21 @@ async function fixture(t: test.TestContext) {
   };
 }
 
+test("does not consolidate a Turn summary without durable raw memory", async (t) => {
+  const { database, repository } = await fixture(t);
+  database.connection.prepare(`
+    UPDATE turn_memory_extractions
+    SET raw_memory = ''
+    WHERE job_key = 'turn-memory:batch:1'
+  `).run();
+
+  const claimed = repository.claim("worker-1", 2);
+
+  assert.equal(claimed.status, "claimed");
+  if (claimed.status !== "claimed") return;
+  assert.deepEqual(repository.loadInputs(claimed.claim), []);
+});
+
 test("validates structured consolidation output and renders current Markdown", () => {
   const output = parseConsolidationOutput(JSON.stringify({
     memories: [{

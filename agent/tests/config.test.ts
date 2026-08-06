@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import test from "node:test";
 
 import { loadRuntimeConfig } from "../src/config.js";
@@ -63,6 +63,8 @@ const fileConfig = {
     scheduling: {
       tickIntervalMilliseconds: 100,
       ordinaryCaptureGapMilliseconds: 2_000,
+      eventDeduplicationWindowMilliseconds: 1_000,
+      sameWindowCaptureGapMilliseconds: 5_000,
       delaysMilliseconds: {
         mouseClick: 400,
         focusedElementChanged: 500,
@@ -74,9 +76,6 @@ const fileConfig = {
         keyActivity: 30_000,
         visualChanged: 10_000,
       },
-    },
-    deduplication: {
-      visualDifferenceThreshold: 0.08,
     },
     capture: {
       requestTimeoutMilliseconds: 10_000,
@@ -124,6 +123,31 @@ function withConfig(
   writeFileSync(path, JSON.stringify(config));
   return { directory, path };
 }
+
+test("ships OpenChronicle capture timing defaults", () => {
+  const config = loadRuntimeConfig(resolve("config.json"), {
+    OPENAI_API_KEY: "secret",
+    OPENAI_MODEL: "test-model",
+    OPENAI_BASE_URL: "https://provider.example/v1",
+  });
+
+  assert.equal(config.screenObservation.scheduling.eventDeduplicationWindowMilliseconds, 1_000);
+  assert.equal(config.screenObservation.scheduling.ordinaryCaptureGapMilliseconds, 2_000);
+  assert.equal(config.screenObservation.scheduling.sameWindowCaptureGapMilliseconds, 5_000);
+  assert.equal(config.screenObservation.scheduling.delaysMilliseconds.mouseClick, 0);
+  assert.equal(config.screenObservation.scheduling.delaysMilliseconds.keyActivity, 0);
+  assert.equal(config.screenObservation.scheduling.delaysMilliseconds.accessibilityChanged, 3_000);
+});
+
+test("uses Ark Kimi through the generic OpenAI-compatible configuration", () => {
+  const config = loadRuntimeConfig(resolve("config.json"), {
+    OPENAI_API_KEY: "secret",
+  });
+
+  assert.equal(config.model, "kimi-k2.7-code");
+  assert.equal(config.baseURL, "https://ark.cn-beijing.volces.com/api/plan/v3");
+  assert.equal(config.context.windowTokens, 272_000);
+});
 
 test("loads JSON runtime defaults and the API key from the environment", (t) => {
   const { path } = withConfig(t);
@@ -404,23 +428,5 @@ test("rejects invalid screen observation settings", (t) => {
       OPENAI_API_KEY: "secret",
     }),
     /screenObservation.activityMonitoring.coalescingIntervalMilliseconds must be a positive integer/,
-  );
-});
-
-test("requires visual monitoring to be at least as sensitive as deduplication", (t) => {
-  const { path } = withConfig(t, {
-    ...fileConfig,
-    screenObservation: {
-      ...fileConfig.screenObservation,
-      visualMonitoring: {
-        ...fileConfig.screenObservation.visualMonitoring,
-        changeThreshold: 0.1,
-      },
-    },
-  });
-
-  assert.throws(
-    () => loadRuntimeConfig(path, { OPENAI_API_KEY: "secret" }),
-    /changeThreshold must not exceed .*visualDifferenceThreshold/,
   );
 });

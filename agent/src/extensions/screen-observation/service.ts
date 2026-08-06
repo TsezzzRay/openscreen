@@ -35,13 +35,12 @@ export class ScreenObservationService {
     retryAtMilliseconds: number;
   };
   private lastCaptureAtMilliseconds = Number.NEGATIVE_INFINITY;
+  private readonly lastCaptureAtByWindow = new Map<string, number>();
   private capturing = false;
 
   constructor(private readonly options: ScreenObservationServiceOptions) {
     this.planner = new CapturePlanner(options.config.scheduling);
-    this.dedupe = new Dedupe(
-      options.config.deduplication.visualDifferenceThreshold,
-    );
+    this.dedupe = new Dedupe();
   }
 
   push(signal: NativeActivitySignal, nowMilliseconds = Date.now()) {
@@ -78,17 +77,24 @@ export class ScreenObservationService {
     const signal = this.deferredSignal;
     if (signal === undefined) return;
 
-    const boundaryRequested = isBoundaryKind(signal.kind) &&
-      this.dedupe.isNewWindow(signal.window);
+    const boundaryRequested = isBoundaryKind(signal.kind);
+    const requestedWindowKey = windowKey(signal.window);
+    const lastWindowCapture = this.lastCaptureAtByWindow.get(requestedWindowKey) ??
+      Number.NEGATIVE_INFINITY;
     if (
       !boundaryRequested &&
-      nowMilliseconds - this.lastCaptureAtMilliseconds <
-        this.options.config.scheduling.ordinaryCaptureGapMilliseconds
+      (
+        nowMilliseconds - this.lastCaptureAtMilliseconds <
+          this.options.config.scheduling.ordinaryCaptureGapMilliseconds ||
+        nowMilliseconds - lastWindowCapture <
+          this.options.config.scheduling.sameWindowCaptureGapMilliseconds
+      )
     ) return;
 
     this.deferredSignal = undefined;
     this.capturing = true;
     this.lastCaptureAtMilliseconds = nowMilliseconds;
+    this.lastCaptureAtByWindow.set(requestedWindowKey, nowMilliseconds);
     try {
       const result = await this.options.capture(signal);
       if (windowKey(result.window) !== windowKey(signal.window)) return;

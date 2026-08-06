@@ -184,7 +184,7 @@ export class ConsolidationRepository {
           FROM turn_memory_extractions o
           JOIN memory_jobs j ON j.job_key = o.job_key
           JOIN turn_memory_batches b ON b.id = j.source_id
-          WHERE o.raw_memory != '' OR o.turn_summary != ''
+          WHERE o.raw_memory != ''
         )
         SELECT * FROM current_sources
         WHERE source_updated_at <= ?

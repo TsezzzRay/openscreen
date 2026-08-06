@@ -76,6 +76,40 @@ test("builds a streaming Responses API request with system and user screenshots 
   });
 });
 
+test("places the long-term memory summary before conversation context", async () => {
+  const request = await makeRequest(
+    "vision-model",
+    "Continue the work",
+    [],
+    21_760,
+    {
+      turns: [],
+      conversationSummary: {
+        content: "The current conversation discussed SQLite.",
+        createdAt: "2026-08-06T00:00:00.000Z",
+        firstKeptTurnIndex: 0,
+      },
+    },
+    loadScreenshot,
+    "v1\n- The user prefers concise answers.",
+  );
+
+  assert.deepEqual(request.input?.slice(0, 2), [
+    {
+      role: "developer",
+      content: [
+        "Long-term memory summary:",
+        "Use this only when relevant. It may be stale; verify changeable facts.",
+        "v1\n- The user prefers concise answers.",
+      ].join("\n"),
+    },
+    {
+      role: "developer",
+      content: "Conversation summary:\nThe current conversation discussed SQLite.",
+    },
+  ]);
+});
+
 test("builds a MiniMax M3 streaming screenshot request", async () => {
   const request = await makeRequest(
     "MiniMax-M3",
@@ -330,6 +364,27 @@ test("includes tool definitions when counting an agent step request", async () =
   });
 
   assert.deepEqual(countedRequest.tools, tools);
+});
+
+test("falls back to a local UTF-8 estimate when chat token counting is unsupported", async () => {
+  const client = {
+    responses: {
+      inputTokens: {
+        count: async () => {
+          throw new Error("404 InvalidAction");
+        },
+      },
+    },
+  } as unknown as OpenAI;
+  const request = {
+    model: "kimi-k2.7-code",
+    instructions: "请直接回答。",
+    input: [{ role: "user" as const, content: "检查这段中文输入。" }],
+    stream: true as const,
+  };
+  const expected = Math.ceil(Buffer.byteLength(JSON.stringify(request), "utf8") / 4);
+
+  assert.equal(await countRequestTokens(client, request), expected);
 });
 
 test("passes cancellation to token counting and summarization requests", async () => {

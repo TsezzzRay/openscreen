@@ -9,6 +9,8 @@ export type ScreenObservationConfig = {
   scheduling: {
     tickIntervalMilliseconds: number;
     ordinaryCaptureGapMilliseconds: number;
+    eventDeduplicationWindowMilliseconds: number;
+    sameWindowCaptureGapMilliseconds: number;
     delaysMilliseconds: {
       mouseClick: number;
       focusedElementChanged: number;
@@ -20,9 +22,6 @@ export type ScreenObservationConfig = {
       keyActivity: number;
       visualChanged: number;
     };
-  };
-  deduplication: {
-    visualDifferenceThreshold: number;
   };
   capture: {
     requestTimeoutMilliseconds: number;
@@ -225,10 +224,6 @@ function loadScreenObservationConfig(value: unknown): ScreenObservationConfig {
     scheduling.capsMilliseconds,
     "screenObservation.scheduling.capsMilliseconds",
   );
-  const deduplication = object(
-    root.deduplication,
-    "screenObservation.deduplication",
-  );
   const capture = object(root.capture, "screenObservation.capture");
   const helperLifecycle = object(
     root.helperLifecycle,
@@ -259,6 +254,14 @@ function loadScreenObservationConfig(value: unknown): ScreenObservationConfig {
       ordinaryCaptureGapMilliseconds: nonNegativeInteger(
         scheduling.ordinaryCaptureGapMilliseconds,
         "screenObservation.scheduling.ordinaryCaptureGapMilliseconds",
+      ),
+      eventDeduplicationWindowMilliseconds: nonNegativeInteger(
+        scheduling.eventDeduplicationWindowMilliseconds,
+        "screenObservation.scheduling.eventDeduplicationWindowMilliseconds",
+      ),
+      sameWindowCaptureGapMilliseconds: nonNegativeInteger(
+        scheduling.sameWindowCaptureGapMilliseconds,
+        "screenObservation.scheduling.sameWindowCaptureGapMilliseconds",
       ),
       delaysMilliseconds: {
         mouseClick: nonNegativeInteger(
@@ -292,14 +295,6 @@ function loadScreenObservationConfig(value: unknown): ScreenObservationConfig {
           "screenObservation.scheduling.capsMilliseconds.visualChanged",
         ),
       },
-    },
-    deduplication: {
-      visualDifferenceThreshold: numberInRange(
-        deduplication.visualDifferenceThreshold,
-        "screenObservation.deduplication.visualDifferenceThreshold",
-        0,
-        1,
-      ),
     },
     capture: {
       requestTimeoutMilliseconds: positiveJSONInteger(
@@ -403,15 +398,6 @@ function loadScreenObservationConfig(value: unknown): ScreenObservationConfig {
       ),
     },
   };
-  if (
-    config.visualMonitoring.changeThreshold
-      > config.deduplication.visualDifferenceThreshold
-  ) {
-    throw new Error(
-      "screenObservation.visualMonitoring.changeThreshold must not exceed "
-        + "screenObservation.deduplication.visualDifferenceThreshold",
-    );
-  }
   return config;
 }
 

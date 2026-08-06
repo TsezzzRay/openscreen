@@ -30,6 +30,10 @@ test("builds strict Codex-style Turn Memory extraction requests", () => {
   assert.equal(request.text?.format?.strict, true);
   assert.match(String(request.instructions), /explicit user/i);
   assert.match(String(request.instructions), /failed|cancelled|interrupted/i);
+  assert.match(String(request.instructions), /no-op/i);
+  assert.match(String(request.instructions), /future assistant.*act better/i);
+  assert.match(String(request.instructions), /greetings.*model capability.*concept explanation/is);
+  assert.match(String(request.instructions), /temporary error.*assistant-only/is);
   assert.doesNotMatch(String(request.instructions), /fallback|prompt.?version/i);
 });
 

@@ -48,7 +48,7 @@ export function buildObservation(
   };
 }
 
-function normalizeAccessibility(root?: AccessibilityNode): {
+export function normalizeAccessibility(root?: AccessibilityNode): {
   focusedElement?: FocusedElement;
   visibleText: string;
   url?: string;

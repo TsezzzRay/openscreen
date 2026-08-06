@@ -13,6 +13,66 @@ import OpenAI from "openai";
 import { runChat } from "../../src/harness/session/runner.js";
 import { createSession, loadSession } from "../../src/harness/session/store.js";
 
+test("loads only memory_summary.md into each chat request", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "openscreen-memory-read-"));
+  t.after(() => rm(directory, { force: true, recursive: true }));
+  const session = await createSession(directory);
+  await writeFile(
+    join(directory, "memory_summary.md"),
+    "v1\n- The user prefers concise answers.",
+  );
+  await writeFile(
+    join(directory, "MEMORY.md"),
+    "FULL MEMORY MUST NOT BE AUTO-INJECTED",
+  );
+  let modelRequest: any;
+  const client = {
+    responses: {
+      inputTokens: { count: async () => ({ input_tokens: 1 }) },
+      create: async (request: unknown) => {
+        modelRequest = request;
+        return (async function* () {
+          yield {
+            type: "response.completed",
+            response: { id: "response-1", output: [] },
+          };
+        })();
+      },
+    },
+  } as unknown as OpenAI;
+
+  await runChat(
+    {
+      requestId: "turn-1",
+      sessionId: session.id,
+      input: { text: "Continue", images: [] },
+    },
+    directory,
+    client,
+    "vision-model",
+    {
+      windowTokens: 1_000,
+      compactAtTokens: 900,
+      keepRecentTokens: 100,
+      maxOutputTokens: 100,
+      summaryMaxOutputTokens: 50,
+      minimumRecentTurns: 2,
+    },
+    {
+      eventFlushBytes: 4_096,
+      eventFlushMilliseconds: 250,
+    },
+    () => {},
+    new AbortController().signal,
+    [],
+    directory,
+  );
+
+  const serialized = JSON.stringify(modelRequest.input);
+  assert.match(serialized, /The user prefers concise answers/);
+  assert.doesNotMatch(serialized, /FULL MEMORY MUST NOT BE AUTO-INJECTED/);
+});
+
 test("cancels an agent run while a tool is executing", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "openscreen-agent-loop-"));
   t.after(() => rm(directory, { force: true, recursive: true }));

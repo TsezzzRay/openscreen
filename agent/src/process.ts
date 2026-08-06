@@ -205,6 +205,8 @@ async function run() {
         session,
         emit,
         signal!,
+        [],
+        memoryRoot,
       );
       notifySessionMemory(envelope.sessionId);
     } catch (error) {

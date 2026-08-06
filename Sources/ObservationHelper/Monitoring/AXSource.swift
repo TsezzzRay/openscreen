@@ -6,7 +6,7 @@ final class AXSource {
     enum Event: Sendable {
         case focusedWindow
         case focusedElement
-        case changed
+        case valueChanged
     }
 
     private let onEvent: @MainActor @Sendable (Event) -> Void
@@ -108,8 +108,10 @@ final class AXSource {
             onEvent(.focusedWindow)
         case kAXFocusedUIElementChangedNotification:
             onEvent(.focusedElement)
-        case kAXValueChangedNotification, kAXTitleChangedNotification:
-            onEvent(.changed)
+        case kAXValueChangedNotification:
+            onEvent(.valueChanged)
+        case kAXTitleChangedNotification:
+            break
         default:
             break
         }

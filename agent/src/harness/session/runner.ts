@@ -9,6 +9,7 @@ import type {
   ConversationOutputItem,
 } from "../../types.js";
 import type { RuntimeConfig } from "../../config.js";
+import { loadMemorySummary } from "../memory/read/summary.js";
 import {
   appendSessionEvents,
   loadSession,
@@ -100,6 +101,7 @@ export async function runChat(
   emit: Emit,
   signal: AbortSignal,
   tools: AgentTool[] = [],
+  memoryRoot?: string,
 ) {
   const { requestId, sessionId, input } = command;
   const turnId = requestId;
@@ -146,6 +148,18 @@ export async function runChat(
 
   try {
     const session = await loadSession(sessionsDirectory, sessionId);
+    let memorySummary: string | undefined;
+    if (memoryRoot) {
+      try {
+        memorySummary = await loadMemorySummary(memoryRoot);
+      } catch (error) {
+        process.stderr.write(
+          `OpenScreen memory summary unavailable: ${
+            error instanceof Error ? error.message : "unknown error"
+          }\n`,
+        );
+      }
+    }
     turnStartedAt = new Date().toISOString();
     await appendSessionEvents(sessionsDirectory, sessionId, [{
       type: "turn_started",
@@ -195,6 +209,8 @@ export async function runChat(
           input.images,
           context.maxOutputTokens,
           session,
+          undefined,
+          memorySummary,
         );
         if (!Array.isArray(request.input)) throw new Error("Invalid model input");
         request.input.push(...runItems);

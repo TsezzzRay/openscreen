@@ -229,7 +229,7 @@ test("normal scans do not mistake an active Turn for a crashed interrupted Turn"
   ).get()?.count, 0);
 });
 
-test("retries the frozen startup snapshot after exact token counting fails", async (t) => {
+test("uses a local estimate when startup token counting fails", async (t) => {
   const dataRoot = await mkdtemp(join(tmpdir(), "openscreen-memory-worker-"));
   t.after(() => rm(dataRoot, { recursive: true, force: true }));
   const sessionsDirectory = join(dataRoot, "sessions");
@@ -250,8 +250,7 @@ test("retries the frozen startup snapshot after exact token counting fails", asy
       responses: {
         inputTokens: { count: async () => {
           counts += 1;
-          if (counts === 1) throw new Error("temporary token counter failure");
-          return { input_tokens: 100 };
+          throw new Error("temporary token counter failure");
         } },
       },
     } as unknown as OpenAI,
@@ -263,14 +262,8 @@ test("retries the frozen startup snapshot after exact token counting fails", asy
   t.after(() => pipeline.close());
   const startup = await pipeline.captureSessionSources({ includeInterrupted: true });
 
-  await assert.rejects(
-    pipeline.ingestCapturedSessions(startup),
-    /temporary token counter failure/,
-  );
-  assert.equal(pipeline.database.connection.prepare(
-    "SELECT count(*) AS count FROM turn_memory_sources",
-  ).get()?.count, 0);
   await pipeline.ingestCapturedSessions(startup);
+  assert.equal(counts, 1);
   assert.equal(pipeline.database.connection.prepare(
     "SELECT count(*) AS count FROM turn_memory_sources",
   ).get()?.count, 1);

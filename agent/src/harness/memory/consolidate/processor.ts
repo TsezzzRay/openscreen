@@ -18,8 +18,11 @@ import { join } from "node:path";
 import type OpenAI from "openai";
 
 import {
+  countModelRequestTokens,
+  modelRequestCharacters,
+} from "../shared/model-request.js";
+import {
   modelInputTokenBudget,
-  requireValidInputTokenCount,
 } from "../shared/request-budget.js";
 import { strictJsonText } from "../shared/structured-output.js";
 import {
@@ -462,14 +465,12 @@ export async function processConsolidation({
         validEvidenceSourceIds: activeInputs.map(({ jobKey }) => jobKey),
       },
     );
-    const requestCharacters = characterCount(JSON.stringify(request));
-    const inputTokens = requireValidInputTokenCount((
-      await client.responses.inputTokens.count({
-        model: request.model,
-        instructions: request.instructions,
-        input: request.input,
-      }, { signal: controller.signal })
-    ).input_tokens, requestCharacters);
+    const requestCharacters = modelRequestCharacters(request);
+    const inputTokens = await countModelRequestTokens(
+      client,
+      request,
+      controller.signal,
+    );
     if (inputTokens > inputBudget) {
       throw new Error(
         `Consolidation input exceeds the model context budget (${inputTokens} > ${inputBudget})`,

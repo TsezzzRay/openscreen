@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 
 import OpenAI from "openai";
 
+import { countResponseRequestTokens } from "../../model-token-count.js";
 import {
   type ChatImage,
   type SessionState,
@@ -92,6 +93,7 @@ export async function makeRequest(
   maxOutputTokens: number,
   session: SessionState = { turns: [] },
   readScreenshot: LoadScreenshot = loadScreenshot,
+  memorySummary?: string,
 ): Promise<OpenAI.Responses.ResponseCreateParamsStreaming> {
   const isMiniMaxM3 = model.toLowerCase() === "minimax-m3";
   const retainedInput = await buildTurnsInput(
@@ -104,6 +106,16 @@ export async function makeRequest(
     model,
     instructions,
     input: [
+      ...(memorySummary
+        ? [{
+            role: "developer" as const,
+            content: [
+              "Long-term memory summary:",
+              "Use this only when relevant. It may be stale; verify changeable facts.",
+              memorySummary,
+            ].join("\n"),
+          }]
+        : []),
       ...(session.conversationSummary
         ? [{
             role: "developer" as const,
@@ -126,12 +138,10 @@ export async function countTurns(
   readScreenshot: LoadScreenshot = loadScreenshot,
   signal?: AbortSignal,
 ) {
-  return (
-    await client.responses.inputTokens.count({
-      model,
-      input: await buildTurnsInput(model, turns, readScreenshot),
-    }, { signal })
-  ).input_tokens;
+  return countResponseRequestTokens(client, {
+    model,
+    input: await buildTurnsInput(model, turns, readScreenshot),
+  }, signal);
 }
 
 export async function countRequestTokens(
@@ -139,13 +149,5 @@ export async function countRequestTokens(
   request: OpenAI.Responses.ResponseCreateParamsStreaming,
   signal?: AbortSignal,
 ) {
-  return (
-    await client.responses.inputTokens.count({
-      model: request.model,
-      instructions: request.instructions,
-      input: request.input,
-      reasoning: request.reasoning,
-      tools: request.tools,
-    }, { signal })
-  ).input_tokens;
+  return countResponseRequestTokens(client, request, signal);
 }

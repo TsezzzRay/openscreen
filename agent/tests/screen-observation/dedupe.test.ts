@@ -3,23 +3,22 @@ import test from "node:test";
 
 import {
   Dedupe,
-  axContentHash,
+  businessContentHash,
   contentSignature,
   shouldEmitObservation,
-  visualDistance,
 } from "../../src/extensions/screen-observation/dedupe.js";
 import type {
   ObservationContentSignature,
 } from "../../src/extensions/screen-observation/dedupe.js";
 
-test("AX content hashing is independent of object key order", () => {
+test("business content hashing is independent of object key order", () => {
   assert.equal(
-    axContentHash({
+    businessContentHash({
       role: "AXWindow",
       title: "Document",
       children: [{ role: "AXButton", title: "Save" }],
     }),
-    axContentHash({
+    businessContentHash({
       children: [{ title: "Save", role: "AXButton" }],
       title: "Document",
       role: "AXWindow",
@@ -27,7 +26,7 @@ test("AX content hashing is independent of object key order", () => {
   );
 });
 
-test("semantic AX dedup ignores frames and capture bookkeeping", () => {
+test("business-content dedup ignores frames, AX roles, capture bookkeeping, and visual signatures", () => {
   const capture = {
     capturedAt: "2026-07-27T00:00:01.000Z",
     window: {
@@ -62,6 +61,7 @@ test("semantic AX dedup ignores frames and capture bookkeeping", () => {
   const moved = {
     ...capture,
     capturedAt: "2026-07-27T00:00:02.000Z",
+    visualSignature: [255, 255],
     accessibility: {
       ...capture.accessibility,
       durationMilliseconds: 99,
@@ -71,6 +71,7 @@ test("semantic AX dedup ignores frames and capture bookkeeping", () => {
         truncated: true,
         root: {
           ...capture.accessibility.snapshot.root,
+          role: "AXGroup",
           frame: { x: 20, y: 20, width: 100, height: 100 },
         },
       },
@@ -78,47 +79,31 @@ test("semantic AX dedup ignores frames and capture bookkeeping", () => {
   };
 
   assert.equal(
-    contentSignature(capture).accessibilityHash,
-    contentSignature(moved).accessibilityHash,
+    contentSignature(capture).contentHash,
+    contentSignature(moved).contentHash,
   );
 });
 
-test("content dedup keeps boundaries and meaningful AX or visual changes", () => {
+test("content dedup keeps boundaries and meaningful business-content changes", () => {
   const previous: ObservationContentSignature = {
     windowKey: "101:7",
-    accessibilityHash: "same",
-    visualSignature: [0, 0, 0, 0],
+    contentHash: "same",
   };
 
-  assert.equal(shouldEmitObservation(previous, previous, false, 0.08), false);
-  assert.equal(shouldEmitObservation(previous, previous, true, 0.08), true);
+  assert.equal(shouldEmitObservation(previous, previous, false), false);
+  assert.equal(shouldEmitObservation(previous, previous, true), true);
   assert.equal(
-    shouldEmitObservation(previous, { ...previous, accessibilityHash: "changed" }, false, 0.08),
+    shouldEmitObservation(previous, { ...previous, contentHash: "changed" }, false),
     true,
   );
   assert.equal(
-    shouldEmitObservation(
-      previous,
-      { ...previous, visualSignature: [255, 255, 255, 255] },
-      false,
-      0.08,
-    ),
+    shouldEmitObservation(previous, { ...previous, windowKey: "202:9" }, false),
     true,
   );
-  assert.equal(
-    shouldEmitObservation(previous, { ...previous, windowKey: "202:9" }, false, 0.08),
-    true,
-  );
-});
-
-test("visual distance is normalized mean absolute pixel difference", () => {
-  assert.equal(visualDistance([0, 0], [255, 255]), 1);
-  assert.equal(visualDistance([0, 255], [0, 255]), 0);
-  assert.equal(visualDistance([0], [0, 1]), 1);
 });
 
 test("dedupe advances only after an emitted signature is committed", () => {
-  const dedupe = new Dedupe(0.08);
+  const dedupe = new Dedupe();
   const result = {
     capturedAt: "2026-07-27T00:00:01.000Z",
     window: {
@@ -146,12 +131,9 @@ test("dedupe advances only after an emitted signature is committed", () => {
     visualSignature: [0, 0],
   };
 
-  assert.equal(dedupe.isNewWindow(result.window), true);
   const candidate = dedupe.candidate(result, false);
   assert.ok(candidate);
-  assert.equal(dedupe.isNewWindow(result.window), true);
   dedupe.commit(candidate);
-  assert.equal(dedupe.isNewWindow(result.window), false);
   assert.equal(dedupe.candidate(result, false), undefined);
   assert.ok(dedupe.candidate(result, true));
 });

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { parentPort, workerData } from "node:worker_threads";
+import { parentPort, threadId, workerData } from "node:worker_threads";
 
 import OpenAI from "openai";
 
@@ -17,13 +17,15 @@ import { prepareMemoryWorkspace } from "../consolidate/workspace.js";
 if (!parentPort) throw new Error("Memory worker requires a parent port");
 const port = parentPort;
 const data = workerData as MemoryWorkerData;
-await prepareMemoryWorkspace(data.memoryRoot);
+if (data.role === "consolidation") {
+  await prepareMemoryWorkspace(data.memoryRoot);
+}
 const pipeline = new MemoryPipeline({
   memoryRoot: data.memoryRoot,
   sessionsDirectory: data.sessionsDirectory,
   client: new OpenAI({ apiKey: data.apiKey, baseURL: data.baseURL }),
   model: data.model,
-  workerId: `memory-worker:${process.pid}`,
+  workerId: `memory-worker:${data.role}:${process.pid}:${threadId}`,
   contextWindowTokens: data.contextWindowTokens,
   memory: data.memory,
 });
@@ -51,7 +53,17 @@ async function runTick() {
   const running = (async () => {
     do {
       tickRequested = false;
-      await pipeline.tick(tickController!.signal);
+      switch (data.role) {
+        case "chronicle":
+          await pipeline.tickChronicle(tickController!.signal);
+          break;
+        case "turnMemory":
+          await pipeline.tickTurnMemory(tickController!.signal);
+          break;
+        case "consolidation":
+          await pipeline.tickConsolidation(tickController!.signal);
+          break;
+      }
     } while (tickRequested && !stopped);
   })().finally(() => {
     if (tickTask === running) tickTask = undefined;
@@ -85,9 +97,15 @@ async function handle(message: Exclude<MemoryWorkerRequest, { type: "shutdown" }
   }
   switch (message.type) {
     case "observation":
+      if (data.role !== "chronicle") {
+        throw new Error(`${data.role} Memory Worker cannot ingest Observations`);
+      }
       await pipeline.ingestObservation(message.observation);
       break;
     case "session":
+      if (data.role !== "turnMemory") {
+        throw new Error(`${data.role} Memory Worker cannot scan Sessions`);
+      }
       await pipeline.scanSession(message.sessionId, {
         includeInterrupted: false,
         signal: backgroundController.signal,
@@ -141,7 +159,9 @@ function dispatch(message: MemoryWorkerRequest) {
 port.on("message", (message: MemoryWorkerRequest) => dispatch(message));
 
 try {
-  startupSources = await pipeline.captureSessionSources({ includeInterrupted: true });
+  startupSources = data.role === "turnMemory"
+    ? await pipeline.captureSessionSources({ includeInterrupted: true })
+    : undefined;
   timer = setInterval(() => {
     if (!tickTask && !startupRecoveryTask) {
       dispatch({ type: "tick", requestId: `timer:${randomUUID()}` });

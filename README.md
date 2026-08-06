@@ -98,9 +98,10 @@ Screenshots are not deleted automatically in the current version. Review your pr
 - No automatic chat retries or settings interface; Retry opens the previous
   prompt for editing and captures a new screenshot when resubmitted. Background
   memory jobs use their own persisted retry policy.
-- Long-term memory is generated and persisted locally, but retrieval,
-  model-context injection, Memory Agent Tools, Capture fusion, and Memory UI
-  controls are not part of this implementation.
+- Long-term memory is generated and persisted locally. Chat requests
+  automatically receive only the bounded `memory_summary.md`; targeted
+  retrieval, Memory Agent Tools, Capture fusion, and Memory UI controls are not
+  part of this implementation.
 
 ## Architecture
 
@@ -116,10 +117,11 @@ local agent
 configured Responses API-compatible provider
 
 local agent
-    -> independent Memory Worker Thread
+    -> independent Chronicle / Turn Memory / Consolidation Worker Threads
     -> SQLite WAL + private evidence files
     -> Chronicle summaries + Turn Memory extractions
     -> global Memory consolidation with a Git baseline
+    -> bounded memory_summary.md developer context for chat requests
 ```
 
 The macOS app owns UI and explicit chat capture, the Node.js Agent owns model

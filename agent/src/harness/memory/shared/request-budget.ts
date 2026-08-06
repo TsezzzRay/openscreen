@@ -1,3 +1,5 @@
+export { requireValidInputTokenCount } from "../../../model-token-count.js";
+
 const TRUNCATION_MARKER = "\n…[truncated]…\n";
 
 export type BoundedText = {
@@ -61,22 +63,6 @@ export function turnMemoryInputTokenBudget({
     maxOutputTokens,
     contextWindowFraction: { numerator: 7, denominator: 10 },
   });
-}
-
-export function requireValidInputTokenCount(
-  value: number,
-  requestCharacters: number,
-) {
-  if (!Number.isSafeInteger(value) || value < 0) {
-    throw new Error(`Invalid input token count: ${String(value)}`);
-  }
-  if (!Number.isSafeInteger(requestCharacters) || requestCharacters < 0) {
-    throw new Error(`Invalid model request character count: ${String(requestCharacters)}`);
-  }
-  if (requestCharacters > 0 && value < 1) {
-    throw new Error("Non-empty model request returned zero input tokens");
-  }
-  return value;
 }
 
 export function boundedText(value: string, maxCharacters: number): BoundedText {

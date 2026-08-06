@@ -22,18 +22,49 @@ const BOUNDARY_KINDS = new Set<NativeActivityKind>([
   "wake",
 ]);
 
+const IMMEDIATE_KINDS = new Set<NativeActivityKind>([
+  ...BOUNDARY_KINDS,
+  "mouseClick",
+  "keyActivity",
+]);
+
+const EVENT_TIME_PRUNE_THRESHOLD = 256;
+
+function eventKey(signal: NativeActivitySignal) {
+  return JSON.stringify([
+    signal.kind,
+    signal.window.bundleIdentifier ?? "",
+    signal.window.windowIdentifier ?? signal.window.title ?? "",
+  ]);
+}
+
 export function isBoundaryKind(kind: NativeActivityKind) {
   return BOUNDARY_KINDS.has(kind);
 }
 
 export class CapturePlanner {
   private readonly pending = new Map<string, PendingCapture>();
+  private readonly lastEventAt = new Map<string, number>();
 
   constructor(
     private readonly config: ScreenObservationConfig["scheduling"],
   ) {}
 
   push(signal: NativeActivitySignal, nowMilliseconds: number) {
+    const key = eventKey(signal);
+    const lastEventAt = this.lastEventAt.get(key);
+    if (lastEventAt !== undefined && nowMilliseconds - lastEventAt <
+        this.config.eventDeduplicationWindowMilliseconds) {
+      return;
+    }
+    this.lastEventAt.set(key, nowMilliseconds);
+    if (this.lastEventAt.size >= EVENT_TIME_PRUNE_THRESHOLD) {
+      const cutoff = nowMilliseconds - this.config.eventDeduplicationWindowMilliseconds;
+      for (const [event, occurredAt] of this.lastEventAt) {
+        if (occurredAt < cutoff) this.lastEventAt.delete(event);
+      }
+    }
+
     if (isBoundaryKind(signal.kind)) {
       this.pending.clear();
       this.pending.set("boundary", {
@@ -42,6 +73,10 @@ export class CapturePlanner {
         dueAtMilliseconds: nowMilliseconds,
       });
       return;
+    }
+
+    if (IMMEDIATE_KINDS.has(signal.kind)) {
+      this.pending.delete("accessibilityChanged");
     }
 
     const delay = this.config.delaysMilliseconds[

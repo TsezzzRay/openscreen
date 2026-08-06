@@ -32,9 +32,10 @@ src/
         ├── evidence.ts        structured/JPEG Observation evidence and cleanup
         ├── chronicle/         passive screen activity organization
         ├── turn-memory/       terminal Turn extraction and Session scan progress
+        ├── read/              bounded chat-facing Memory summary loading
         ├── shared/            request, job, budget, and source-snapshot contracts
         ├── consolidate/       global merge, publication, Git baseline
-        ├── worker/            independent Worker Thread orchestration
+        ├── worker/            independent role-specific Worker orchestration
         └── types.ts           current long-term-memory contract
 ```
 
@@ -42,8 +43,9 @@ src/
 standard input and output. `protocol.ts` owns that wire format; harness code
 does not depend on it. Chat requests are mapped to session commands before
 entering `session/runner.ts`, which builds model context and invokes
-`loop.ts`. Chronicle, Turn Memory, and Global Memory Consolidation run in a
-background Worker Thread and are not connected to the production tool registry.
+`loop.ts`. Chronicle, Turn Memory, and Global Memory Consolidation each run in
+their own background Worker Thread and are not connected to the production tool
+registry. A slow Chronicle request therefore cannot delay Turn Memory work.
 
 ## Domain boundaries
 
@@ -141,13 +143,22 @@ only the memory root. That override must point to a dedicated directory.
 OpenScreen marks the directory and creates its own nested Git repository; it
 refuses to adopt an enclosing repository or an existing user-owned repository.
 
+At the start of each chat Turn, the Agent reads only `memory_summary.md` and
+adds it before the conversation summary as developer context. The summary is
+limited to 2,500 locally estimated tokens and the complete request still passes
+through normal token budgeting. Missing or unreadable Memory does not block
+chat. `MEMORY.md`, `raw_memories.md`, rollout summaries, Observation evidence,
+screenshots, and AX content are never automatically loaded into chat context.
+
 SQLite is the structured truth for Chronicle sources/windows/activities, Turn
 sources/batches/extractions, producer jobs, durable Session scan progress,
 model-attempt audits, Consolidation job
 state, ownership tokens, watermarks, publication recovery, and evidence links.
 Connections enable foreign keys, WAL, a five-second busy timeout, and immediate
 write transactions. The directory is mode `0700` and the database is mode
-`0600`. Production SQLite access is confined to the Memory Worker Thread.
+`0600`. The coordinator initializes the database before spawning the Chronicle,
+Turn Memory, and Consolidation Worker Threads; runtime processing is confined
+to those role-specific Workers.
 
 Observation evidence is atomically written before the source row: a mode-`0600`
 JSON file without Base64 and a separate mode-`0600` JPEG. Chronicle requests use
@@ -165,27 +176,31 @@ Producer timing and input rules are deterministic:
   replaces the current result after a successful retry.
 - Terminal Turns from the same Session accumulate until 30 minutes of idle
   time, a two-hour hard cap, or the effective Turn Memory context budget.
-  The prospective complete batch is measured with `/responses/input_tokens`
-  before each Turn is added. If the new Turn would exceed the budget, the
-  existing batch is sealed without it and the Turn is measured again in a new
-  batch. Splits occur only between complete Turns. New Turns arriving after a
-  batch is sealed belong to the next batch.
+  The prospective complete batch is measured before each Turn is added. The
+  Provider `/responses/input_tokens` result is used when valid; an unsupported,
+  failed, or impossible zero count falls back to the Codex-compatible local
+  estimate `ceil(UTF-8 request bytes / 4)`. If the new Turn would exceed the
+  budget, the existing batch is sealed without it and the Turn is measured
+  again in a new batch. Splits occur only between complete Turns. New Turns
+  arriving after a batch is sealed belong to the next batch.
 - Observation requests include only IDs, times, application/bundle/window,
   URL, focused-element facts, and visible text. Turn requests include IDs,
   times, code-owned status, user text, final assistant text, and compact tool
   names/results. Neither request includes reasoning, streaming deltas, response
   protocol fields, screenshots, full AX trees, or duplicate output items.
-- `/responses/input_tokens` is checked before every model generation. Turn Memory
-  uses at most 70% of the model window and also reserves the configured output
-  budget. An oversized single source becomes a persisted retryable error; it is
-  not discarded and does not produce a heuristic fallback.
+- Every model generation is budgeted before it starts. Turn Memory uses at most
+  70% of the model window and also reserves the configured output budget. An
+  oversized single source becomes a persisted retryable error; it is not
+  discarded and does not produce a heuristic content fallback.
 
 Chronicle output must cover every input source exactly once and may not invent a
 source. Generated summaries are English; quoted evidence retains its source
 language. Chronicle describes what happened and cannot emit `raw_memory`.
 Durable memory is limited to
 explicit, stable user facts, preferences, long-term goals, project decisions,
-or lasting state. Ordinary browsing and one-off actions are skipped. A single
+or lasting state. Greetings, model-capability questions, concept explanations,
+temporary errors, assistant-only suggestions, ordinary browsing, and one-off
+actions are skipped. A single
 passive screen observation cannot establish a preference, and an unsuccessful
 Turn cannot prove success.
 
@@ -203,7 +218,8 @@ so replacements arriving during a run remain pending for the next run without
 changing the active request.
 
 Before consolidation, Chronicle and Turn summaries are synchronized to
-`rollout_summaries/`; only Turn `raw_memory` values enter `raw_memories.md`.
+`rollout_summaries/`; only Turn extractions with non-empty `raw_memory` are
+eligible for consolidation and only those values enter `raw_memories.md`.
 SQLite retains the previous successful selection, so the next immutable
 snapshot explicitly marks sources as added, retained, or removed. A one-commit disposable Git repository
 provides the real change set; SQLite, WAL, evidence, and publication staging

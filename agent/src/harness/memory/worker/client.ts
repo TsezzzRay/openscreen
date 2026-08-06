@@ -2,14 +2,19 @@ import { randomUUID } from "node:crypto";
 import { Worker } from "node:worker_threads";
 
 import type { ScreenObservation } from "../../../extensions/screen-observation/types.js";
+import { openMemoryDatabase } from "../db/database.js";
 import type {
-  MemoryWorkerData,
   MemoryWorkerCommand,
+  MemoryWorkerData,
   MemoryWorkerResponse,
+  MemoryWorkerRole,
 } from "./messages.js";
 
-export class MemoryWorkerClient {
-  private readonly worker: Worker;
+const WORKER_ROLES = ["chronicle", "turnMemory", "consolidation"] as const;
+type MemoryWorkerClientData = Omit<MemoryWorkerData, "role">;
+
+class RoleWorkerClient {
+  readonly worker: Worker;
   private readonly readyPromise: Promise<void>;
   private resolveReady!: () => void;
   private rejectReady!: (error: Error) => void;
@@ -22,13 +27,13 @@ export class MemoryWorkerClient {
   private stopPromise?: Promise<void>;
   private terminalError?: Error;
 
-  constructor(data: MemoryWorkerData) {
+  constructor(readonly role: MemoryWorkerRole, data: MemoryWorkerClientData) {
     this.readyPromise = new Promise<void>((resolve, reject) => {
       this.resolveReady = resolve;
       this.rejectReady = reject;
     });
     this.worker = new Worker(new URL("./thread.js", import.meta.url), {
-      workerData: data,
+      workerData: { ...data, role } satisfies MemoryWorkerData,
     });
     this.worker.on("message", (message: MemoryWorkerResponse) => {
       if (message.type === "ready") {
@@ -36,7 +41,9 @@ export class MemoryWorkerClient {
         return;
       }
       if (message.type === "error" && !message.requestId) {
-        process.stderr.write(`OpenScreen memory worker failed: ${message.message}\n`);
+        process.stderr.write(
+          `OpenScreen ${role} memory worker failed: ${message.message}\n`,
+        );
         return;
       }
       if (!("requestId" in message) || !message.requestId) return;
@@ -54,8 +61,8 @@ export class MemoryWorkerClient {
       if (this.stopped) return;
       this.handleUnexpectedStop(new Error(
         code === 0
-          ? "Memory worker exited unexpectedly"
-          : `Memory worker exited with code ${code}`,
+          ? `Memory worker exited unexpectedly (${role})`
+          : `Memory worker exited with code ${code} (${role})`,
       ));
     });
   }
@@ -78,10 +85,10 @@ export class MemoryWorkerClient {
     return this.readyPromise;
   }
 
-  private async request(message: MemoryWorkerCommand, allowStopping = false) {
+  async request(message: MemoryWorkerCommand, allowStopping = false) {
     await this.readyPromise;
     if (this.stopped || (this.stopping && !allowStopping)) {
-      throw this.terminalError ?? new Error("Memory worker is stopped");
+      throw this.terminalError ?? new Error(`${this.role} Memory worker is stopped`);
     }
     const requestId = randomUUID();
     const completed = new Promise<void>((resolve, reject) => {
@@ -89,18 +96,6 @@ export class MemoryWorkerClient {
     });
     this.worker.postMessage({ ...message, requestId });
     return completed;
-  }
-
-  recordObservation(observation: ScreenObservation) {
-    return this.request({ type: "observation", observation });
-  }
-
-  scanSession(sessionId: string) {
-    return this.request({ type: "session", sessionId });
-  }
-
-  tick() {
-    return this.request({ type: "tick" });
   }
 
   stop() {
@@ -129,9 +124,62 @@ export class MemoryWorkerClient {
     } finally {
       this.stopped = true;
       await this.worker.terminate();
-      const error = new Error("Memory worker stopped");
+      const error = new Error(`${this.role} Memory worker stopped`);
       for (const request of this.pending.values()) request.reject(error);
       this.pending.clear();
     }
+  }
+}
+
+export class MemoryWorkerClient {
+  private readonly roleWorkers: Record<MemoryWorkerRole, RoleWorkerClient>;
+  private readonly worker: Worker;
+  private stopPromise?: Promise<void>;
+
+  constructor(data: MemoryWorkerClientData) {
+    openMemoryDatabase(data.memoryRoot).close();
+    this.roleWorkers = Object.fromEntries(WORKER_ROLES.map((role) => [
+      role,
+      new RoleWorkerClient(role, data),
+    ])) as Record<MemoryWorkerRole, RoleWorkerClient>;
+    this.worker = this.roleWorkers.chronicle.worker;
+  }
+
+  get threadId() {
+    return this.roleWorkers.chronicle.threadId;
+  }
+
+  get threadIds() {
+    return Object.fromEntries(WORKER_ROLES.map((role) => [
+      role,
+      this.roleWorkers[role].threadId,
+    ])) as Record<MemoryWorkerRole, number>;
+  }
+
+  async ready() {
+    await Promise.all(WORKER_ROLES.map((role) => this.roleWorkers[role].ready()));
+  }
+
+  recordObservation(observation: ScreenObservation) {
+    return this.roleWorkers.chronicle.request({ type: "observation", observation });
+  }
+
+  scanSession(sessionId: string) {
+    return this.roleWorkers.turnMemory.request({ type: "session", sessionId });
+  }
+
+  async tick() {
+    await Promise.all(WORKER_ROLES.map((role) => (
+      this.roleWorkers[role].request({ type: "tick" })
+    )));
+  }
+
+  stop() {
+    this.stopPromise ??= this.stopNow();
+    return this.stopPromise;
+  }
+
+  private async stopNow() {
+    await Promise.all(WORKER_ROLES.map((role) => this.roleWorkers[role].stop()));
   }
 }

@@ -16,6 +16,8 @@ const config = {
   scheduling: {
     tickIntervalMilliseconds: 100,
     ordinaryCaptureGapMilliseconds: 2_000,
+    eventDeduplicationWindowMilliseconds: 1_000,
+    sameWindowCaptureGapMilliseconds: 5_000,
     delaysMilliseconds: {
       mouseClick: 400,
       focusedElementChanged: 500,
@@ -27,9 +29,6 @@ const config = {
       keyActivity: 30_000,
       visualChanged: 10_000,
     },
-  },
-  deduplication: {
-    visualDifferenceThreshold: 0.08,
   },
   capture: {
     requestTimeoutMilliseconds: 10_000,
@@ -159,7 +158,7 @@ test("builds a normalized observation without persisting it", async () => {
 
 test("drops unchanged ordinary observations but retains a real window boundary", async () => {
   const observations: ScreenObservation[] = [];
-  const captures = [result(), result(), result(windowB, "Other")];
+  const captures = [result(), result(windowB, "Other")];
   const service = new ScreenObservationService({
     config,
     capture: async () => captures.shift()!,
@@ -181,7 +180,7 @@ test("drops unchanged ordinary observations but retains a real window boundary",
   );
 });
 
-test("enforces the ordinary two second capture gap without dropping the latest signal", async () => {
+test("enforces the same-window five second capture gap without dropping the latest signal", async () => {
   let captureCount = 0;
   const service = new ScreenObservationService({
     config,
@@ -194,12 +193,31 @@ test("enforces the ordinary two second capture gap without dropping the latest s
 
   service.push(signal("mouseClick"), 0);
   await service.tick(400);
-  service.push(signal("mouseClick", windowA, 500), 500);
-  await service.tick(900);
-  await service.tick(2_399);
+  service.push(signal("mouseClick", windowA, 1_500), 1_500);
+  await service.tick(1_900);
+  await service.tick(5_399);
   assert.equal(captureCount, 1);
 
-  await service.tick(2_400);
+  await service.tick(5_400);
+  assert.equal(captureCount, 2);
+});
+
+test("lets focus boundaries bypass same-window and global capture gaps", async () => {
+  let captureCount = 0;
+  const service = new ScreenObservationService({
+    config,
+    capture: async () => {
+      captureCount += 1;
+      return result(windowA, "Same content");
+    },
+    onObservation: () => {},
+  });
+
+  service.push(signal("mouseClick"), 0);
+  await service.tick(400);
+  service.push(signal("focusedWindowChanged", windowA, 500), 500);
+  await service.tick(500);
+
   assert.equal(captureCount, 2);
 });
 
@@ -227,6 +245,8 @@ test("uses the ordinary capture gap supplied by startup configuration", async ()
       scheduling: {
         ...config.scheduling,
         ordinaryCaptureGapMilliseconds: 100,
+        eventDeduplicationWindowMilliseconds: 0,
+        sameWindowCaptureGapMilliseconds: 100,
       },
     },
     capture: async () => {

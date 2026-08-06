@@ -11,6 +11,8 @@ import type {
 const scheduling = {
   tickIntervalMilliseconds: 100,
   ordinaryCaptureGapMilliseconds: 2_000,
+  eventDeduplicationWindowMilliseconds: 1_000,
+  sameWindowCaptureGapMilliseconds: 5_000,
   delaysMilliseconds: {
     mouseClick: 400,
     focusedElementChanged: 500,
@@ -56,6 +58,17 @@ test("a window boundary supersedes delayed activity and is immediately due", () 
   assert.deepEqual(planner.takeDue(1_000), []);
 });
 
+test("deduplicates the same event and window for one second", () => {
+  const planner = new CapturePlanner(scheduling);
+  planner.push(signal("mouseClick", 0), 0);
+  planner.push(signal("mouseClick", 300), 300);
+
+  assert.deepEqual(
+    planner.takeDue(400).map((capture) => capture.signal.kind),
+    ["mouseClick"],
+  );
+});
+
 test("keyboard activity uses a trailing delay with a thirty second cap", () => {
   const planner = new CapturePlanner(scheduling);
   planner.push(signal("keyActivity", 0), 0);
@@ -80,7 +93,7 @@ test("keyboard activity uses a trailing delay with a thirty second cap", () => {
 
 test("continuous visual changes settle normally but are capped at ten seconds", () => {
   const planner = new CapturePlanner(scheduling);
-  for (let now = 0; now < 10_000; now += 500) {
+  for (let now = 0; now <= 10_000; now += 500) {
     planner.push(signal("visualChanged", now), now);
   }
 
@@ -94,6 +107,7 @@ test("continuous visual changes settle normally but are capped at ten seconds", 
 test("uses capture delays and caps supplied by startup configuration", () => {
   const planner = new CapturePlanner({
     ...scheduling,
+    eventDeduplicationWindowMilliseconds: 0,
     delaysMilliseconds: {
       ...scheduling.delaysMilliseconds,
       keyActivity: 10,

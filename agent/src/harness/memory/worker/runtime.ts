@@ -211,9 +211,7 @@ export class MemoryPipeline {
     );
   }
 
-  async tick(signal?: AbortSignal) {
-    await this.scanSessions({ includeInterrupted: false, signal });
-    this.turnMemory.sealDueBatches(this.now());
+  async tickChronicle(signal?: AbortSignal) {
     let chronicleJobs = 0;
     while (chronicleJobs < this.options.memory.worker.maxJobsPerTick && !signal?.aborted) {
       const result = await processNextChronicle({
@@ -229,6 +227,18 @@ export class MemoryPipeline {
       chronicleJobs += 1;
       await yieldToEventLoop();
     }
+    const evidenceDeleted = await this.withEvidenceLock(() => cleanupEvidence(
+      this.database,
+      this.options.memoryRoot,
+      this.options.memory.evidence,
+      this.now(),
+    ));
+    return { chronicleJobs, evidenceDeleted };
+  }
+
+  async tickTurnMemory(signal?: AbortSignal) {
+    await this.scanSessions({ includeInterrupted: false, signal });
+    this.turnMemory.sealDueBatches(this.now());
     let turnMemoryJobs = 0;
     while (turnMemoryJobs < this.options.memory.worker.maxJobsPerTick && !signal?.aborted) {
       const result = await processNextTurnMemory({
@@ -244,7 +254,11 @@ export class MemoryPipeline {
       turnMemoryJobs += 1;
       await yieldToEventLoop();
     }
-    const consolidation = signal?.aborted
+    return { turnMemoryJobs };
+  }
+
+  async tickConsolidation(signal?: AbortSignal) {
+    return signal?.aborted
       ? { status: "skipped" as const, reason: "aborted" }
       : await processConsolidation({
           root: this.options.memoryRoot,
@@ -256,12 +270,16 @@ export class MemoryPipeline {
           now: this.now,
           signal,
         });
-    const evidenceDeleted = await this.withEvidenceLock(() => cleanupEvidence(
-      this.database,
-      this.options.memoryRoot,
-      this.options.memory.evidence,
-      this.now(),
-    ));
+  }
+
+  async tick(signal?: AbortSignal) {
+    const [chronicle, turnMemory] = await Promise.all([
+      this.tickChronicle(signal),
+      this.tickTurnMemory(signal),
+    ]);
+    const consolidation = await this.tickConsolidation(signal);
+    const { chronicleJobs, evidenceDeleted } = chronicle;
+    const { turnMemoryJobs } = turnMemory;
     return { chronicleJobs, turnMemoryJobs, consolidation, evidenceDeleted };
   }
 

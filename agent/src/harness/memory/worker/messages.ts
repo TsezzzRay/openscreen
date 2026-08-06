@@ -1,7 +1,10 @@
 import type { ScreenObservation } from "../../../extensions/screen-observation/types.js";
 import type { MemoryPipelineConfig } from "../types.js";
 
+export type MemoryWorkerRole = "chronicle" | "turnMemory" | "consolidation";
+
 export type MemoryWorkerData = {
+  role: MemoryWorkerRole;
   memoryRoot: string;
   sessionsDirectory: string;
   apiKey: string;

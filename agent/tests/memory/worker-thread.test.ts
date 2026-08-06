@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createServer } from "node:http";
+import { createServer, type IncomingMessage } from "node:http";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,6 +13,148 @@ import {
 } from "../../src/harness/session/store.js";
 import type { ScreenObservation } from "../../src/extensions/screen-observation/types.js";
 import { testMemoryConfig } from "./test-config.js";
+
+async function readRequestJSON(request: IncomingMessage) {
+  const chunks: Buffer[] = [];
+  for await (const chunk of request) chunks.push(Buffer.from(chunk));
+  return JSON.parse(Buffer.concat(chunks).toString("utf8")) as {
+    instructions?: string;
+  };
+}
+
+test("runs Chronicle, Turn Memory, and consolidation in separate Worker threads", async (t) => {
+  const dataRoot = await mkdtemp(join(tmpdir(), "openscreen-memory-thread-"));
+  t.after(() => rm(dataRoot, { recursive: true, force: true }));
+  const client = new MemoryWorkerClient({
+    memoryRoot: join(dataRoot, "memory"),
+    sessionsDirectory: join(dataRoot, "sessions"),
+    apiKey: "test",
+    baseURL: "http://127.0.0.1:1/v1",
+    model: "summary-model",
+    contextWindowTokens: 10_000,
+    memory: testMemoryConfig(),
+  });
+  t.after(() => client.stop());
+  await client.ready();
+
+  const threadIds = (client as unknown as {
+    threadIds: Record<string, number>;
+  }).threadIds;
+  assert.deepEqual(Object.keys(threadIds).sort(), [
+    "chronicle",
+    "consolidation",
+    "turnMemory",
+  ]);
+  assert.equal(new Set(Object.values(threadIds)).size, 3);
+  assert.ok(Object.values(threadIds).every((id) => id > 0));
+});
+
+test("starts Turn Memory while a Chronicle model request is still running", async (t) => {
+  const dataRoot = await mkdtemp(join(tmpdir(), "openscreen-memory-thread-"));
+  t.after(() => rm(dataRoot, { recursive: true, force: true }));
+  let markChronicleStarted!: () => void;
+  let markTurnMemoryStarted!: () => void;
+  const chronicleStarted = new Promise<void>((resolve) => {
+    markChronicleStarted = resolve;
+  });
+  const turnMemoryStarted = new Promise<void>((resolve) => {
+    markTurnMemoryStarted = resolve;
+  });
+  const server = createServer(async (request, response) => {
+    if (request.url?.endsWith("/responses/input_tokens")) {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ input_tokens: 100 }));
+      return;
+    }
+    if (request.url?.endsWith("/responses")) {
+      const body = await readRequestJSON(request);
+      if (body.instructions?.includes("Organize a closed window")) {
+        markChronicleStarted();
+        return;
+      }
+      if (body.instructions?.includes("Extract durable memory")) {
+        markTurnMemoryStarted();
+        return;
+      }
+    }
+    response.writeHead(404);
+    response.end();
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  t.after(() => {
+    server.closeAllConnections();
+    server.close();
+  });
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  const sessionsDirectory = join(dataRoot, "sessions");
+  const client = new MemoryWorkerClient({
+    memoryRoot: join(dataRoot, "memory"),
+    sessionsDirectory,
+    apiKey: "test",
+    baseURL: `http://127.0.0.1:${address.port}/v1`,
+    model: "summary-model",
+    contextWindowTokens: 10_000,
+    memory: testMemoryConfig({
+      turnMemory: { turnIdleMilliseconds: 1 },
+    }),
+  });
+  t.after(() => client.stop());
+  await client.ready();
+  const occurredAt = new Date(Date.now() - 2 * 60_000).toISOString();
+  await client.recordObservation({
+    schemaVersion: 1,
+    id: "blocking-chronicle",
+    occurredAt,
+    capturedAt: occurredAt,
+    trigger: { type: "focusedWindowChanged" },
+    window: { processIdentifier: 42, applicationName: "Safari" },
+    screenshot: { status: "complete", durationMilliseconds: 1 },
+    accessibility: { status: "complete", durationMilliseconds: 1 },
+    visibleText: "Chronicle request",
+    diagnostics: {
+      triggerToCaptureMilliseconds: 1,
+      screenshotDurationMilliseconds: 1,
+      accessibilityDurationMilliseconds: 1,
+    },
+  });
+  const chronicleTick = client.tick();
+  await chronicleStarted;
+
+  const session = await createSession(sessionsDirectory);
+  await appendSessionEvents(sessionsDirectory, session.id, [
+    {
+      type: "turn_started",
+      turn: { id: "turn-1", user: "Remember this", startedAt: occurredAt },
+    },
+    {
+      type: "turn_completed",
+      turn: {
+        id: "turn-1",
+        user: "Remember this",
+        assistant: "Recorded",
+        status: "completed",
+        startedAt: occurredAt,
+        finishedAt: occurredAt,
+      },
+    },
+  ]);
+  await client.scanSession(session.id);
+  const concurrentTick = client.tick();
+
+  await Promise.race([
+    turnMemoryStarted,
+    new Promise<never>((_, reject) => setTimeout(
+      () => reject(new Error("Turn Memory waited for Chronicle")),
+      1_000,
+    )),
+  ]);
+  await client.stop();
+  await Promise.allSettled([chronicleTick, concurrentTick]);
+});
 
 test("persists Observation messages in an independent Node Worker thread", async (t) => {
   const dataRoot = await mkdtemp(join(tmpdir(), "openscreen-memory-thread-"));
@@ -205,7 +347,7 @@ test("rejects an unknown Memory Worker message type", async (t) => {
   });
 });
 
-test("reports a failed internal startup tick", async (t) => {
+test("falls back locally when startup token counting is unavailable", async (t) => {
   const dataRoot = await mkdtemp(join(tmpdir(), "openscreen-memory-thread-"));
   t.after(() => rm(dataRoot, { recursive: true, force: true }));
   const sessionsDirectory = join(dataRoot, "sessions");
@@ -242,13 +384,12 @@ test("reports a failed internal startup tick", async (t) => {
   t.after(() => server.close());
   const address = server.address();
   assert.ok(address && typeof address === "object");
-  let report!: () => void;
-  const reported = new Promise<void>((resolve) => {
-    report = resolve;
-  });
+  let internalFailureReported = false;
   const originalWrite = process.stderr.write.bind(process.stderr);
   process.stderr.write = ((chunk: string | Uint8Array) => {
-    if (String(chunk).includes("OpenScreen memory worker failed:")) report();
+    if (String(chunk).includes("OpenScreen memory worker failed:")) {
+      internalFailureReported = true;
+    }
     return true;
   }) as typeof process.stderr.write;
   t.after(() => {
@@ -265,12 +406,13 @@ test("reports a failed internal startup tick", async (t) => {
   });
   t.after(() => client.stop());
   await client.ready();
+  await client.tick();
+  await client.stop();
 
-  await Promise.race([
-    reported,
-    new Promise<never>((_, reject) => setTimeout(
-      () => reject(new Error("internal startup failure was not reported")),
-      1_000,
-    )),
-  ]);
+  const database = openMemoryDatabase(join(dataRoot, "memory"));
+  t.after(() => database.close());
+  assert.equal(database.connection.prepare(
+    "SELECT count(*) AS count FROM turn_memory_sources",
+  ).get()?.count, 1);
+  assert.equal(internalFailureReported, false);
 });

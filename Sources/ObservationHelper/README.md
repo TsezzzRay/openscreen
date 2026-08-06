@@ -89,18 +89,21 @@ The native configuration groups are:
 | `windowSelection` | minimum normal-window dimensions and maximum aspect ratio |
 
 Node-only observation settings in `config.json` control whether observation is
-enabled, capture delays and caps, the ordinary capture gap, content
-deduplication, the per-request capture timeout, configuration/shutdown timeouts,
-and scheduler tick frequency. The default capture timeout is 10 seconds and
+enabled, capture delays and caps, the one-second per-event deduplication window,
+the two-second global capture gap, the five-second same-window capture gap,
+business-content deduplication, the per-request capture timeout,
+configuration/shutdown timeouts, and scheduler tick frequency. The default
+capture timeout is 10 seconds and
 releases only the timed-out Node request; it does not terminate or restart the
 helper. Observation settings are not environment-variable overrides. The helper
 executable path remains a deployment concern supplied through
 `OPENSCREEN_HELPER_PATH` when needed.
 
-`visualMonitoring.changeThreshold` must be less than or equal to
-`deduplication.visualDifferenceThreshold`. Swift therefore notices at least
-every change that Node considers materially different. Both sides use normalized
-mean absolute grayscale-pixel distance in the range `0...1`.
+`visualMonitoring.changeThreshold` only decides whether Swift emits a visual
+change candidate. A visual difference alone never persists an Observation.
+After capture, Node fingerprints the application, window title, focused role
+and value, visible text, and URL; screenshots, timestamps, raw AX structure,
+coordinates, and visual signatures do not participate in Evidence identity.
 
 Protocol versions, activity/status enums, secure-field redaction, foreground
 window semantics, and self-capture exclusion are compatibility or privacy

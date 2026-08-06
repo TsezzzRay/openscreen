@@ -10,6 +10,7 @@ test("organizes agent core and harness code by responsibility", () => {
     "loop.ts",
     "types.ts",
     "config.ts",
+    "model-token-count.ts",
     "protocol.ts",
     "harness/session/runner.ts",
     "harness/session/store.ts",

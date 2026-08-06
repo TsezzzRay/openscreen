@@ -94,9 +94,9 @@ export function openMemoryDatabase(root: string) {
   try {
     chmodSync(path, 0o600);
     connection.exec(`
+      PRAGMA busy_timeout = ${BUSY_TIMEOUT_MILLISECONDS};
       PRAGMA journal_mode = WAL;
       PRAGMA foreign_keys = ON;
-      PRAGMA busy_timeout = ${BUSY_TIMEOUT_MILLISECONDS};
       PRAGMA synchronous = NORMAL;
     `);
     initializeSchema(connection);
