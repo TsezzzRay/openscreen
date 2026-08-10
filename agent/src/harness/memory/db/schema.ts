@@ -1,6 +1,6 @@
-export const MEMORY_SCHEMA_VERSION = 4;
+export const MEMORY_SCHEMA_VERSION = 5;
 
-export const MEMORY_SCHEMA = `
+export const MEMORY_SCHEMA_V4 = `
 CREATE TABLE chronicle_sources (
   id TEXT PRIMARY KEY,
   source_key TEXT NOT NULL UNIQUE,
@@ -258,3 +258,321 @@ CREATE TABLE consolidation_publications (
   CHECK (job_key = 'global')
 ) STRICT;
 `;
+
+export const MEMORY_RETRIEVAL_SCHEMA = `
+CREATE TABLE retrieval_long_term_memories (
+  memory_key TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  scope_type TEXT NOT NULL CHECK (scope_type IN (
+    'global', 'application', 'web_domain', 'document', 'project',
+    'workflow', 'person', 'organization', 'topic'
+  )),
+  scope_key TEXT,
+  content TEXT NOT NULL,
+  memory_source_ids_json TEXT NOT NULL CHECK (json_valid(memory_source_ids_json)),
+  published_at INTEGER NOT NULL,
+  CHECK (scope_type = 'global' OR scope_key IS NOT NULL)
+) STRICT;
+
+CREATE TABLE retrieval_index_state (
+  name TEXT PRIMARY KEY CHECK (name = 'long_term_memory'),
+  content_sha256 TEXT NOT NULL,
+  indexed_at INTEGER NOT NULL
+) STRICT;
+
+CREATE TABLE retrieval_documents (
+  id INTEGER PRIMARY KEY,
+  kind TEXT NOT NULL CHECK (kind IN (
+    'screen_observation', 'chronicle_activity', 'chronicle_summary',
+    'turn_summary', 'long_term_memory'
+  )),
+  document_id TEXT NOT NULL,
+  occurred_at INTEGER NOT NULL,
+  ended_at INTEGER,
+  generated_at INTEGER NOT NULL,
+  application TEXT,
+  window_title TEXT,
+  title TEXT,
+  content TEXT NOT NULL,
+  details TEXT,
+  UNIQUE (kind, document_id)
+) STRICT;
+
+CREATE INDEX retrieval_documents_recent
+ON retrieval_documents(occurred_at DESC, kind, document_id);
+
+CREATE INDEX retrieval_documents_application
+ON retrieval_documents(application, occurred_at DESC);
+
+CREATE VIRTUAL TABLE retrieval_documents_fts USING fts5(
+  application,
+  window_title,
+  title,
+  content,
+  details,
+  content = 'retrieval_documents',
+  content_rowid = 'id',
+  tokenize = 'unicode61 remove_diacritics 2'
+);
+
+CREATE TRIGGER retrieval_documents_after_insert
+AFTER INSERT ON retrieval_documents BEGIN
+  INSERT INTO retrieval_documents_fts(
+    rowid, application, window_title, title, content, details
+  ) VALUES (
+    new.id, new.application, new.window_title, new.title, new.content, new.details
+  );
+END;
+
+CREATE TRIGGER retrieval_documents_after_delete
+AFTER DELETE ON retrieval_documents BEGIN
+  INSERT INTO retrieval_documents_fts(
+    retrieval_documents_fts, rowid,
+    application, window_title, title, content, details
+  ) VALUES (
+    'delete', old.id,
+    old.application, old.window_title, old.title, old.content, old.details
+  );
+END;
+
+CREATE TRIGGER retrieval_documents_after_update
+AFTER UPDATE ON retrieval_documents BEGIN
+  INSERT INTO retrieval_documents_fts(
+    retrieval_documents_fts, rowid,
+    application, window_title, title, content, details
+  ) VALUES (
+    'delete', old.id,
+    old.application, old.window_title, old.title, old.content, old.details
+  );
+  INSERT INTO retrieval_documents_fts(
+    rowid, application, window_title, title, content, details
+  ) VALUES (
+    new.id, new.application, new.window_title, new.title, new.content, new.details
+  );
+END;
+
+CREATE TRIGGER chronicle_sources_retrieval_after_insert
+AFTER INSERT ON chronicle_sources BEGIN
+  INSERT INTO retrieval_documents (
+    kind, document_id, occurred_at, generated_at,
+    application, window_title, title, content, details
+  ) VALUES (
+    'screen_observation',
+    new.id,
+    new.occurred_at,
+    new.captured_at,
+    json_extract(new.projection_json, '$.application.name'),
+    json_extract(new.projection_json, '$.windowTitle'),
+    NULL,
+    coalesce(json_extract(new.projection_json, '$.visibleText'), ''),
+    trim(
+      coalesce(json_extract(new.projection_json, '$.focusedElement.value'), '') || char(10) ||
+      coalesce(json_extract(new.projection_json, '$.focusedElement.title'), '') || char(10) ||
+      coalesce(json_extract(new.projection_json, '$.focusedElement.identifier'), '') || char(10) ||
+      coalesce(json_extract(new.projection_json, '$.focusedElement.description'), '') || char(10) ||
+      coalesce(json_extract(new.projection_json, '$.url'), ''),
+      char(10)
+    )
+  );
+END;
+
+CREATE TRIGGER chronicle_sources_retrieval_after_update
+AFTER UPDATE OF projection_json, occurred_at, captured_at ON chronicle_sources BEGIN
+  UPDATE retrieval_documents SET
+    occurred_at = new.occurred_at,
+    generated_at = new.captured_at,
+    application = json_extract(new.projection_json, '$.application.name'),
+    window_title = json_extract(new.projection_json, '$.windowTitle'),
+    content = coalesce(json_extract(new.projection_json, '$.visibleText'), ''),
+    details = trim(
+      coalesce(json_extract(new.projection_json, '$.focusedElement.value'), '') || char(10) ||
+      coalesce(json_extract(new.projection_json, '$.focusedElement.title'), '') || char(10) ||
+      coalesce(json_extract(new.projection_json, '$.focusedElement.identifier'), '') || char(10) ||
+      coalesce(json_extract(new.projection_json, '$.focusedElement.description'), '') || char(10) ||
+      coalesce(json_extract(new.projection_json, '$.url'), ''),
+      char(10)
+    )
+  WHERE kind = 'screen_observation' AND document_id = new.id;
+END;
+
+CREATE TRIGGER chronicle_sources_retrieval_after_delete
+AFTER DELETE ON chronicle_sources BEGIN
+  DELETE FROM retrieval_documents
+  WHERE kind = 'screen_observation' AND document_id = old.id;
+END;
+
+CREATE TRIGGER chronicle_activities_retrieval_after_insert
+AFTER INSERT ON chronicle_activities BEGIN
+  INSERT INTO retrieval_documents (
+    kind, document_id, occurred_at, generated_at,
+    application, window_title, title, content, details
+  ) VALUES (
+    'chronicle_activity', new.id, new.occurred_at, new.created_at,
+    new.application, new.window_title, NULL, new.summary, NULL
+  );
+END;
+
+CREATE TRIGGER chronicle_activities_retrieval_after_update
+AFTER UPDATE ON chronicle_activities BEGIN
+  UPDATE retrieval_documents SET
+    occurred_at = new.occurred_at,
+    generated_at = new.created_at,
+    application = new.application,
+    window_title = new.window_title,
+    content = new.summary
+  WHERE kind = 'chronicle_activity' AND document_id = new.id;
+END;
+
+CREATE TRIGGER chronicle_activities_retrieval_after_delete
+AFTER DELETE ON chronicle_activities BEGIN
+  DELETE FROM retrieval_documents
+  WHERE kind = 'chronicle_activity' AND document_id = old.id;
+END;
+
+CREATE TRIGGER chronicle_summaries_retrieval_after_insert
+AFTER INSERT ON chronicle_summaries BEGIN
+  INSERT INTO retrieval_documents (
+    kind, document_id, occurred_at, ended_at, generated_at,
+    application, window_title, title, content, details
+  ) SELECT
+    'chronicle_summary', new.job_key, w.start_at, w.end_at, new.generated_at,
+    NULL, NULL, NULL, new.source_summary, NULL
+  FROM memory_jobs j
+  JOIN chronicle_windows w ON w.id = j.source_id
+  WHERE j.job_key = new.job_key;
+END;
+
+CREATE TRIGGER chronicle_summaries_retrieval_after_update
+AFTER UPDATE ON chronicle_summaries BEGIN
+  UPDATE retrieval_documents SET
+    generated_at = new.generated_at,
+    content = new.source_summary
+  WHERE kind = 'chronicle_summary' AND document_id = new.job_key;
+END;
+
+CREATE TRIGGER chronicle_summaries_retrieval_after_delete
+AFTER DELETE ON chronicle_summaries BEGIN
+  DELETE FROM retrieval_documents
+  WHERE kind = 'chronicle_summary' AND document_id = old.job_key;
+END;
+
+CREATE TRIGGER turn_memory_extractions_retrieval_after_insert
+AFTER INSERT ON turn_memory_extractions BEGIN
+  INSERT INTO retrieval_documents (
+    kind, document_id, occurred_at, ended_at, generated_at,
+    application, window_title, title, content, details
+  ) SELECT
+    'turn_summary', new.job_key, b.first_pending_at, b.last_terminal_at,
+    new.generated_at, NULL, NULL, new.turn_slug, new.turn_summary, new.raw_memory
+  FROM memory_jobs j
+  JOIN turn_memory_batches b ON b.id = j.source_id
+  WHERE j.job_key = new.job_key;
+END;
+
+CREATE TRIGGER turn_memory_extractions_retrieval_after_update
+AFTER UPDATE ON turn_memory_extractions BEGIN
+  UPDATE retrieval_documents SET
+    generated_at = new.generated_at,
+    title = new.turn_slug,
+    content = new.turn_summary,
+    details = new.raw_memory
+  WHERE kind = 'turn_summary' AND document_id = new.job_key;
+END;
+
+CREATE TRIGGER turn_memory_extractions_retrieval_after_delete
+AFTER DELETE ON turn_memory_extractions BEGIN
+  DELETE FROM retrieval_documents
+  WHERE kind = 'turn_summary' AND document_id = old.job_key;
+END;
+
+CREATE TRIGGER retrieval_long_term_memories_after_insert
+AFTER INSERT ON retrieval_long_term_memories BEGIN
+  INSERT INTO retrieval_documents (
+    kind, document_id, occurred_at, generated_at,
+    application, window_title, title, content, details
+  ) VALUES (
+    'long_term_memory', new.memory_key, new.published_at, new.published_at,
+    CASE WHEN new.scope_type = 'application' THEN new.scope_key ELSE NULL END,
+    NULL,
+    new.title,
+    new.content,
+    new.scope_type || coalesce(':' || new.scope_key, '')
+  );
+END;
+
+CREATE TRIGGER retrieval_long_term_memories_after_update
+AFTER UPDATE ON retrieval_long_term_memories BEGIN
+  UPDATE retrieval_documents SET
+    occurred_at = new.published_at,
+    generated_at = new.published_at,
+    application = CASE
+      WHEN new.scope_type = 'application' THEN new.scope_key ELSE NULL
+    END,
+    title = new.title,
+    content = new.content,
+    details = new.scope_type || coalesce(':' || new.scope_key, '')
+  WHERE kind = 'long_term_memory' AND document_id = new.memory_key;
+END;
+
+CREATE TRIGGER retrieval_long_term_memories_after_delete
+AFTER DELETE ON retrieval_long_term_memories BEGIN
+  DELETE FROM retrieval_documents
+  WHERE kind = 'long_term_memory' AND document_id = old.memory_key;
+END;
+
+INSERT INTO retrieval_documents (
+  kind, document_id, occurred_at, generated_at,
+  application, window_title, title, content, details
+)
+SELECT
+  'screen_observation',
+  id,
+  occurred_at,
+  captured_at,
+  json_extract(projection_json, '$.application.name'),
+  json_extract(projection_json, '$.windowTitle'),
+  NULL,
+  coalesce(json_extract(projection_json, '$.visibleText'), ''),
+  trim(
+    coalesce(json_extract(projection_json, '$.focusedElement.value'), '') || char(10) ||
+    coalesce(json_extract(projection_json, '$.focusedElement.title'), '') || char(10) ||
+    coalesce(json_extract(projection_json, '$.focusedElement.identifier'), '') || char(10) ||
+    coalesce(json_extract(projection_json, '$.focusedElement.description'), '') || char(10) ||
+    coalesce(json_extract(projection_json, '$.url'), ''),
+    char(10)
+  )
+FROM chronicle_sources;
+
+INSERT INTO retrieval_documents (
+  kind, document_id, occurred_at, generated_at,
+  application, window_title, title, content, details
+)
+SELECT
+  'chronicle_activity', id, occurred_at, created_at,
+  application, window_title, NULL, summary, NULL
+FROM chronicle_activities;
+
+INSERT INTO retrieval_documents (
+  kind, document_id, occurred_at, ended_at, generated_at,
+  application, window_title, title, content, details
+)
+SELECT
+  'chronicle_summary', s.job_key, w.start_at, w.end_at, s.generated_at,
+  NULL, NULL, NULL, s.source_summary, NULL
+FROM chronicle_summaries s
+JOIN memory_jobs j ON j.job_key = s.job_key
+JOIN chronicle_windows w ON w.id = j.source_id;
+
+INSERT INTO retrieval_documents (
+  kind, document_id, occurred_at, ended_at, generated_at,
+  application, window_title, title, content, details
+)
+SELECT
+  'turn_summary', e.job_key, b.first_pending_at, b.last_terminal_at,
+  e.generated_at, NULL, NULL, e.turn_slug, e.turn_summary, e.raw_memory
+FROM turn_memory_extractions e
+JOIN memory_jobs j ON j.job_key = e.job_key
+JOIN turn_memory_batches b ON b.id = j.source_id;
+`;
+
+export const MEMORY_SCHEMA = `${MEMORY_SCHEMA_V4}${MEMORY_RETRIEVAL_SCHEMA}`;

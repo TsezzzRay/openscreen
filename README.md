@@ -7,7 +7,10 @@ Agent freezes the most recently confirmed external foreground window, obtains
 one matching screenshot and Accessibility snapshot, and sends the available
 screen context to a Responses API-compatible vision provider.
 
-> OpenScreen is under active development. It can understand the current screen, but it cannot retrieve prior activity or memory, click, type, or run commands yet. Issues and pull requests are temporarily disabled while the core product is changing.
+> OpenScreen is under active development. It can understand the current screen,
+> but the model cannot yet invoke the internal prior-activity and memory
+> retrieval layer, click, type, or run commands. Issues and pull requests are
+> temporarily disabled while the core product is changing.
 
 ## Current capabilities
 
@@ -17,6 +20,8 @@ screen context to a Responses API-compatible vision provider.
 - Event-driven foreground-window observations using a native macOS helper.
 - Background activity summarization and durable local memory derived from closed
   observation windows and terminal chat Turns.
+- English-only local context retrieval over raw screen observations, Chronicle
+  activities, producer summaries, and current long-term memory.
 - Persistent multi-session chat history with create, switch, and rename controls.
 - Per-turn capture, request, generation, and completion status with cancellation and editable retries.
 - A streaming Agent Loop for every request, with durable model-step and tool-result records.
@@ -119,14 +124,16 @@ truncation, and model-projection truncation.
 - Development launch only; there is no signed app bundle or installer.
 - No session deletion, search, or cloud sync.
 - Only one request per session can run at a time; different sessions can stream concurrently.
-- The production tool registry is empty: activity and memory retrieval, click, type, scroll, application control, and Bash are not connected yet.
+- The production tool registry is empty: the internal activity and memory
+  retrieval API, click, type, scroll, application control, and Bash are not
+  connected to the model yet.
 - No automatic chat retries or settings interface; Retry opens the previous
   prompt for editing and captures a new screenshot when resubmitted. Background
   memory jobs use their own persisted retry policy.
 - Long-term memory is generated and persisted locally. Chat requests
   automatically receive only the bounded `memory_summary.md`; targeted
-  retrieval, Memory Agent Tools, and Memory UI controls are not
-  part of this implementation.
+  retrieval is available only as an internal Memory read API. Memory Agent
+  Tools and Memory UI controls are not part of this implementation.
 
 ## Architecture
 
@@ -148,6 +155,7 @@ local agent
     -> SQLite WAL + private evidence files
     -> Chronicle summaries + Turn Memory extractions
     -> global Memory consolidation with a Git baseline
+    -> SQLite FTS5 context index + current MEMORY.md synchronization
     -> bounded memory_summary.md developer context for chat requests
 ```
 

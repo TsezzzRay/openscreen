@@ -32,7 +32,7 @@ src/
         ├── evidence.ts        structured/JPEG Observation evidence and cleanup
         ├── chronicle/         passive screen activity organization
         ├── turn-memory/       terminal Turn extraction and Session scan progress
-        ├── read/              bounded chat-facing Memory summary loading
+        ├── read/              bounded summary loading and context retrieval
         ├── shared/            request, job, budget, and source-snapshot contracts
         ├── consolidate/       global merge, publication, Git baseline
         ├── worker/            independent role-specific Worker orchestration
@@ -72,6 +72,8 @@ The Agent is the composition center, but each capability owns its domain:
 - Model-initiated retrieval is an Agent Tool boundary under
   `tools/retrieve-memory`. Memory owns the data being queried; the Tool owns
   the model-facing arguments and results.
+- `ContextRetrieval` is the Memory-owned read boundary. It has no dependency on
+  the Agent Loop, wire protocol, model tool types, capture lifecycle, or UI.
 
 Runtime status remains local to its owner: session owns Turn and Run status,
 the observation extension owns helper health, memory owns processing outcomes,
@@ -220,7 +222,8 @@ of the current Turn's explicitly fused screenshot/AX context described above.
 SQLite is the structured truth for Chronicle sources/windows/activities, Turn
 sources/batches/extractions, producer jobs, durable Session scan progress,
 model-attempt audits, Consolidation job
-state, ownership tokens, watermarks, publication recovery, and evidence links.
+state, ownership tokens, watermarks, publication recovery, evidence links, and
+the local context retrieval index.
 Connections enable foreign keys, WAL, a five-second busy timeout, and immediate
 write transactions. The directory is mode `0700` and the database is mode
 `0600`. The coordinator initializes the database before spawning the Chronicle,
@@ -309,8 +312,40 @@ workflow memory without pretending everything is a coding project. Project
 scope requires explicit project evidence. Memory records learned context and
 does not replace fixed project rules in files such as `AGENTS.md` or `README.md`.
 
-Retrieval, Agent Tools, UI controls, additional secret
-redaction, heuristic fallback, and memory-version history are outside this
+## Context retrieval
+
+`harness/memory/read/search.ts` exposes two read-only entry points for other
+modules:
+
+- `search` performs bounded keyword retrieval with optional kind, time,
+  application, and result-limit filters.
+- `recent` returns the latest matching context without requiring keywords.
+
+Both return stable document IDs, timestamps, source IDs, generated content,
+application/window metadata when available, and a bounded excerpt. The five
+document kinds are raw `screen_observation`, generated
+`chronicle_activity`, `chronicle_summary`, `turn_summary`, and the current
+`long_term_memory` set. Turn summary details include the corresponding
+`raw_memory`; long-term-memory results include both consolidation source IDs and
+immutable evidence source IDs.
+
+Schema v5 adds a denormalized retrieval document table and an external-content
+SQLite FTS5 index. Database triggers keep Observation projections, Chronicle
+activities and summaries, and Turn Memory extractions synchronized with the
+index. Opening a schema-v4 database migrates it in one transaction and
+backfills all existing producer rows. Current long-term memory remains owned by
+`MEMORY.md`; the read layer hashes and parses that existing artifact, then
+updates its structured cache and FTS rows only when the published content
+changes. It does not add another memory artifact or modify Consolidation.
+
+Keyword queries use FTS5 `unicode61 remove_diacritics 2`, quoted searchable
+terms with implicit AND semantics, and BM25 ordering. The retrieval contract is
+English-only. It performs no language detection, translation, CJK tokenization,
+embedding search, or model reranking. Non-English source text remains stored,
+but retrieval quality for it is unspecified.
+
+Agent Tool registration, UI controls, additional secret
+redaction, heuristic fallback, and memory-version history remain outside this
 pipeline.
 
 ## Tests

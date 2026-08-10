@@ -2,7 +2,11 @@ import { chmodSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-import { MEMORY_SCHEMA, MEMORY_SCHEMA_VERSION } from "./schema.js";
+import {
+  MEMORY_RETRIEVAL_SCHEMA,
+  MEMORY_SCHEMA,
+  MEMORY_SCHEMA_VERSION,
+} from "./schema.js";
 
 const DATABASE_FILENAME = "memory.sqlite3";
 const BUSY_TIMEOUT_MILLISECONDS = 5_000;
@@ -65,6 +69,11 @@ function initializeSchema(connection: DatabaseSync) {
     ).get()?.version;
     if (current === null || current === undefined) {
       connection.exec(MEMORY_SCHEMA);
+      connection.prepare(
+        "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
+      ).run(MEMORY_SCHEMA_VERSION, Date.now());
+    } else if (current === 4) {
+      connection.exec(MEMORY_RETRIEVAL_SCHEMA);
       connection.prepare(
         "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
       ).run(MEMORY_SCHEMA_VERSION, Date.now());

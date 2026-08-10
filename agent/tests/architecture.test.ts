@@ -33,6 +33,8 @@ test("organizes agent core and harness code by responsibility", () => {
     "harness/memory/turn-memory/processor.ts",
     "harness/memory/turn-memory/repository.ts",
     "harness/memory/turn-memory/extractor.ts",
+    "harness/memory/read/long-term-index.ts",
+    "harness/memory/read/search.ts",
     "harness/memory/shared/request-budget.ts",
     "harness/memory/shared/structured-output.ts",
     "harness/memory/consolidate/processor.ts",
@@ -114,6 +116,10 @@ test("keeps protocol and harness dependencies pointing inward", () => {
     resolve(sourceRoot, "tools/retrieve-memory/types.ts"),
     "utf8",
   );
+  const contextRetrieval = readFileSync(
+    resolve(sourceRoot, "harness/memory/read/search.ts"),
+    "utf8",
+  );
 
   assert.doesNotMatch(protocol, /harness\//);
   assert.doesNotMatch(runner, /protocol\.js/);
@@ -137,6 +143,8 @@ test("keeps protocol and harness dependencies pointing inward", () => {
   assert.doesNotMatch(memoryTypes, /export type MemoryItem\b/);
   assert.match(retrievalTypes, /export type RetrieveMemoryArguments\b/);
   assert.doesNotMatch(retrievalTypes, /AgentTool/);
+  assert.match(contextRetrieval, /export class ContextRetrieval\b/);
+  assert.doesNotMatch(contextRetrieval, /AgentTool|tools\/|protocol\.js/);
 });
 
 test("keeps screenshot implementation inside ObservationHelper", () => {
