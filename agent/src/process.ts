@@ -29,6 +29,7 @@ import {
   screenshotDiagnosticFields,
 } from "./extensions/screen-observation/diagnostics.js";
 import { MemoryWorkerClient } from "./harness/memory/worker/client.js";
+import { createSystemToolRegistry } from "./tools/system/index.js";
 import {
   parseInputEnvelope,
   serializeOutputEnvelope,
@@ -91,6 +92,10 @@ async function run() {
       config.screenObservation.diagnostics.retentionMilliseconds,
   });
   const captureArtifactStore = new CaptureArtifactStore(dataRoot);
+  const toolRegistry = createSystemToolRegistry({
+    cwd: process.cwd(),
+    outputDirectory: join(dataRoot, "tool-output"),
+  });
   const memoryWorker = new MemoryWorkerClient({
     memoryRoot,
     sessionsDirectory,
@@ -319,6 +324,7 @@ async function run() {
           );
         }
       }
+      const toolSnapshot = toolRegistry.getSnapshot();
       await runChat(
         {
           requestId: envelope.requestId,
@@ -335,8 +341,9 @@ async function run() {
         session,
         emit,
         signal!,
-        [],
+        [...toolSnapshot.tools],
         memoryRoot,
+        toolSnapshot.capabilityPrompt,
       );
       notifySessionMemory(envelope.sessionId);
     } catch (error) {

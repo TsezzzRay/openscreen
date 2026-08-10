@@ -2,11 +2,12 @@ import OpenAI from "openai";
 
 import type {
   AgentRunEvent,
-  AgentTool,
+  RegisteredAgentTool,
   AgentStreamEvent,
   ConversationOutputItem,
   ModelOutputItem,
 } from "./types.js";
+import { executeToolCalls } from "./tools/executor.js";
 
 export type ModelEvent = {
   type: string;
@@ -112,15 +113,10 @@ type BuildAgentRequest = (
   tools: OpenAI.Responses.FunctionTool[],
 ) => Promise<OpenAI.Responses.ResponseCreateParamsStreaming>;
 
-function toolOutput(value: unknown) {
-  if (typeof value === "string") return value;
-  return JSON.stringify(value) ?? "null";
-}
-
 export async function runAgentLoop(
   client: OpenAI,
   buildRequest: BuildAgentRequest,
-  tools: AgentTool[],
+  tools: readonly RegisteredAgentTool[],
   send: (event: AgentStreamEvent) => void,
   record: (event: AgentRunEvent) => Promise<void>,
   signal: AbortSignal,
@@ -131,7 +127,9 @@ export async function runAgentLoop(
   outputItems: ConversationOutputItem[];
   totalTokens?: number;
 } | null> {
-  const definitions = tools.map(({ definition }) => definition);
+  const definitions = tools.map(({ definition }) => (
+    structuredClone(definition) as OpenAI.Responses.FunctionTool
+  ));
   const items: ConversationOutputItem[] = [];
   let output = "";
   let reasoning = "";
@@ -176,43 +174,7 @@ export async function runAgentLoop(
       return { type: "completed", output, reasoning, outputItems: items, totalTokens };
     }
 
-    for (const call of calls) {
-      signal.throwIfAborted();
-      let callOutput: string;
-      let status: "completed" | "failed" = "completed";
-      try {
-        const tool = tools.find(({ definition }) => definition.name === call.name);
-        if (!tool) throw new Error(`Unknown tool: ${call.name}`);
-        const argumentsValue: unknown = JSON.parse(call.arguments);
-        if (typeof argumentsValue !== "object" || argumentsValue === null ||
-            Array.isArray(argumentsValue)) {
-          throw new Error("Tool arguments must be an object");
-        }
-        callOutput = toolOutput(await tool.execute(
-          argumentsValue as Record<string, unknown>,
-          signal,
-        ));
-      } catch (error) {
-        signal.throwIfAborted();
-        status = "failed";
-        callOutput = JSON.stringify({
-          error: error instanceof Error ? error.message : "Tool failed",
-        });
-      }
-      const resultItem = {
-        type: "function_call_output" as const,
-        call_id: call.call_id,
-        output: callOutput,
-      };
-      items.push(resultItem);
-      await record({
-        type: "tool_result_recorded",
-        step,
-        callId: call.call_id,
-        name: call.name,
-        output: callOutput,
-        status,
-      });
-    }
+    const executions = await executeToolCalls(calls, tools, step, signal, record);
+    items.push(...executions.map(({ resultItem }) => resultItem));
   }
 }

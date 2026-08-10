@@ -41,6 +41,18 @@ export type AgentToolResult = {
   name: string;
   output: string;
   status: "completed" | "failed";
+  details?: unknown;
+};
+
+export type AgentToolCallAudit = {
+  callId: string;
+  name: string;
+  arguments: string;
+  status: "interrupted" | "completed" | "failed";
+  startedAt: string;
+  finishedAt?: string;
+  output?: string;
+  details?: unknown;
 };
 
 export type AgentRunStep = {
@@ -49,6 +61,7 @@ export type AgentRunStep = {
   outputItems: ModelOutputItem[];
   totalTokens?: number;
   toolResults: AgentToolResult[];
+  toolCalls?: AgentToolCallAudit[];
 };
 
 export type AgentRun = {

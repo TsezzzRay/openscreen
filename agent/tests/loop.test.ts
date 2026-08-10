@@ -191,6 +191,26 @@ test("places the long-term memory summary before conversation context", async ()
   ]);
 });
 
+test("adds the active Registry capability prompt to system instructions", async () => {
+  const request = await makeRequest(
+    "vision-model",
+    "Inspect the project",
+    [],
+    21_760,
+    undefined,
+    loadScreenshot,
+    undefined,
+    undefined,
+    "Available tools:\n- read: Read a UTF-8 text file\n- bash: Execute a command",
+  );
+
+  assert.match(request.instructions as string, /Available tools:/);
+  assert.match(request.instructions as string, /read: Read a UTF-8 text file/);
+  assert.match(request.instructions as string, /do not ask for per-call confirmation/i);
+  assert.match(request.instructions as string, /completed tool result/i);
+  assert.match(request.instructions as string, /untrusted data/i);
+});
+
 test("builds a MiniMax M3 streaming screenshot request", async () => {
   const request = await makeRequest(
     "MiniMax-M3",
@@ -779,9 +799,138 @@ test("runs model tool calls until the agent loop completes", async () => {
   ]);
   assert.deepEqual(recorded.map((event: any) => event.type), [
     "agent_step_completed",
-    "tool_result_recorded",
+    "tool_call_started",
+    "tool_call_finished",
     "agent_step_completed",
   ]);
+});
+
+test("executes every sibling tool call in parallel and appends results in source order", async () => {
+  const requests: any[] = [];
+  let responseNumber = 0;
+  const client = {
+    responses: {
+      create: async (request: any) => {
+        requests.push(request);
+        responseNumber += 1;
+        return responseNumber === 1
+          ? (async function* () {
+              yield {
+                type: "response.completed",
+                response: {
+                  output: [
+                    {
+                      id: "first-call-item",
+                      call_id: "first-call",
+                      type: "function_call",
+                      status: "completed",
+                      name: "first",
+                      arguments: JSON.stringify({ value: 1 }),
+                    },
+                    {
+                      id: "second-call-item",
+                      call_id: "second-call",
+                      type: "function_call",
+                      status: "completed",
+                      name: "second",
+                      arguments: JSON.stringify({ value: 2 }),
+                    },
+                  ],
+                },
+              };
+            })()
+          : (async function* () {
+              yield {
+                type: "response.completed",
+                response: {
+                  output: [{
+                    id: "message-1",
+                    type: "message",
+                    status: "completed",
+                    role: "assistant",
+                    content: [{ type: "output_text", text: "done", annotations: [] }],
+                  }],
+                },
+              };
+            })();
+      },
+    },
+  } as unknown as OpenAI;
+  let active = 0;
+  let maximumActive = 0;
+  let release!: () => void;
+  const bothStarted = new Promise<void>((resolve) => { release = resolve; });
+  const execute = (name: string) => async () => {
+    active += 1;
+    maximumActive = Math.max(maximumActive, active);
+    if (active === 2) release();
+    await Promise.race([
+      bothStarted,
+      new Promise((_, reject) => setTimeout(
+        () => reject(new Error("Sibling tool was not started in parallel")),
+        100,
+      )),
+    ]);
+    if (name === "first") await new Promise((resolve) => setTimeout(resolve, 10));
+    active -= 1;
+    return {
+      content: `${name}-result`,
+      details: { source: name },
+    };
+  };
+  const recorded: any[] = [];
+
+  await runAgentLoop(
+    client,
+    async (items, definitions) => ({
+      model: "vision-model",
+      input: items,
+      tools: definitions,
+      stream: true,
+    }),
+    ["first", "second"].map((name) => ({
+      definition: {
+        type: "function" as const,
+        name,
+        parameters: {
+          type: "object",
+          properties: { value: { type: "number" } },
+          required: ["value"],
+          additionalProperties: false,
+        },
+        strict: true,
+      },
+      execute: execute(name),
+    })),
+    () => {},
+    async (event) => { recorded.push(event); },
+    new AbortController().signal,
+  );
+
+  assert.equal(maximumActive, 2);
+  assert.deepEqual(
+    requests[1].input.filter((item: any) => item.type === "function_call_output"),
+    [
+      { type: "function_call_output", call_id: "first-call", output: "first-result" },
+      { type: "function_call_output", call_id: "second-call", output: "second-result" },
+    ],
+  );
+  assert.deepEqual(
+    recorded.filter((event) => event.type === "tool_call_started")
+      .map((event) => [event.callId, event.arguments]),
+    [
+      ["first-call", JSON.stringify({ value: 1 })],
+      ["second-call", JSON.stringify({ value: 2 })],
+    ],
+  );
+  assert.deepEqual(
+    recorded.filter((event) => event.type === "tool_call_finished")
+      .map((event) => [event.callId, event.details]),
+    [
+      ["second-call", { source: "second" }],
+      ["first-call", { source: "first" }],
+    ],
+  );
 });
 
 test("does not impose a model step limit on the agent loop", async () => {
@@ -939,7 +1088,7 @@ test("returns tool failures to the model and continues the agent loop", async ()
     error: "Retrieval unavailable",
   });
   assert.equal(
-    recorded.find((event) => event.type === "tool_result_recorded").status,
+    recorded.find((event) => event.type === "tool_call_finished").status,
     "failed",
   );
   assert.equal(result?.output, "Context is unavailable.");

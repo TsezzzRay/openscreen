@@ -5,7 +5,7 @@ import OpenAI from "openai";
 import { runAgentLoop } from "../../loop.js";
 import type {
   AgentRunEvent,
-  AgentTool,
+  RegisteredAgentTool,
   ConversationOutputItem,
 } from "../../types.js";
 import type { RuntimeConfig } from "../../config.js";
@@ -100,8 +100,9 @@ export async function runChat(
   sessionConfig: RuntimeConfig["session"],
   emit: Emit,
   signal: AbortSignal,
-  tools: AgentTool[] = [],
+  tools: readonly RegisteredAgentTool[] = [],
   memoryRoot?: string,
+  toolCapabilityPrompt?: string,
 ) {
   const { requestId, sessionId, input } = command;
   const turnId = requestId;
@@ -215,6 +216,7 @@ export async function runChat(
           undefined,
           memorySummary,
           input.screenContext,
+          toolCapabilityPrompt,
         );
         if (!Array.isArray(request.input)) throw new Error("Invalid model input");
         request.input.push(...runItems);

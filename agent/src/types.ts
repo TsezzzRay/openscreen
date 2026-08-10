@@ -64,11 +64,23 @@ export type ConversationOutputItem =
 
 export type AgentTool = {
   definition: OpenAI.Responses.FunctionTool;
+  source?: string;
+  guidelines?: readonly string[];
   execute: (
     argumentsValue: Record<string, unknown>,
     signal: AbortSignal,
   ) => Promise<unknown>;
 };
+
+type DeepReadonly<T> = T extends (...argumentsValue: any[]) => unknown
+  ? T
+  : T extends readonly (infer Item)[]
+    ? readonly DeepReadonly<Item>[]
+    : T extends object
+      ? { readonly [Key in keyof T]: DeepReadonly<T[Key]> }
+      : T;
+
+export type RegisteredAgentTool = DeepReadonly<AgentTool>;
 
 export type AgentRunEvent = {
   type: "agent_step_completed";
@@ -77,12 +89,21 @@ export type AgentRunEvent = {
   outputItems: ModelOutputItem[];
   totalTokens?: number;
 } | {
-  type: "tool_result_recorded";
+  type: "tool_call_started";
+  step: number;
+  callId: string;
+  name: string;
+  arguments: string;
+  startedAt: string;
+} | {
+  type: "tool_call_finished";
   step: number;
   callId: string;
   name: string;
   output: string;
   status: "completed" | "failed";
+  finishedAt: string;
+  details?: unknown;
 };
 
 export type AgentStreamEvent = {

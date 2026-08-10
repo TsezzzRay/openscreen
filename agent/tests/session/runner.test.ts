@@ -490,7 +490,10 @@ test("rebuilds the agent process context after turn-end compaction", async (t) =
   assert.doesNotMatch(JSON.stringify(summaryRequests[0]?.input), /reasoning-1/);
   assert.equal(summaryRequests.length, 1);
   assert.equal(modelRequests.length, 7);
-  assert.ok(modelRequests.every((request: any) => request.tools === undefined));
+  assert.ok(modelRequests.every((request: any) => (
+    request.tools?.map((tool: any) => tool.name).join(",") ===
+      "read,ls,grep,find,write,edit,bash"
+  )));
   assert.match(JSON.stringify(modelRequests[1]), /reasoning-1/);
 
   async function concurrentTurn(text: string, targetSessionId: string) {

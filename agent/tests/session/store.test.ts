@@ -247,6 +247,193 @@ test("records agent runs and rebuilds tool context from append-only events", asy
   ]);
 });
 
+test("replays durable tool call lifecycle and preserves an unfinished outcome", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "openscreen-sessions-"));
+  t.after(() => rm(directory, { force: true, recursive: true }));
+  const session = await createSession(directory);
+  const first = {
+    id: "function-1",
+    call_id: "call-1",
+    type: "function_call" as const,
+    status: "completed" as const,
+    name: "read",
+    arguments: JSON.stringify({ path: "/tmp/one" }),
+  };
+  const second = {
+    id: "function-2",
+    call_id: "call-2",
+    type: "function_call" as const,
+    status: "completed" as const,
+    name: "bash",
+    arguments: JSON.stringify({ command: "sleep 10" }),
+  };
+  await appendSessionEvents(directory, session.id, [
+    {
+      type: "turn_started",
+      turn: {
+        id: "turn-1",
+        user: "inspect",
+        startedAt: "2026-08-10T00:00:00.000Z",
+      },
+    },
+    {
+      type: "agent_run_started",
+      run: {
+        id: "run-1",
+        turnId: "turn-1",
+        startedAt: "2026-08-10T00:00:00.100Z",
+      },
+    },
+    {
+      type: "agent_step_completed",
+      runId: "run-1",
+      step: 1,
+      outputItems: [first, second],
+    },
+    {
+      type: "tool_call_started",
+      runId: "run-1",
+      step: 1,
+      callId: "call-1",
+      name: "read",
+      arguments: first.arguments,
+      startedAt: "2026-08-10T00:00:00.200Z",
+    },
+    {
+      type: "tool_call_started",
+      runId: "run-1",
+      step: 1,
+      callId: "call-2",
+      name: "bash",
+      arguments: second.arguments,
+      startedAt: "2026-08-10T00:00:00.201Z",
+    },
+    {
+      type: "tool_call_finished",
+      runId: "run-1",
+      step: 1,
+      callId: "call-1",
+      name: "read",
+      output: "content",
+      status: "completed",
+      finishedAt: "2026-08-10T00:00:00.300Z",
+      details: { truncation: { truncated: false } },
+    },
+    {
+      type: "agent_run_finished",
+      runId: "run-1",
+      status: "cancelled",
+      finishedAt: "2026-08-10T00:00:01.000Z",
+    },
+    {
+      type: "turn_cancelled",
+      turnId: "turn-1",
+      finishedAt: "2026-08-10T00:00:01.100Z",
+    },
+  ]);
+
+  const loaded = await loadSession(directory, session.id);
+  assert.deepEqual(loaded.agentRuns[0]?.steps[0]?.toolCalls, [
+    {
+      callId: "call-1",
+      name: "read",
+      arguments: first.arguments,
+      status: "completed",
+      startedAt: "2026-08-10T00:00:00.200Z",
+      finishedAt: "2026-08-10T00:00:00.300Z",
+      output: "content",
+      details: { truncation: { truncated: false } },
+    },
+    {
+      callId: "call-2",
+      name: "bash",
+      arguments: second.arguments,
+      status: "interrupted",
+      startedAt: "2026-08-10T00:00:00.201Z",
+    },
+  ]);
+  assert.deepEqual(loaded.agentRuns[0]?.steps[0]?.toolResults, [{
+    callId: "call-1",
+    name: "read",
+    output: "content",
+    status: "completed",
+    details: { truncation: { truncated: false } },
+  }]);
+});
+
+test("rebuilds parallel tool outputs in model call order rather than finish order", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "openscreen-sessions-"));
+  t.after(() => rm(directory, { force: true, recursive: true }));
+  const session = await createSession(directory);
+  const calls = ["first", "second"].map((name, index) => ({
+    id: `item-${index + 1}`,
+    call_id: `call-${index + 1}`,
+    type: "function_call" as const,
+    status: "completed" as const,
+    name,
+    arguments: "{}",
+  }));
+  await appendSessionEvents(directory, session.id, [
+    {
+      type: "turn_started",
+      turn: { id: "turn-1", user: "run", startedAt: "2026-08-10T00:00:00.000Z" },
+    },
+    {
+      type: "agent_run_started",
+      run: { id: "run-1", turnId: "turn-1", startedAt: "2026-08-10T00:00:00.100Z" },
+    },
+    {
+      type: "agent_step_completed",
+      runId: "run-1",
+      step: 1,
+      outputItems: calls,
+    },
+    ...calls.map((call, index) => ({
+      type: "tool_call_started" as const,
+      runId: "run-1",
+      step: 1,
+      callId: call.call_id,
+      name: call.name,
+      arguments: call.arguments,
+      startedAt: `2026-08-10T00:00:00.20${index}Z`,
+    })),
+    ...[calls[1], calls[0]].map((call, index) => ({
+      type: "tool_call_finished" as const,
+      runId: "run-1",
+      step: 1,
+      callId: call.call_id,
+      name: call.name,
+      output: `${call.name}-result`,
+      status: "completed" as const,
+      finishedAt: `2026-08-10T00:00:00.30${index}Z`,
+    })),
+    {
+      type: "agent_run_finished",
+      runId: "run-1",
+      status: "completed",
+      finishedAt: "2026-08-10T00:00:01.000Z",
+    },
+    {
+      type: "turn_completed",
+      turn: {
+        id: "turn-1",
+        user: "run",
+        assistant: "done",
+        status: "completed",
+        startedAt: "2026-08-10T00:00:00.000Z",
+        finishedAt: "2026-08-10T00:00:01.100Z",
+      },
+    },
+  ]);
+
+  const loaded = await loadSession(directory, session.id);
+  assert.deepEqual(
+    loaded.turns[0]?.outputItems?.filter((item) => item.type === "function_call_output")
+      .map((item: any) => item.call_id),
+    ["call-1", "call-2"],
+  );
+});
+
 test("rejects malformed model output items in agent run events", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "openscreen-sessions-"));
   t.after(() => rm(directory, { force: true, recursive: true }));

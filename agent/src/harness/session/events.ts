@@ -68,6 +68,24 @@ export type SessionEvent = {
   outputItems: ModelOutputItem[];
   totalTokens?: number;
 } | {
+  type: "tool_call_started";
+  runId: string;
+  step: number;
+  callId: string;
+  name: string;
+  arguments: string;
+  startedAt: string;
+} | {
+  type: "tool_call_finished";
+  runId: string;
+  step: number;
+  callId: string;
+  name: string;
+  output: string;
+  status: "completed" | "failed";
+  finishedAt: string;
+  details?: unknown;
+} | {
   type: "tool_result_recorded";
   runId: string;
   step: number;
@@ -368,6 +386,27 @@ function parseSessionEvent(line: string, lineNumber: number): SessionEvent {
         return value as SessionEvent;
       }
       break;
+    case "tool_call_started":
+      if (typeof value.runId === "string" && value.runId &&
+          Number.isInteger(value.step) && (value.step as number) > 0 &&
+          typeof value.callId === "string" && value.callId &&
+          typeof value.name === "string" && value.name &&
+          typeof value.arguments === "string" &&
+          typeof value.startedAt === "string") {
+        return value as SessionEvent;
+      }
+      break;
+    case "tool_call_finished":
+      if (typeof value.runId === "string" && value.runId &&
+          Number.isInteger(value.step) && (value.step as number) > 0 &&
+          typeof value.callId === "string" && value.callId &&
+          typeof value.name === "string" && value.name &&
+          typeof value.output === "string" &&
+          (value.status === "completed" || value.status === "failed") &&
+          typeof value.finishedAt === "string") {
+        return value as SessionEvent;
+      }
+      break;
     case "agent_run_finished":
       if (typeof value.runId === "string" && value.runId &&
           (value.status === "completed" || value.status === "failed" ||
@@ -462,11 +501,17 @@ export function replaySession(
         }
         const outputItems = runs.flatMap(({ steps }) => steps.flatMap((step) => [
           ...step.outputItems,
-          ...step.toolResults.map(({ callId, output }) => ({
-            type: "function_call_output" as const,
-            call_id: callId,
-            output,
-          })),
+          ...step.outputItems.flatMap((item) => {
+            if (item.type !== "function_call") return [];
+            const result = step.toolResults.find(({ callId }) => callId === item.call_id);
+            return result
+              ? [{
+                  type: "function_call_output" as const,
+                  call_id: result.callId,
+                  output: result.output,
+                }]
+              : [];
+          }),
         ]));
         turns.push(event.turn.outputItems || !outputItems?.length
           ? event.turn
@@ -617,6 +662,57 @@ export function replaySession(
           name: event.name,
           output: event.output,
           status: event.status,
+        });
+        break;
+      }
+      case "tool_call_started": {
+        const runIndex = agentRunIndexes.get(event.runId);
+        const run = runIndex === undefined ? undefined : agentRuns[runIndex];
+        const step = run?.steps[event.step - 1];
+        const call = step?.outputItems.find(
+          (item) => item.type === "function_call" &&
+            item.call_id === event.callId && item.name === event.name &&
+            item.arguments === event.arguments,
+        );
+        if (!run || !pending.has(run.turnId) || run.status !== "interrupted" ||
+            !step || !call ||
+            step.toolResults.some(({ callId }) => callId === event.callId) ||
+            step.toolCalls?.some(({ callId }) => callId === event.callId)) {
+          throw new Error(`Invalid tool call at line ${index + 1}`);
+        }
+        step.toolCalls ??= [];
+        step.toolCalls.push({
+          callId: event.callId,
+          name: event.name,
+          arguments: event.arguments,
+          status: "interrupted",
+          startedAt: event.startedAt,
+        });
+        break;
+      }
+      case "tool_call_finished": {
+        const runIndex = agentRunIndexes.get(event.runId);
+        const run = runIndex === undefined ? undefined : agentRuns[runIndex];
+        const step = run?.steps[event.step - 1];
+        const call = step?.toolCalls?.find(
+          (toolCall) => toolCall.callId === event.callId &&
+            toolCall.name === event.name && toolCall.status === "interrupted",
+        );
+        if (!run || !pending.has(run.turnId) || run.status !== "interrupted" ||
+            !step || !call ||
+            step.toolResults.some(({ callId }) => callId === event.callId)) {
+          throw new Error(`Invalid tool result at line ${index + 1}`);
+        }
+        call.status = event.status;
+        call.finishedAt = event.finishedAt;
+        call.output = event.output;
+        if (event.details !== undefined) call.details = event.details;
+        step.toolResults.push({
+          callId: event.callId,
+          name: event.name,
+          output: event.output,
+          status: event.status,
+          ...(event.details === undefined ? {} : { details: event.details }),
         });
         break;
       }
