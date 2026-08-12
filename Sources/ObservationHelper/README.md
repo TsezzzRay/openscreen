@@ -2,8 +2,11 @@
 
 `ObservationHelper` is the native macOS data-collection child process.
 Node communicates with it using newline-delimited JSON over stdin/stdout. The
-repository README describes the overall process topology; this file covers the
-helper boundary and implementation.
+[project README](../../README.md) describes the product and overall process
+topology, while the [Agent README](../../agent/README.md) owns capture fusion,
+persistence, and model-context behavior. This file covers only the native helper
+boundary and implementation. Repository development rules are in
+[AGENTS.md](../../AGENTS.md).
 
 The helper owns:
 
@@ -194,7 +197,7 @@ in-memory screenshot or AX result.
 
 ## Build and test
 
-Run these commands from the repository/worktree root:
+Run these commands from the repository or current worktree root:
 
 ```bash
 npm run build:helper

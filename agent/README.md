@@ -1,9 +1,10 @@
 # OpenScreen Agent
 
 The OpenScreen Agent is the local Node.js process behind the macOS app. It
-owns model requests, the Agent Loop, session persistence, context compaction,
-and the background memory pipeline. See the [project README](../README.md) for
-product setup, requirements, privacy, and current limitations.
+owns model and tool execution, Session persistence, context compaction, capture
+coordination, and the background Memory pipeline. See the
+[project README](../README.md) for product setup, requirements, privacy, and
+current limitations, and [AGENTS.md](../AGENTS.md) for development rules.
 
 ## Source layout
 
@@ -17,7 +18,11 @@ src/
 ├── extensions/
 │   └── screen-observation/    hosted macOS observation capability
 ├── tools/
-│   └── retrieve-memory/       model-facing retrieval contract
+│   ├── registry.ts            immutable active-tool snapshot and capability prompt
+│   ├── executor.ts            tool-call execution and durable result events
+│   ├── system/                read, list, search, mutation, and Bash tools
+│   ├── shared/                validation, truncation, output, and mutation helpers
+│   └── retrieve-memory/       unregistered model-facing retrieval types
 └── harness/
     ├── session/
     │   ├── runner.ts          one chat command lifecycle
@@ -43,9 +48,45 @@ src/
 standard input and output. `protocol.ts` owns that wire format; harness code
 does not depend on it. Chat requests are mapped to session commands before
 entering `session/runner.ts`, which builds model context and invokes
-`loop.ts`. Chronicle, Turn Memory, and Global Memory Consolidation each run in
-their own background Worker Thread and are not connected to the production tool
-registry. A slow Chronicle request therefore cannot delay Turn Memory work.
+`loop.ts`. `process.ts` creates one immutable system-tool registry rooted at the
+launch directory and passes its snapshot into each Agent Run. Chronicle, Turn
+Memory, and Global Memory Consolidation each run in their own background Worker
+Thread and are not connected to that registry. A slow Chronicle request
+therefore cannot delay Turn Memory work.
+
+## System tools
+
+The production registry exposes seven tools:
+
+| Tool | Implemented behavior |
+| --- | --- |
+| `read` | Reads UTF-8 files with 1-indexed continuation and bounded output. |
+| `ls` | Lists directories alphabetically, including dotfiles. |
+| `grep` | Searches file content with the packaged ripgrep binary. |
+| `find` | Finds paths with ripgrep glob semantics and repository ignores. |
+| `write` | Creates or completely replaces a UTF-8 file and its parent directories. |
+| `edit` | Applies unique, non-overlapping exact-text replacements to one file. |
+| `bash` | Runs a shell command from the Agent launch directory and merges stdout and stderr. |
+
+Relative paths resolve from `process.cwd()` and absolute paths are accepted.
+The tools do not impose a filesystem sandbox or approval gate; they run with the
+permissions and environment of the Agent process. `write` and `edit` serialize
+mutations to the same canonical file, including symlink aliases. Independent
+file mutations may overlap.
+
+Visible text output is bounded. General tool output keeps at most 2,000 lines or
+50 KiB, `grep` additionally keeps at most 500 characters per matching line, and
+the read/search tools report how to continue or refine a truncated result.
+When Bash output is truncated, the complete byte stream is written under the
+data root's `tool-output/` directory and the visible result includes that path.
+
+Sibling tool calls from one model step execute concurrently and their results
+are appended to model context in the model's original call order. Every call
+records started and finished events in the Agent Run. Validation errors,
+non-zero command exits, timeouts, and execution failures become model-visible
+failed tool results; cancellation stops the run instead of fabricating a tool
+result. The registry and active capability prompt are fixed when the Agent
+process starts.
 
 ## Domain boundaries
 
@@ -69,9 +110,10 @@ The Agent is the composition center, but each capability owns its domain:
 - `LongTermMemory` is current synthesized knowledge supported by immutable
   Chronicle or Turn Memory source snapshots. Conflicting or removed evidence
   rewrites the current block; the pipeline does not retain Memory versions.
-- Model-initiated retrieval is an Agent Tool boundary under
-  `tools/retrieve-memory`. Memory owns the data being queried; the Tool owns
-  the model-facing arguments and results.
+- `tools/retrieve-memory` defines model-facing retrieval argument and result
+  types, but it is not registered in the current production tool snapshot.
+  Memory owns the data being queried; the Tool boundary owns model-facing
+  arguments and results.
 - `ContextRetrieval` is the Memory-owned read boundary. It has no dependency on
   the Agent Loop, wire protocol, model tool types, capture lifecycle, or UI.
 
@@ -113,7 +155,9 @@ Helper still starts so an explicit chat request can capture its frozen target.
 
 Configuration is loaded once when the Agent process starts. Invalid,
 incomplete, or internally inconsistent values stop startup with an explicit
-error.
+error. Chat requests use `reasoning.effort: "minimal"` for MiniMax M3 and
+`reasoning.summary: "auto"` for other configured Responses API-compatible
+models.
 
 ## Persistence
 
@@ -344,9 +388,8 @@ English-only. It performs no language detection, translation, CJK tokenization,
 embedding search, or model reranking. Non-English source text remains stored,
 but retrieval quality for it is unspecified.
 
-Agent Tool registration, UI controls, additional secret
-redaction, heuristic fallback, and memory-version history remain outside this
-pipeline.
+Memory-tool registration, UI controls, additional secret redaction, heuristic
+fallback, and memory-version history remain outside this pipeline.
 
 ## Tests
 
