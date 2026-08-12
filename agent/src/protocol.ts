@@ -84,7 +84,7 @@ function chatImages(value: unknown): ChatImage[] {
   return value.map((item) => {
     const image = record(item);
     const source = text(image.source);
-    if (source !== "system_capture" && source !== "user_upload") invalid();
+    if (source !== "user_upload") invalid();
     return {
       id: text(image.id),
       source,
@@ -117,10 +117,6 @@ export function parseInputEnvelope(line: string): InputEnvelope {
   const input = record(value.input);
   if (type === "chat") {
     const images = chatImages(input.images);
-    if (
-      images.length === 0 || images[0]?.source !== "system_capture" ||
-      images.filter((image) => image.source === "system_capture").length !== 1
-    ) invalid();
     return {
       requestId,
       type,

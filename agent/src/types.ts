@@ -2,8 +2,55 @@ import type OpenAI from "openai";
 
 export type ChatImage = {
   id: string;
-  source: "system_capture" | "user_upload";
+  source: "user_upload";
   path: string;
+};
+
+export type ModelScreenContext = {
+  captureId: string;
+  application: string;
+  windowTitle?: string;
+  url?: string;
+  focusedElement?: {
+    role: string;
+    title?: string;
+    value?: string;
+  };
+  elements?: Array<{
+    role: string;
+    name?: string;
+    value?: string;
+    enabled?: boolean;
+    selected?: boolean;
+  }>;
+  visibleText?: string;
+};
+
+export type TurnScreenContext = {
+  ref: {
+    captureId: string;
+    observationId?: string;
+    intentRevision: number;
+    artifactRevision: number;
+    completedRevision: number;
+    intentContentEpoch: number;
+    artifactContentEpoch: number;
+    completedContentEpoch: number;
+    startedAt?: string;
+    capturedAt: string;
+    status: "complete" | "screenshot_only" | "ax_only" | "failed";
+    target: {
+      processIdentifier: number;
+      windowIdentifier: number;
+    };
+    image?: {
+      path: string;
+      mimeType: "image/jpeg";
+      width: number;
+      height: number;
+    };
+  };
+  accessibility?: ModelScreenContext;
 };
 
 export type ModelOutputItem =

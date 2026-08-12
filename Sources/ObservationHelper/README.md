@@ -9,9 +9,9 @@ The helper owns:
 
 - detecting foreground application, window, Accessibility, input-activity, and
   visual-change signals;
-- resolving the current foreground window;
-- capturing an in-memory foreground-window JPEG with ScreenCaptureKit;
-- creating a bounded Accessibility snapshot;
+- resolving and validating an explicit frozen foreground-window target;
+- capturing an in-memory JPEG for that exact window with ScreenCaptureKit;
+- creating a bounded Accessibility snapshot for the same window;
 - reporting permission and component health; and
 - excluding OpenScreen processes and bundle identifiers from observation.
 
@@ -28,11 +28,13 @@ model, or run an Agent Loop.
    `configured`.
 4. Native activity is emitted as `signal` messages. The helper never includes
    raw key codes or typed key values.
-5. Node applies scheduling and deduplication policy. When a capture is due, it
-   sends a `capture` command with the triggering signal.
-6. The helper admits only one capture at a time, resolves the foreground window
-   again, captures the screenshot and Accessibility snapshot concurrently, and
-   replies with `captureResult`. A concurrent request receives `capture_busy`.
+5. Node freezes an exact process ID and window ID, retains activity revision as
+   ordering metadata, applies fusion/scheduling policy, and sends a `capture`
+   command with that target.
+6. The helper admits only one capture at a time. It validates the frozen target
+   before capture, captures the screenshot and matching focused AX window
+   concurrently, then attests that the target still exists before replying with
+   `captureResult`. A concurrent native request receives `capture_busy`.
 7. Node sends `shutdown`, closes stdin, or terminates the process to stop it.
 
 Stdout is reserved for protocol messages. Diagnostics are written to stderr so
@@ -91,7 +93,8 @@ The native configuration groups are:
 Node-only observation settings in `config.json` control whether observation is
 enabled, capture delays and caps, the one-second per-event deduplication window,
 the two-second global capture gap, the five-second same-window capture gap,
-business-content deduplication, the per-request capture timeout,
+business-content deduplication, the per-request capture timeout, the two-second
+completed-artifact reuse window, capture diagnostics retention,
 configuration/shutdown timeouts, and scheduler tick frequency. The default
 capture timeout is 10 seconds and
 releases only the timed-out Node request; it does not terminate or restart the
@@ -99,11 +102,20 @@ helper. Observation settings are not environment-variable overrides. The helper
 executable path remains a deployment concern supplied through
 `OPENSCREEN_HELPER_PATH` when needed.
 
-`visualMonitoring.changeThreshold` only decides whether Swift emits a visual
-change candidate. A visual difference alone never persists an Observation.
-After capture, Node fingerprints the application, window title, focused role
-and value, visible text, and URL; screenshots, timestamps, raw AX structure,
-coordinates, and visual signatures do not participate in Evidence identity.
+The `enabled` flag disables passive capture scheduling, not request capture;
+Node still starts the helper to serve chat requests.
+
+`visualMonitoring.changeThreshold` is the single perceptual threshold used by
+Swift visual-change candidates, Node's pre-capture gate, and Node's post-capture
+Observation comparison. The Node gate compares against the last successfully
+persisted Observation, so smaller visual candidates do not consume a physical
+Capture and failed or reused observations do not advance the baseline. Explicit
+input and window-boundary captures are not blocked by the visual-only gate.
+After capture, Node compares the application, window title, focused role and
+value, visible text, and URL, plus the downsampled visual signature. A material
+change in either channel persists a new Observation; timestamps, raw AX
+structure, coordinates, and JPEG encoding bytes do not participate in Evidence
+identity.
 
 Protocol versions, activity/status enums, secure-field redaction, foreground
 window semantics, and self-capture exclusion are compatibility or privacy
@@ -121,8 +133,12 @@ Secure Accessibility fields are replaced with `[REDACTED]`. A missing permission
 does not fabricate a successful artifact:
 
 - Screen Recording failures produce a screenshot status such as
-  `permissionDenied` or `failed`.
-- Accessibility failures produce `permissionDenied`, `timedOut`, or `failed`.
+  `permissionDenied` or `failed`, plus a stable reason such as
+  `permission_denied`, `no_window`, `no_display`, `target_resolution_failed`,
+  `capture_failed`, or `jpeg_encoding_failed`.
+- Accessibility failures produce `permissionDenied`, `timedOut`, or `failed`
+  plus a safe reason such as `focused_window_unavailable`, `target_mismatch`,
+  `traversal_timed_out`, or `snapshot_unavailable`.
 - Input Monitoring or visual-stream failures are reported with degraded
   component status while the remaining sources continue to run.
 
@@ -132,9 +148,38 @@ so native activity monitoring remains available. A helper launch/configuration
 failure, incompatible protocol message, or process exit is reported as fatal
 and is not retried automatically.
 
-Artifacts remain in the `captureResult` message as in-memory data. This target
-does not write screenshots, snapshots, observations, or logs to application
-storage.
+If the exact target is absent during preflight, the helper returns
+`target_unavailable` and performs no screenshot or AX capture. If it disappears
+during capture, the helper returns `target_changed_during_capture`; Node records
+an attestation failure and discards the artifacts. Successful results include
+the overall start/completion timestamps, separate screenshot and AX completion
+timestamps, and preflight, screenshot, AX, and attestation durations.
+
+AX traversal reads each node's attributes with one
+`AXUIElementCopyMultipleAttributeValues` call. If that batch operation fails or
+returns a misaligned value list, traversal falls back to individual attribute
+reads. This changes IPC cost only; target validation, traversal budgets, secure
+field redaction, and partial-success behavior remain unchanged.
+
+The first AX capture for a process that exposes an `AXWebArea` or `AXDocument`
+still performs renderer accessibility activation even when navigation or
+sidebar controls already make the tree look useful. Activation stops early
+only after material node, semantic-element, or visible-text growth. Successful
+and unsupported activation methods are cached per process launch; failed
+attribute writes are not cached.
+
+An unexpected current-generation visual-stream stop is serialized with cleanup
+of the failed stream before replacement. The first recovery is immediate;
+additional failures within ten seconds use bounded 250, 500, 1000, and 2000 ms
+delays. Recovery diagnostics include the stream generation, exact window ID,
+and scheduled delay without screen content.
+
+The helper returns artifacts in-memory in `captureResult`; it does not write
+application storage itself. Node persists each accepted Capture Artifact once,
+with one private metadata JSON file and at most one private JPEG, and reuses that
+JPEG for the matching chat turn. Node also writes content-free fusion and timing
+diagnostics. Artifact-persistence failure does not discard a successful
+in-memory screenshot or AX result.
 
 ## Source layout
 
@@ -144,9 +189,8 @@ storage.
 | `Protocol/` | wire DTOs and JSON Lines framing |
 | `Runtime/` | command coordination and single-capture admission |
 | `Monitoring/` | workspace, AX, input, and visual signal sources |
-| `Capture/` | window/self exclusion, screenshot, AX snapshot, budget, and signature |
+| `Capture/` | window selection, ScreenCaptureKit target, screenshot, AX snapshot, budget, and signature |
 | `Models/` | native configuration, signal, window, and capture models |
-| `../CaptureCore/` | window selection and ScreenCaptureKit target logic shared with the app |
 
 ## Build and test
 

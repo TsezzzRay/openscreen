@@ -349,8 +349,7 @@ final class ChatRenderingTests: XCTestCase {
 
     func testChatViewFollowsLongMarkdownThroughStreamingAndSessionSwitch() async throws {
         let viewModel = ChatViewModel(
-            agentClient: AgentClient(),
-            windowCapture: WindowCapture()
+            agentClient: AgentClient()
         )
         let hostingView = NSHostingView(rootView: ChatView(viewModel: viewModel))
         hostingView.frame = NSRect(x: 0, y: 0, width: 420, height: 720)
@@ -435,8 +434,7 @@ final class ChatRenderingTests: XCTestCase {
 
     func testChatViewUsesNativeMaterial() {
         let viewModel = ChatViewModel(
-            agentClient: AgentClient(),
-            windowCapture: WindowCapture()
+            agentClient: AgentClient()
         )
         let hostingView = NSHostingView(rootView: ChatView(viewModel: viewModel))
         hostingView.frame = NSRect(x: 0, y: 0, width: 420, height: 720)
@@ -472,8 +470,7 @@ final class ChatRenderingTests: XCTestCase {
 
     func testChatViewUsesNativeOverlayScrollers() async throws {
         let viewModel = ChatViewModel(
-            agentClient: AgentClient(),
-            windowCapture: WindowCapture()
+            agentClient: AgentClient()
         )
         let hostingView = NSHostingView(rootView: ChatView(viewModel: viewModel))
         hostingView.frame = NSRect(x: 0, y: 0, width: 420, height: 720)

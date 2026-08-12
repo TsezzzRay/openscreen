@@ -1,4 +1,7 @@
-import type { ModelOutputItem } from "../../types.js";
+import type {
+  ModelOutputItem,
+  TurnScreenContext,
+} from "../../types.js";
 import type {
   AgentRun,
   AgentRunStep,
@@ -24,6 +27,7 @@ export type StartedTurn = {
   id: string;
   user: string;
   images?: ChatImage[];
+  screenContext?: TurnScreenContext;
   startedAt: string;
 };
 
@@ -99,9 +103,123 @@ function hasOnlyKeys(
 function isChatImages(value: unknown): value is ChatImage[] {
   return Array.isArray(value) && value.every((image) => (
     isRecord(image) && typeof image.id === "string" && image.id.length > 0 &&
-    (image.source === "system_capture" || image.source === "user_upload") &&
+    image.source === "user_upload" &&
     typeof image.path === "string" && image.path.length > 0
   ));
+}
+
+function isTurnScreenContext(value: unknown): value is TurnScreenContext {
+  if (!isRecord(value) || !hasOnlyKeys(value, ["ref", "accessibility"])) {
+    return false;
+  }
+  const ref = value.ref;
+  if (!isRecord(ref) || !hasOnlyKeys(ref, [
+    "captureId",
+    "observationId",
+    "intentRevision",
+    "artifactRevision",
+    "completedRevision",
+    "intentContentEpoch",
+    "artifactContentEpoch",
+    "completedContentEpoch",
+    "startedAt",
+    "capturedAt",
+    "status",
+    "target",
+    "image",
+  ])) return false;
+  const target = ref.target;
+  if (!isRecord(target) ||
+      !hasOnlyKeys(target, ["processIdentifier", "windowIdentifier"]) ||
+      !Number.isInteger(target.processIdentifier) ||
+      !Number.isInteger(target.windowIdentifier)) return false;
+  const image = ref.image;
+  if (image !== undefined && (
+    !isRecord(image) ||
+    !hasOnlyKeys(image, ["path", "mimeType", "width", "height"]) ||
+    typeof image.path !== "string" || image.path.length === 0 ||
+    image.mimeType !== "image/jpeg" ||
+    !Number.isInteger(image.width) || (image.width as number) <= 0 ||
+    !Number.isInteger(image.height) || (image.height as number) <= 0
+  )) return false;
+  if (
+    typeof ref.captureId !== "string" || ref.captureId.length === 0 ||
+    (ref.observationId !== undefined &&
+      (typeof ref.observationId !== "string" || ref.observationId.length === 0)) ||
+    !Number.isInteger(ref.intentRevision) ||
+    (ref.intentRevision as number) <= 0 ||
+    !Number.isInteger(ref.artifactRevision) ||
+    (ref.artifactRevision as number) <= 0 ||
+    (ref.intentRevision as number) < (ref.artifactRevision as number) ||
+    !Number.isInteger(ref.completedRevision) ||
+    (ref.completedRevision as number) < (ref.artifactRevision as number) ||
+    !Number.isInteger(ref.intentContentEpoch) ||
+    (ref.intentContentEpoch as number) < 0 ||
+    !Number.isInteger(ref.artifactContentEpoch) ||
+    (ref.artifactContentEpoch as number) < 0 ||
+    (ref.intentContentEpoch as number) <
+      (ref.artifactContentEpoch as number) ||
+    !Number.isInteger(ref.completedContentEpoch) ||
+    (ref.completedContentEpoch as number) < (ref.artifactContentEpoch as number) ||
+    (ref.startedAt !== undefined && (
+      typeof ref.startedAt !== "string" ||
+      Number.isNaN(Date.parse(ref.startedAt))
+    )) ||
+    typeof ref.capturedAt !== "string" ||
+    Number.isNaN(Date.parse(ref.capturedAt)) ||
+    !["complete", "screenshot_only", "ax_only", "failed"].includes(
+      String(ref.status),
+    )
+  ) return false;
+  const accessibility = value.accessibility;
+  if (accessibility === undefined) return true;
+  if (!isRecord(accessibility) || !hasOnlyKeys(accessibility, [
+    "captureId",
+    "application",
+    "windowTitle",
+    "url",
+    "focusedElement",
+    "elements",
+    "visibleText",
+  ])) return false;
+  const focused = accessibility.focusedElement;
+  if (focused !== undefined && (
+    !isRecord(focused) ||
+    !hasOnlyKeys(focused, ["role", "title", "value"]) ||
+    typeof focused.role !== "string" || focused.role.length === 0 ||
+    (focused.title !== undefined && typeof focused.title !== "string") ||
+    (focused.value !== undefined && typeof focused.value !== "string")
+  )) return false;
+  const elements = accessibility.elements;
+  if (elements !== undefined && (
+    !Array.isArray(elements) ||
+    elements.length > 64 ||
+    !elements.every((element) =>
+      isRecord(element) &&
+      hasOnlyKeys(element, [
+        "role",
+        "name",
+        "value",
+        "enabled",
+        "selected",
+      ]) &&
+      typeof element.role === "string" &&
+      element.role.length > 0 &&
+      (element.name === undefined || typeof element.name === "string") &&
+      (element.value === undefined || typeof element.value === "string") &&
+      (element.enabled === undefined || typeof element.enabled === "boolean") &&
+      (element.selected === undefined || typeof element.selected === "boolean")
+    )
+  )) return false;
+  return accessibility.captureId === ref.captureId &&
+    typeof accessibility.application === "string" &&
+    accessibility.application.length > 0 &&
+    (accessibility.windowTitle === undefined ||
+      typeof accessibility.windowTitle === "string") &&
+    (accessibility.url === undefined || typeof accessibility.url === "string") &&
+    (accessibility.visibleText === undefined ||
+      typeof accessibility.visibleText === "string") &&
+    JSON.stringify(accessibility).length <= 10_000;
 }
 
 function isModelOutputItems(value: unknown): value is ModelOutputItem[] {
@@ -138,6 +256,7 @@ function isTurn(value: unknown): value is Turn {
     "assistant",
     "reasoning",
     "images",
+    "screenContext",
     "status",
     "startedAt",
     "finishedAt",
@@ -147,6 +266,8 @@ function isTurn(value: unknown): value is Turn {
     typeof value.user === "string" &&
     typeof value.assistant === "string" &&
     (value.images === undefined || isChatImages(value.images)) &&
+    (value.screenContext === undefined ||
+      isTurnScreenContext(value.screenContext)) &&
     (value.status === "completed" || value.status === "failed" ||
       value.status === "cancelled") &&
     typeof value.startedAt === "string" &&
@@ -184,9 +305,11 @@ function parseSessionEvent(line: string, lineNumber: number): SessionEvent {
     case "turn_started": {
       const turn = value.turn;
       if (!isRecord(turn) || typeof turn.id !== "string" || !turn.id ||
-          !hasOnlyKeys(turn, ["id", "user", "images", "startedAt"]) ||
+          !hasOnlyKeys(turn, ["id", "user", "images", "screenContext", "startedAt"]) ||
           typeof turn.user !== "string" ||
           ("images" in turn && turn.images !== undefined && !isChatImages(turn.images)) ||
+          ("screenContext" in turn && turn.screenContext !== undefined &&
+            !isTurnScreenContext(turn.screenContext)) ||
           typeof turn.startedAt !== "string") break;
       return value as SessionEvent;
     }
@@ -327,7 +450,10 @@ export function replaySession(
           throw new Error(`Unknown turn at line ${index + 1}`);
         }
         if (event.turn.user !== started.user ||
-            event.turn.startedAt !== started.startedAt) {
+            event.turn.startedAt !== started.startedAt ||
+            JSON.stringify(event.turn.images) !== JSON.stringify(started.images) ||
+            JSON.stringify(event.turn.screenContext) !==
+              JSON.stringify(started.screenContext)) {
           throw new Error(`Turn start mismatch at line ${index + 1}`);
         }
         const runs = agentRuns.filter(({ turnId }) => turnId === event.turn.id);
@@ -375,6 +501,9 @@ export function replaySession(
             assistant: visible.assistant,
             reasoning: visible.reasoning,
             ...(started.images ? { images: started.images } : {}),
+            ...(started.screenContext
+              ? { screenContext: started.screenContext }
+              : {}),
             status: "failed",
             startedAt: started.startedAt,
             finishedAt: event.finishedAt,
@@ -386,6 +515,9 @@ export function replaySession(
           assistant: visible.assistant,
           reasoning: visible.reasoning,
           ...(started.images ? { images: started.images } : {}),
+          ...(started.screenContext
+            ? { screenContext: started.screenContext }
+            : {}),
           status: "failed",
           startedAt: started.startedAt,
           finishedAt: event.finishedAt,
@@ -409,6 +541,9 @@ export function replaySession(
           assistant: visible.assistant,
           reasoning: visible.reasoning,
           ...(started.images ? { images: started.images } : {}),
+          ...(started.screenContext
+            ? { screenContext: started.screenContext }
+            : {}),
           status: "cancelled",
           startedAt: started.startedAt,
           finishedAt: event.finishedAt,
@@ -419,6 +554,9 @@ export function replaySession(
           assistant: visible.assistant,
           reasoning: visible.reasoning,
           ...(started.images ? { images: started.images } : {}),
+          ...(started.screenContext
+            ? { screenContext: started.screenContext }
+            : {}),
           status: "cancelled",
           startedAt: started.startedAt,
           finishedAt: event.finishedAt,
@@ -510,6 +648,9 @@ export function replaySession(
       assistant: visible.assistant,
       reasoning: visible.reasoning,
       ...(started.images ? { images: started.images } : {}),
+      ...(started.screenContext
+        ? { screenContext: started.screenContext }
+        : {}),
       status: "interrupted",
       startedAt: started.startedAt,
       finishedAt: new Date(Math.max(

@@ -13,6 +13,8 @@ function observation(id: string, occurredAt: string): ScreenObservation {
   return {
     schemaVersion: 1,
     id,
+    captureId: "capture-" + id,
+    activityRevision: 1,
     occurredAt,
     capturedAt: new Date(Date.parse(occurredAt) + 100).toISOString(),
     trigger: { type: "focusedWindowChanged" },

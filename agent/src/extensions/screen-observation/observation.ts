@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 
 import type {
   AccessibilityNode,
@@ -13,8 +13,17 @@ import type {
 export function buildObservation(
   signal: NativeActivitySignal,
   result: NativeCaptureResult,
+  identity: {
+    id: string;
+    captureId: string;
+    activityRevision: number;
+  },
 ): ScreenObservation {
-  const normalized = normalizeAccessibility(result.accessibility.snapshot?.root);
+  const usefulAccessibility = result.accessibility.quality === undefined ||
+    result.accessibility.quality === "useful";
+  const normalized = normalizeAccessibility(
+    usefulAccessibility ? result.accessibility.snapshot?.root : undefined,
+  );
   const screenshotHash = result.screenshot.dataBase64 === undefined
     ? undefined
     : createHash("sha256")
@@ -22,11 +31,17 @@ export function buildObservation(
       .digest("hex");
   return {
     schemaVersion: 1,
-    id: randomUUID(),
+    id: identity.id,
+    captureId: identity.captureId,
+    activityRevision: identity.activityRevision,
     occurredAt: signal.occurredAt,
+    ...(result.startedAt === undefined ? {} : { startedAt: result.startedAt }),
     capturedAt: result.capturedAt,
     trigger: { type: signal.kind },
     window: result.window,
+    ...(result.windowGroup === undefined
+      ? {}
+      : { windowGroup: result.windowGroup }),
     screenshot: {
       ...result.screenshot,
       ...(screenshotHash === undefined ? {} : { sha256: screenshotHash }),

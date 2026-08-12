@@ -7,6 +7,8 @@ import test from "node:test";
 import type { ScreenObservationConfig } from "../../src/config.js";
 import { ScreenObservationExtension } from "../../src/extensions/screen-observation/extension.js";
 import type { ScreenObservation } from "../../src/extensions/screen-observation/types.js";
+import type { CaptureDiagnosticEvent } from "../../src/extensions/screen-observation/diagnostics.js";
+import type { NativeActivitySignal } from "../../src/extensions/screen-observation/protocol.js";
 
 const config = {
   enabled: true,
@@ -15,6 +17,7 @@ const config = {
     ordinaryCaptureGapMilliseconds: 2_000,
     eventDeduplicationWindowMilliseconds: 1_000,
     sameWindowCaptureGapMilliseconds: 5_000,
+    visualOnlyCaptureGapMilliseconds: 15_000,
     delaysMilliseconds: {
       mouseClick: 400,
       focusedElementChanged: 500,
@@ -29,6 +32,10 @@ const config = {
   },
   capture: {
     requestTimeoutMilliseconds: 10_000,
+    reuseWindowMilliseconds: 250,
+  },
+  diagnostics: {
+    retentionMilliseconds: 7 * 24 * 60 * 60_000,
   },
   helperLifecycle: {
     configurationTimeoutMilliseconds: 2_000,
@@ -51,7 +58,7 @@ const config = {
     maxWidth: 320,
     sampleIntervalMilliseconds: 500,
     queueDepth: 2,
-    changeThreshold: 0.015,
+    changeThreshold: 0.05,
     signatureWidth: 32,
     signatureHeight: 18,
   },
@@ -85,7 +92,8 @@ test("forwards helper observations without retaining image data", async (t) => {
       if (command.type === "configure") {
         if (
           command.configuration.accessibility.maxDepth !== 40 ||
-          command.configuration.activityMonitoring.coalescingIntervalMilliseconds !== 250
+          command.configuration.activityMonitoring.coalescingIntervalMilliseconds !== 250 ||
+          "captureThreshold" in command.configuration.visualMonitoring
         ) {
           throw new Error("Native configuration was not forwarded");
         }
@@ -113,15 +121,26 @@ test("forwards helper observations without retaining image data", async (t) => {
           requestId: command.requestId,
           type: "captureResult",
           result: {
+            startedAt: "2026-07-27T00:00:00.900Z",
             capturedAt: "2026-07-27T00:00:01.000Z",
+            validation: {
+              preflightDurationMilliseconds: 2,
+              attestationDurationMilliseconds: 1,
+            },
             window,
             screenshot: {
               status: "permissionDenied",
               durationMilliseconds: 1,
+              completedAt: "2026-07-27T00:00:00.950Z",
             },
             accessibility: {
               status: "complete",
+              quality: "shell_only",
               durationMilliseconds: 1,
+              completedAt: "2026-07-27T00:00:00.975Z",
+              contentRootFound: false,
+              semanticNodeCount: 0,
+              usefulTextCharacters: 0,
               snapshot: {
                 nodeCount: 1,
                 truncated: false,
@@ -137,13 +156,21 @@ test("forwards helper observations without retaining image data", async (t) => {
 
   const statuses: string[] = [];
   const observations: ScreenObservation[] = [];
+  const diagnostics: CaptureDiagnosticEvent[] = [];
   const extension = new ScreenObservationExtension({
-    config,
+    config: {
+      ...config,
+      capture: {
+        ...config.capture,
+        reuseWindowMilliseconds: 5_000,
+      },
+    },
     helperCommand: process.execPath,
     helperArguments: [helperPath],
     helperCurrentDirectory: directory,
     excludedProcessIdentifiers: [],
     excludedBundleIdentifiers: [],
+    diagnostics: { emit: (event) => diagnostics.push(event) },
     onObservation: (observation) => {
       observations.push(observation);
     },
@@ -155,13 +182,93 @@ test("forwards helper observations without retaining image data", async (t) => {
 
   await extension.start();
   await waitFor(() => observations.length === 1);
+  const recordedResolutions: string[] = [];
+  const service = (extension as unknown as {
+    service: {
+      recordObservationResolution(
+        artifact: { captureId: string },
+        resolution: { decision: string },
+      ): void;
+    };
+  }).service;
+  const recordObservationResolution = service.recordObservationResolution.bind(
+    service,
+  );
+  service.recordObservationResolution = (artifact, resolution) => {
+    recordedResolutions.push(`${artifact.captureId}:${resolution.decision}`);
+    recordObservationResolution(artifact, resolution);
+  };
+  const requestCapture = await extension.captureForRequest("request-1");
 
   assert.equal(observations[0]?.window.windowIdentifier, 7);
-  assert.equal(observations[0]?.visibleText, "Document");
+  assert.equal(requestCapture.capture.decision, "reuse");
+  assert.equal(
+    requestCapture.capture.artifact.captureId,
+    observations[0]?.captureId,
+  );
+  assert.equal(requestCapture.observation?.decision, "reused");
+  assert.equal(requestCapture.observation?.observationId, observations[0]?.id);
+  assert.deepEqual(recordedResolutions, [
+    `${requestCapture.capture.artifact.captureId}:reused`,
+  ]);
+  assert.equal(observations[0]?.visibleText, "");
   assert.equal(observations[0]?.screenshot.status, "permissionDenied");
   assert.deepEqual(statuses, ["eventTap:degraded"]);
+  assert.ok(diagnostics.some((event) =>
+    event.event === "helper.component_status" &&
+    event.component === "eventTap" &&
+    event.componentStatus === "degraded"
+  ));
+  assert.ok(diagnostics.some((event) =>
+    event.event === "capture.decision" &&
+    event.intentId === "request-1" &&
+    event.decision === "reuse"
+  ));
   assert.equal("latestObservation" in extension, false);
+
+  const resolver = (extension as unknown as {
+    observationResolver: { resolve: () => Promise<never> };
+  }).observationResolver;
+  resolver.resolve = async () => { throw new Error("persistence unavailable"); };
+  const captureWithoutObservation = await extension.captureForRequest("request-2");
+  assert.equal(captureWithoutObservation.capture.artifact.captureId, observations[0]?.captureId);
+  assert.equal(captureWithoutObservation.observation, undefined);
   await extension.stop();
+});
+
+test("does not schedule activity capture for a signal without an exact window ID", () => {
+  const diagnostics: CaptureDiagnosticEvent[] = [];
+  const extension = new ScreenObservationExtension({
+    config,
+    helperCommand: process.execPath,
+    helperCurrentDirectory: process.cwd(),
+    excludedProcessIdentifiers: [],
+    excludedBundleIdentifiers: [],
+    diagnostics: { emit: (event) => diagnostics.push(event) },
+  });
+  const scheduled: NativeActivitySignal[] = [];
+  const internals = extension as unknown as {
+    push(signal: NativeActivitySignal): void;
+    service: { push(signal: NativeActivitySignal): void };
+  };
+  internals.service.push = (signal) => scheduled.push(signal);
+  const incomplete = {
+    kind: "focusedWindowChanged" as const,
+    occurredAt: "2026-08-07T00:00:00.000Z",
+    window: {
+      processIdentifier: 100,
+      applicationName: "Editor",
+    },
+  };
+
+  internals.push(incomplete);
+
+  assert.deepEqual(scheduled, []);
+  assert.ok(diagnostics.some((event) =>
+    event.event === "activity.capture_skipped" &&
+    event.activityRevision === 1 &&
+    event.reason === "missing_window_identifier"
+  ));
 });
 
 async function waitFor(check: () => boolean) {

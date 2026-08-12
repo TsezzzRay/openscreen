@@ -19,6 +19,9 @@ final class Runtime {
             },
             onStatus: { [writer] status in
                 writer.write(.status(status))
+            },
+            onDiagnostic: { [writer] diagnostic in
+                writer.write(.diagnostic(diagnostic))
             }
         )
     }
@@ -113,7 +116,7 @@ final class Runtime {
             }
             do {
                 let result = try await CaptureEngine.capture(
-                    signal: request.signal,
+                    target: request.target,
                     excluding: filter,
                     configuration: configuration
                 )
@@ -121,6 +124,14 @@ final class Runtime {
                     .captureResult(
                         requestId: request.requestId,
                         result: result
+                    )
+                )
+            } catch let captureError as CaptureError {
+                writer.write(
+                    .error(
+                        requestId: request.requestId,
+                        code: captureError.code,
+                        message: captureError.localizedDescription
                     )
                 )
             } catch {

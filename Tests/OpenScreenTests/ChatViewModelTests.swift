@@ -6,8 +6,7 @@ import XCTest
 final class ChatViewModelTests: XCTestCase {
     func testChatViewModelRestoresSessionSnapshot() {
         let viewModel = ChatViewModel(
-            agentClient: AgentClient(),
-            windowCapture: WindowCapture()
+            agentClient: AgentClient()
         )
         let sessionID = UUID(uuidString: "00000000-0000-0000-0000-000000000002")!
         let turnID = UUID(uuidString: "00000000-0000-0000-0000-000000000003")!
@@ -64,8 +63,7 @@ final class ChatViewModelTests: XCTestCase {
 
     func testChatViewModelRetainsCompletedTurns() {
         let viewModel = ChatViewModel(
-            agentClient: AgentClient(),
-            windowCapture: WindowCapture()
+            agentClient: AgentClient()
         )
         let sessionID = UUID()
         let firstID = UUID()
@@ -96,8 +94,7 @@ final class ChatViewModelTests: XCTestCase {
 
     func testChatViewModelAppliesStreamingDeltas() {
         let viewModel = ChatViewModel(
-            agentClient: AgentClient(),
-            windowCapture: WindowCapture()
+            agentClient: AgentClient()
         )
         let sessionID = UUID()
         let turnID = UUID()
@@ -124,8 +121,7 @@ final class ChatViewModelTests: XCTestCase {
 
     func testChatViewModelRoutesBackgroundSessionDeltasWithoutSwitchingContext() {
         let viewModel = ChatViewModel(
-            agentClient: AgentClient(),
-            windowCapture: WindowCapture()
+            agentClient: AgentClient()
         )
         let firstSessionID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
         let secondSessionID = UUID(uuidString: "00000000-0000-0000-0000-000000000002")!
@@ -166,8 +162,7 @@ final class ChatViewModelTests: XCTestCase {
 
     func testChatViewModelTracksLifecycleAndPreparesEditableRetry() {
         let viewModel = ChatViewModel(
-            agentClient: AgentClient(),
-            windowCapture: WindowCapture()
+            agentClient: AgentClient()
         )
         let sessionID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
         let turnID = UUID(uuidString: "00000000-0000-0000-0000-000000000002")!
@@ -182,7 +177,11 @@ final class ChatViewModelTests: XCTestCase {
         viewModel.startTurn(sessionID: sessionID, id: turnID, question: "Original prompt")
         XCTAssertEqual(viewModel.turns[0].status, .capturing)
 
-        viewModel.markRequesting(sessionID: sessionID, turnID: turnID)
+        viewModel.apply(
+            .init(sessionID: sessionID, type: .started),
+            sessionID: sessionID,
+            turnID: turnID
+        )
         XCTAssertEqual(viewModel.turns[0].status, .requesting)
 
         viewModel.apply(
@@ -207,8 +206,7 @@ final class ChatViewModelTests: XCTestCase {
 
     func testRetryRestoresEveryUserAttachmentAndSessionRestoreKeepsThemVisible() {
         let viewModel = ChatViewModel(
-            agentClient: AgentClient(),
-            windowCapture: WindowCapture()
+            agentClient: AgentClient()
         )
         let sessionID = UUID()
         let turnID = UUID()
@@ -239,8 +237,7 @@ final class ChatViewModelTests: XCTestCase {
 
     func testComposerDraftAndAttachmentsAreIsolatedBySession() {
         let viewModel = ChatViewModel(
-            agentClient: AgentClient(),
-            windowCapture: WindowCapture()
+            agentClient: AgentClient()
         )
         let firstSessionID = UUID()
         let secondSessionID = UUID()
@@ -293,7 +290,6 @@ final class ChatViewModelTests: XCTestCase {
         let secondSessionID = UUID()
         let viewModel = ChatViewModel(
             agentClient: AgentClient(),
-            windowCapture: WindowCapture(),
             attachmentStore: ChatAttachmentStore(directory: root)
         )
         let firstSession = ChatSessionSnapshot(

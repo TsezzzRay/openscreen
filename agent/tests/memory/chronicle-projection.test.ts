@@ -8,6 +8,8 @@ function observation(): ScreenObservation {
   return {
     schemaVersion: 1,
     id: "observation-1",
+    captureId: "capture-1",
+    activityRevision: 1,
     occurredAt: "2026-08-04T10:00:01.000Z",
     capturedAt: "2026-08-04T10:00:01.150Z",
     trigger: { type: "focusedWindowChanged" },

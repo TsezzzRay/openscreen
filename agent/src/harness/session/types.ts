@@ -3,6 +3,7 @@ import type {
   ChatImage,
   ConversationOutputItem,
   ModelOutputItem,
+  TurnScreenContext,
 } from "../../types.js";
 
 export type { ChatImage } from "../../types.js";
@@ -16,6 +17,7 @@ export type Turn = {
   finishedAt: string;
   reasoning?: string;
   images?: ChatImage[];
+  screenContext?: TurnScreenContext;
   outputItems?: ConversationOutputItem[];
 };
 
@@ -86,6 +88,7 @@ export type ChatCommand = {
   input: {
     text: string;
     images: ChatImage[];
+    screenContext?: TurnScreenContext;
   };
 };
 

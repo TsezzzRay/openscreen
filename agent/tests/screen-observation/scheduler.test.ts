@@ -13,6 +13,7 @@ const scheduling = {
   ordinaryCaptureGapMilliseconds: 2_000,
   eventDeduplicationWindowMilliseconds: 1_000,
   sameWindowCaptureGapMilliseconds: 5_000,
+  visualOnlyCaptureGapMilliseconds: 15_000,
   delaysMilliseconds: {
     mouseClick: 400,
     focusedElementChanged: 500,
@@ -58,10 +59,28 @@ test("a window boundary supersedes delayed activity and is immediately due", () 
   assert.deepEqual(planner.takeDue(1_000), []);
 });
 
-test("deduplicates the same event and window for one second", () => {
+test("activity after a boundary can schedule inside the superseded deduplication window", () => {
   const planner = new CapturePlanner(scheduling);
   planner.push(signal("mouseClick", 0), 0);
-  planner.push(signal("mouseClick", 300), 300);
+  planner.push(signal("focusedWindowChanged", 100), 100);
+  planner.takeDue(100);
+
+  const next = planner.push(signal("mouseClick", 200), 200);
+
+  assert.equal(next.decision, "scheduled");
+  assert.deepEqual(
+    planner.takeDue(600).map((capture) => capture.signal.kind),
+    ["mouseClick"],
+  );
+});
+
+test("deduplicates the same event and window for one second", () => {
+  const planner = new CapturePlanner(scheduling);
+  const scheduled = planner.push(signal("mouseClick", 0), 0);
+  const deduplicated = planner.push(signal("mouseClick", 300), 300);
+
+  assert.equal(scheduled.decision, "scheduled");
+  assert.equal(deduplicated.decision, "deduplicated");
 
   assert.deepEqual(
     planner.takeDue(400).map((capture) => capture.signal.kind),
@@ -125,4 +144,13 @@ test("uses capture delays and caps supplied by startup configuration", () => {
     planner.takeDue(20).map((capture) => capture.signal.kind),
     ["keyActivity"],
   );
+});
+
+test("preserves activity revision and content epoch when a planned capture becomes due", () => {
+  const planner = new CapturePlanner(scheduling);
+  planner.push(signal("mouseClick", 0), 0, 42, 7);
+  const capture = planner.takeDue(400)[0];
+
+  assert.equal(capture?.activityRevision, 42);
+  assert.equal(capture?.contentEpoch, 7);
 });

@@ -18,7 +18,7 @@ test("parses and normalizes session-scoped requests", () => {
   );
 });
 
-test("parses an ordered system capture and any number of user uploads", () => {
+test("parses chat requests containing only user uploads", () => {
   assert.deepEqual(
     parseInputEnvelope(JSON.stringify({
       requestId: "request-1",
@@ -27,7 +27,6 @@ test("parses an ordered system capture and any number of user uploads", () => {
       input: {
         text: "Compare these screenshots",
         images: [
-          { id: "system", source: "system_capture", path: "/tmp/system.png" },
           { id: "upload-1", source: "user_upload", path: "/tmp/one.png" },
           { id: "upload-2", source: "user_upload", path: "/tmp/two.png" },
         ],
@@ -40,13 +39,24 @@ test("parses an ordered system capture and any number of user uploads", () => {
       input: {
         text: "Compare these screenshots",
         images: [
-          { id: "system", source: "system_capture", path: "/tmp/system.png" },
           { id: "upload-1", source: "user_upload", path: "/tmp/one.png" },
           { id: "upload-2", source: "user_upload", path: "/tmp/two.png" },
         ],
       },
     },
   );
+});
+
+test("allows chat without uploads because the Agent owns screen capture", () => {
+  const request = parseInputEnvelope(JSON.stringify({
+    requestId: "request-1",
+    type: "chat",
+    sessionId: "session-1",
+    input: { text: "What is on screen?", images: [] },
+  }));
+
+  assert.equal(request.type, "chat");
+  assert.deepEqual(request.input.images, []);
 });
 
 test("rejects chat requests without an images array", () => {
@@ -87,7 +97,7 @@ test("record attempts retain user uploads without requiring a system capture", (
   assert.equal(request.input.images.length, 2);
 });
 
-test("rejects invalid image source ordering", () => {
+test("rejects system captures supplied by the Swift client", () => {
   assert.throws(() => parseInputEnvelope(JSON.stringify({
     requestId: "request-1",
     type: "chat",
@@ -95,7 +105,6 @@ test("rejects invalid image source ordering", () => {
     input: {
       text: "Question",
       images: [
-        { id: "upload-1", source: "user_upload", path: "/tmp/one.png" },
         { id: "system", source: "system_capture", path: "/tmp/system.png" },
       ],
     },

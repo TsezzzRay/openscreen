@@ -12,6 +12,7 @@ import {
   type NativeActivitySignal,
   type NativeCaptureResult,
   type NativeHelperConfiguration,
+  type WindowMetadata,
 } from "./protocol.js";
 
 export type HelperLifecycle = "starting" | "ready" | "failed" | "stopped";
@@ -31,6 +32,9 @@ type NativeHelperOptions = {
   onSignal: (signal: NativeActivitySignal) => void;
   onLifecycle?: (state: HelperLifecycle) => void;
   onComponentStatus?: (status: HelperComponentStatus) => void;
+  onDiagnostic?: (
+    event: Extract<HelperOutput, { type: "diagnostic" }>,
+  ) => void;
   onFatalError?: (error: Error) => void;
 };
 
@@ -39,6 +43,16 @@ type PendingCapture = {
   reject: (error: Error) => void;
   timer: NodeJS.Timeout;
 };
+
+export class HelperCaptureError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+  ) {
+    super(`${code}: ${message}`);
+    this.name = "HelperCaptureError";
+  }
+}
 
 export class NativeHelperClient {
   private child?: ChildProcessWithoutNullStreams;
@@ -70,22 +84,28 @@ export class NativeHelperClient {
     return this.startPromise;
   }
 
-  capture(signal: NativeActivitySignal) {
+  capture(target: WindowMetadata) {
     if (!this.running || this.child === undefined) {
-      return Promise.reject(new Error("Observation helper is not ready"));
+      return Promise.reject(new HelperCaptureError(
+        "helper_not_ready",
+        "Observation helper is not ready",
+      ));
     }
     const requestId = randomUUID();
     const result = new Promise<NativeCaptureResult>((resolve, reject) => {
       const timer = setTimeout(() => {
         const pending = this.takePendingCapture(requestId);
-        pending?.reject(new Error("Observation helper capture timed out"));
+        pending?.reject(new HelperCaptureError(
+          "capture_timeout",
+          "Observation helper capture timed out",
+        ));
       }, this.options.captureTimeoutMilliseconds);
       this.pendingCaptures.set(requestId, { resolve, reject, timer });
     });
     this.child.stdin.write(encodeHelperCommand({
       requestId,
       type: "capture",
-      signal,
+      target,
     }), (error) => {
       if (!error) return;
       const pending = this.takePendingCapture(requestId);
@@ -208,6 +228,10 @@ export class NativeHelperClient {
       this.options.onComponentStatus?.(output);
       return;
     }
+    if (output.type === "diagnostic") {
+      this.options.onDiagnostic?.(output);
+      return;
+    }
     if (output.type === "captureResult") {
       const pending = this.takePendingCapture(output.requestId);
       if (pending === undefined) return;
@@ -225,7 +249,7 @@ export class NativeHelperClient {
     if (output.type === "error" && output.requestId !== undefined) {
       const pending = this.takePendingCapture(output.requestId);
       if (pending === undefined) return;
-      pending.reject(new Error(`${output.code}: ${output.message}`));
+      pending.reject(new HelperCaptureError(output.code, output.message));
       return;
     }
     if (output.type === "error") {

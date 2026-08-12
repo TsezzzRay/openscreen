@@ -1,6 +1,7 @@
 import type {
   AccessibilityCapture,
   AccessibilityNode,
+  CaptureWindowGroup,
   NativeActivityKind,
   ScreenshotCapture,
   WindowMetadata,
@@ -11,12 +12,16 @@ export type FocusedElement = Omit<AccessibilityNode, "children">;
 export type ScreenObservation = {
   schemaVersion: 1;
   id: string;
+  captureId: string;
+  activityRevision: number;
   occurredAt: string;
+  startedAt?: string;
   capturedAt: string;
   trigger: {
     type: NativeActivityKind;
   };
   window: WindowMetadata;
+  windowGroup?: CaptureWindowGroup;
   screenshot: ScreenshotCapture & {
     sha256?: string;
   };

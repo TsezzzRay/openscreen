@@ -11,6 +11,7 @@ export type ScreenObservationConfig = {
     ordinaryCaptureGapMilliseconds: number;
     eventDeduplicationWindowMilliseconds: number;
     sameWindowCaptureGapMilliseconds: number;
+    visualOnlyCaptureGapMilliseconds: number;
     delaysMilliseconds: {
       mouseClick: number;
       focusedElementChanged: number;
@@ -25,6 +26,10 @@ export type ScreenObservationConfig = {
   };
   capture: {
     requestTimeoutMilliseconds: number;
+    reuseWindowMilliseconds: number;
+  };
+  diagnostics: {
+    retentionMilliseconds: number;
   };
   helperLifecycle: {
     configurationTimeoutMilliseconds: number;
@@ -225,6 +230,7 @@ function loadScreenObservationConfig(value: unknown): ScreenObservationConfig {
     "screenObservation.scheduling.capsMilliseconds",
   );
   const capture = object(root.capture, "screenObservation.capture");
+  const diagnostics = object(root.diagnostics, "screenObservation.diagnostics");
   const helperLifecycle = object(
     root.helperLifecycle,
     "screenObservation.helperLifecycle",
@@ -263,6 +269,10 @@ function loadScreenObservationConfig(value: unknown): ScreenObservationConfig {
         scheduling.sameWindowCaptureGapMilliseconds,
         "screenObservation.scheduling.sameWindowCaptureGapMilliseconds",
       ),
+      visualOnlyCaptureGapMilliseconds: positiveJSONInteger(
+        scheduling.visualOnlyCaptureGapMilliseconds,
+        "screenObservation.scheduling.visualOnlyCaptureGapMilliseconds",
+      ),
       delaysMilliseconds: {
         mouseClick: nonNegativeInteger(
           delays.mouseClick,
@@ -300,6 +310,16 @@ function loadScreenObservationConfig(value: unknown): ScreenObservationConfig {
       requestTimeoutMilliseconds: positiveJSONInteger(
         capture.requestTimeoutMilliseconds,
         "screenObservation.capture.requestTimeoutMilliseconds",
+      ),
+      reuseWindowMilliseconds: nonNegativeInteger(
+        capture.reuseWindowMilliseconds,
+        "screenObservation.capture.reuseWindowMilliseconds",
+      ),
+    },
+    diagnostics: {
+      retentionMilliseconds: positiveJSONInteger(
+        diagnostics.retentionMilliseconds,
+        "screenObservation.diagnostics.retentionMilliseconds",
       ),
     },
     helperLifecycle: {

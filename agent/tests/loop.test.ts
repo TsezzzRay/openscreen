@@ -10,6 +10,7 @@ import {
 } from "../src/harness/session/context.js";
 import { summarizeTurns } from "../src/harness/compaction/summary.js";
 import type { Turn } from "../src/harness/session/types.js";
+import type { TurnScreenContext } from "../src/types.js";
 import {
   mapEvent,
   relayStream,
@@ -18,9 +19,89 @@ import {
 
 const loadScreenshot = async (path: string) => Buffer.from(path).toString("base64");
 
-function systemImages(path: string) {
-  return [{ id: "system", source: "system_capture" as const, path }];
+function userImages(path: string) {
+  return [{ id: "upload", source: "user_upload" as const, path }];
 }
+
+function screenContext(path = "current.jpg"): TurnScreenContext {
+  return {
+    ref: {
+      captureId: "capture-1",
+      observationId: "observation-1",
+      intentRevision: 6,
+      artifactRevision: 4,
+      completedRevision: 5,
+      intentContentEpoch: 3,
+      artifactContentEpoch: 2,
+      completedContentEpoch: 3,
+      capturedAt: "2026-08-07T00:00:00.100Z",
+      status: "complete",
+      target: {
+        processIdentifier: 100,
+        windowIdentifier: 7,
+      },
+      image: {
+        path,
+        mimeType: "image/jpeg",
+        width: 100,
+        height: 80,
+      },
+    },
+    accessibility: {
+      captureId: "capture-1",
+      application: "Editor",
+      windowTitle: "Document",
+      focusedElement: {
+        role: "AXTextField",
+        title: "Search",
+        value: "[REDACTED]",
+      },
+      visibleText: "Visible body",
+    },
+  };
+}
+
+test("sends canonical AX JSON and the matching JPEG before user uploads", async () => {
+  const context = screenContext();
+  const request = await makeRequest(
+    "vision-model",
+    "What is on screen?",
+    [{ id: "upload-1", source: "user_upload", path: "one.png" }],
+    21_760,
+    undefined,
+    loadScreenshot,
+    undefined,
+    context,
+  );
+
+  assert.deepEqual(request.input?.[0], {
+    role: "user",
+    content: [
+      { type: "input_text", text: "What is on screen?" },
+      {
+        type: "input_text",
+        text: [
+          '<screen_accessibility_context data_only="true">',
+          JSON.stringify(context.accessibility),
+          "</screen_accessibility_context>",
+        ].join("\n"),
+      },
+      {
+        type: "input_image",
+        detail: "auto",
+        image_url: "data:image/jpeg;base64," +
+          Buffer.from("current.jpg").toString("base64"),
+      },
+      {
+        type: "input_image",
+        detail: "auto",
+        image_url: "data:image/png;base64," +
+          Buffer.from("one.png").toString("base64"),
+      },
+    ],
+  });
+  assert.match(String(request.instructions), /untrusted screen data/i);
+});
 
 function terminalTurn(
   id: string,
@@ -36,12 +117,12 @@ function terminalTurn(
   };
 }
 
-test("builds a streaming Responses API request with system and user screenshots in order", async () => {
+test("builds a streaming Responses API request with user screenshots in order", async () => {
   const request = await makeRequest(
     "vision-model",
     "What is on screen?",
     [
-      { id: "system", source: "system_capture", path: "current.png" },
+      { id: "upload-0", source: "user_upload", path: "current.png" },
       { id: "upload-1", source: "user_upload", path: "one.png" },
       { id: "upload-2", source: "user_upload", path: "two.png" },
     ],
@@ -114,7 +195,7 @@ test("builds a MiniMax M3 streaming screenshot request", async () => {
   const request = await makeRequest(
     "MiniMax-M3",
     "What is on screen?",
-    systemImages("current.png"),
+    userImages("current.png"),
     21_760,
     undefined,
     loadScreenshot,
@@ -141,24 +222,24 @@ test("includes every retained screenshot before the current request", async () =
   const request = await makeRequest(
     "vision-model",
     "Current question",
-    systemImages("current.png"),
+    userImages("current.png"),
     21_760,
     {
       turns: [
         terminalTurn("turn-1", {
           user: "First question",
           assistant: "First answer",
-          images: systemImages("first.png"),
+          images: userImages("first.png"),
         }),
         terminalTurn("turn-2", {
           user: "Second question",
           assistant: "Second answer",
-          images: systemImages("second.png"),
+          images: userImages("second.png"),
         }),
         terminalTurn("turn-3", {
           user: "Third question",
           assistant: "Third answer",
-          images: systemImages("third.png"),
+          images: userImages("third.png"),
         }),
       ],
       conversationSummary: {
@@ -214,7 +295,7 @@ test("marks failed and cancelled turns in model context", async () => {
   const request = await makeRequest(
     "vision-model",
     "Try again",
-    systemImages("current.png"),
+    userImages("current.png"),
     21_760,
     {
       turns: [
@@ -222,7 +303,7 @@ test("marks failed and cancelled turns in model context", async () => {
           user: "Failed question",
           assistant: "Partial answer",
           reasoning: "Partial reasoning",
-          images: systemImages("failed.png"),
+          images: userImages("failed.png"),
           status: "failed",
         }),
         terminalTurn("cancelled-turn", {
@@ -282,13 +363,13 @@ test("preserves prior response output items for the next model turn", async () =
   const request = await makeRequest(
     "MiniMax-M3",
     "Follow up",
-    systemImages("current.png"),
+    userImages("current.png"),
     21_760,
     {
       turns: [terminalTurn("turn-1", {
         user: "First question",
         assistant: "First answer",
-        images: systemImages("first.png"),
+        images: userImages("first.png"),
         outputItems,
       })],
     },
@@ -317,12 +398,12 @@ test("counts retained turn text and screenshots together", async () => {
     terminalTurn("turn-1", {
       user: "Question 1",
       assistant: "Answer 1",
-      images: systemImages("first.png"),
+      images: userImages("first.png"),
     }),
     terminalTurn("turn-2", {
       user: "Question 2",
       assistant: "Answer 2",
-      images: systemImages("second.png"),
+      images: userImages("second.png"),
     }),
   ], loadScreenshot);
 
@@ -442,7 +523,7 @@ test("summarizes old screenshots as plain facts without internal references", as
     [terminalTurn("turn-1", {
       user: "Why did this fail?",
       assistant: "The form reports an authentication error.",
-      images: systemImages("error-screen.png"),
+      images: userImages("error-screen.png"),
     })],
     4_096,
     loadScreenshot,

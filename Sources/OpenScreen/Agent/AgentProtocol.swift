@@ -1,7 +1,6 @@
 import Foundation
 
 enum ChatImageSource: String, Codable, Sendable {
-    case systemCapture = "system_capture"
     case userUpload = "user_upload"
 }
 

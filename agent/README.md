@@ -57,9 +57,11 @@ The Agent is the composition center, but each capability owns its domain:
   Turn may have zero or more Agent Runs.
 - A conversation summary belongs only to retained model context. It is not an
   activity record or long-term memory.
-- `ScreenObservationExtension` is a hosted background extension. It owns native
-  observation lifecycle and emits canonical `ScreenObservation` values. It is
-  not callable by the model and is not an `AgentTool`.
+- `ScreenObservationExtension` is a hosted extension. It owns native observation
+  lifecycle and the single capture coordinator shared by passive activity and
+  chat requests. It emits canonical `ScreenObservation` values and resolves
+  request screen context, but is not callable by the model and is not an
+  `AgentTool`.
 - A Chronicle activity is a factual description derived only from passive
   Observation source IDs. Chronicle cannot create a raw Memory candidate.
 - A Turn Memory extraction belongs only to a closed batch of terminal Turns and
@@ -99,6 +101,13 @@ Configuration is grouped by responsibility:
 - `memory.turnMemory`: Turn extraction budgets and idle/hard-cap boundaries.
 - `memory.consolidation`: model budgets, selected-source cap, and success cooldown.
 - `memory.evidence`: structured/JPEG retention, abandoned-file grace, and disk cap.
+- `screenObservation.capture`: native request timeout and the strict completed-
+  capture reuse window (two seconds by default).
+- `screenObservation.diagnostics`: private capture-event retention (seven days
+  by default).
+
+`screenObservation.enabled` gates continuous passive scheduling only. The
+Helper still starts so an explicit chat request can capture its frozen target.
 
 Configuration is loaded once when the Agent process starts. Invalid,
 incomplete, or internally inconsistent values stop startup with an explicit
@@ -118,6 +127,63 @@ Turn Memory evidence. The Memory Worker stores each Session file version and
 scan outcome in SQLite. Unchanged valid files are not reparsed every minute;
 unchanged invalid files are reported once and skipped across restarts. Startup
 still performs the one-time interrupted-Turn recovery pass.
+
+Each captured Turn may also contain a `screenContext` value. Its reference
+binds `captureId`, optional persisted `observationId`, activity revision, capture status, exact
+process/window identity, and optional JPEG metadata. The matching bounded AX
+projection (at most 10,000 JSON characters) is stored inline. The JPEG is
+atomically written with mode `0600` to the data root's `screen-captures/`
+directory. Session parsing rejects the previous client-supplied
+`system_capture` image format; the Swift wire accepts only user uploads.
+
+## Request capture fusion
+
+The extension freezes only the latest confirmed external foreground target.
+Every activity signal increments its revision. Both consumers then use the
+same coordinator:
+
+1. **Join** an in-flight physical capture when process ID and window ID are
+   identical, including across small same-window activity revision changes.
+2. **Reuse** the latest completed artifact only while it is no older than the
+   configured two-second window and the same target remains current.
+3. **New** otherwise, with physical native captures serialized through one
+   queue.
+
+Revision is retained for ordering, Observation identity, and diagnostics; it is
+not a target epoch. Only a confirmed process/window identity change invalidates
+an admitted capture. Signals without an exact window ID are recorded as
+ineligible and do not enter passive scheduling.
+
+Observation resolution is also shared. The same capture/revision persists at
+most one Observation; a request can reference the Observation already created
+for passive activity. Ordinary activity references the last Observation only
+when both its AX business content and perceptual visual signature remain below
+the configured change threshold. A request artifact covers pending passive
+activity for the same window through its own frozen revision; newer revisions
+remain eligible for capture.
+
+The helper validates the frozen target before native work, captures Screenshot
+and AX against that window, and attests the target again afterward. The
+coordinator also rejects a mismatched result or a changed target identity.
+Screenshot-only and AX-only results remain valid partial successes. The model
+receives the JPEG and a compact canonical AX JSON text block when useful,
+followed by user uploads. Web/document roots are projected before non-content
+browser groups, shell-only AX subtrees are omitted, and each text node has a
+per-block cap so one value cannot crowd out the rest of the page. Screen content
+is explicitly marked as untrusted data. The full AX snapshot remains in the
+Observation, while the exact bounded model projection is persisted with the
+Turn.
+
+Operational events are appended asynchronously to private UTC-daily JSONL files
+under the data root's `diagnostics/` directory. Events correlate request,
+capture, Observation, target token, Join/Reuse/New decision, queue wait,
+preflight, screenshot, AX, attestation, persistence, and total timings. They
+include artifact status, dimensions, byte counts, node counts, and projected
+node/character counts, projection inclusion/omission reason, revision drift,
+native/model truncation, activity kind, planner decision, semantic/visual
+change outcome, request coverage counts, and AX failure reason, but never
+prompt text, window titles, URLs, screenshot bytes, or AX content. Logging
+failure never blocks capture or chat.
 
 ## Chronicle and memory persistence
 
@@ -143,12 +209,13 @@ only the memory root. That override must point to a dedicated directory.
 OpenScreen marks the directory and creates its own nested Git repository; it
 refuses to adopt an enclosing repository or an existing user-owned repository.
 
-At the start of each chat Turn, the Agent reads only `memory_summary.md` and
-adds it before the conversation summary as developer context. The summary is
+At the start of each chat Turn, the Agent reads only `memory_summary.md` from
+the Memory root and adds it before the conversation summary as developer context. The summary is
 limited to 2,500 locally estimated tokens and the complete request still passes
 through normal token budgeting. Missing or unreadable Memory does not block
-chat. `MEMORY.md`, `raw_memories.md`, rollout summaries, Observation evidence,
-screenshots, and AX content are never automatically loaded into chat context.
+chat. `MEMORY.md`, `raw_memories.md`, rollout summaries, and Observation
+evidence are never automatically loaded into chat context. This is independent
+of the current Turn's explicitly fused screenshot/AX context described above.
 
 SQLite is the structured truth for Chronicle sources/windows/activities, Turn
 sources/batches/extractions, producer jobs, durable Session scan progress,
@@ -242,7 +309,7 @@ workflow memory without pretending everything is a coding project. Project
 scope requires explicit project evidence. Memory records learned context and
 does not replace fixed project rules in files such as `AGENTS.md` or `README.md`.
 
-Retrieval, Agent Tools, chat Capture fusion, UI controls, additional secret
+Retrieval, Agent Tools, UI controls, additional secret
 redaction, heuristic fallback, and memory-version history are outside this
 pipeline.
 

@@ -19,6 +19,15 @@ import type {
 } from "./harness/session/types.js";
 import { withSessionLock } from "./harness/session/lock.js";
 import { ScreenObservationExtension } from "./extensions/screen-observation/extension.js";
+import {
+  materializeTurnScreenContext,
+  type ModelAccessibilityProjectionDiagnostics,
+} from "./extensions/screen-observation/screen-context.js";
+import { CaptureArtifactStore } from "./extensions/screen-observation/artifact-store.js";
+import {
+  CaptureDiagnostics,
+  screenshotDiagnosticFields,
+} from "./extensions/screen-observation/diagnostics.js";
 import { MemoryWorkerClient } from "./harness/memory/worker/client.js";
 import {
   parseInputEnvelope,
@@ -30,6 +39,13 @@ import {
 
 function emit(event: OutputEnvelope) {
   process.stdout.write(`${serializeOutputEnvelope(event)}\n`);
+}
+
+export function startObservationInBackground(
+  start: () => Promise<void>,
+  onUnavailable: (error: unknown) => void,
+) {
+  void start().catch(onUnavailable);
 }
 
 function snapshot(session: StoredSession): SessionSnapshotPayload {
@@ -62,12 +78,19 @@ async function run() {
   );
   const sessionsDirectory = process.env.OPENSCREEN_DATA_DIR ??
     join(defaultDataRoot, "sessions");
+  const dataRoot = process.env.OPENSCREEN_DATA_DIR
+    ? dirname(sessionsDirectory)
+    : defaultDataRoot;
   const memoryRoot = process.env.OPENSCREEN_MEMORY_DIR ?? join(
-    process.env.OPENSCREEN_DATA_DIR
-      ? dirname(sessionsDirectory)
-      : defaultDataRoot,
+    dataRoot,
     "memory",
   );
+  const captureDiagnostics = new CaptureDiagnostics({
+    directory: join(dataRoot, "diagnostics"),
+    retentionMilliseconds:
+      config.screenObservation.diagnostics.retentionMilliseconds,
+  });
+  const captureArtifactStore = new CaptureArtifactStore(dataRoot);
   const memoryWorker = new MemoryWorkerClient({
     memoryRoot,
     sessionsDirectory,
@@ -98,27 +121,27 @@ async function run() {
   };
   const lines = createInterface({ input: process.stdin, crlfDelay: Infinity });
   const observationBundleIdentifier = process.env.OPENSCREEN_BUNDLE_ID;
-  const observationExtension = config.screenObservation.enabled
-    ? new ScreenObservationExtension({
-      config: config.screenObservation,
-      helperCommand: process.env.OPENSCREEN_HELPER_PATH ??
-        join(process.cwd(), ".build", "debug", "ObservationHelper"),
-      helperCurrentDirectory: process.cwd(),
-      excludedProcessIdentifiers: [process.pid, process.ppid],
-      excludedBundleIdentifiers: observationBundleIdentifier === undefined
-        ? []
-        : [observationBundleIdentifier],
-      onObservation: async (observation) => {
-        try {
-          await memoryWorker.recordObservation(observation);
-        } catch (error) {
-          reportMemoryError(error);
-          throw error;
-        }
-      },
-    })
-    : undefined;
-  void observationExtension?.start().catch((error) => {
+  const observationExtension = new ScreenObservationExtension({
+    config: config.screenObservation,
+    helperCommand: process.env.OPENSCREEN_HELPER_PATH ??
+      join(process.cwd(), ".build", "debug", "ObservationHelper"),
+    helperCurrentDirectory: process.cwd(),
+    excludedProcessIdentifiers: [process.pid, process.ppid],
+    excludedBundleIdentifiers: observationBundleIdentifier === undefined
+      ? []
+      : [observationBundleIdentifier],
+    diagnostics: captureDiagnostics,
+    persistArtifact: (artifact) => captureArtifactStore.persist(artifact),
+    onObservation: async (observation) => {
+      try {
+        await memoryWorker.recordObservation(observation);
+      } catch (error) {
+        reportMemoryError(error);
+        throw error;
+      }
+    },
+  });
+  startObservationInBackground(() => observationExtension.start(), (error) => {
     process.stderr.write(
       `OpenScreen observation unavailable: ${
         error instanceof Error ? error.message : "unknown error"
@@ -192,11 +215,118 @@ async function run() {
         emit({ requestId, sessionId: envelope.sessionId, type: "completed" });
         return;
       }
+      let screenContext;
+      try {
+        let accessibilityProjection:
+          | ModelAccessibilityProjectionDiagnostics
+          | undefined;
+        const resolved = await observationExtension.captureForRequest(
+          requestId,
+          signal,
+        );
+        screenContext = await materializeTurnScreenContext(
+          dataRoot,
+          resolved.capture.artifact,
+          resolved.observation?.observationId,
+          (diagnostics) => {
+            accessibilityProjection = diagnostics;
+          },
+          {
+            intentRevision: resolved.capture.intentRevision,
+            intentContentEpoch: resolved.capture.intentContentEpoch,
+          },
+        );
+        const screenshot = resolved.capture.artifact.result.screenshot;
+        captureDiagnostics.emit({
+          event: "chat.context_attached",
+          requestId,
+          captureId: resolved.capture.artifact.captureId,
+          ...(resolved.observation === undefined
+            ? {}
+            : { observationId: resolved.observation.observationId }),
+          activityRevision: resolved.capture.intentRevision,
+          intentRevision: resolved.capture.intentRevision,
+          artifactRevision: resolved.capture.artifact.activityRevision,
+          completedRevision:
+            resolved.capture.artifact.completedActivityRevision,
+          contentEpoch: resolved.capture.intentContentEpoch,
+          intentContentEpoch: resolved.capture.intentContentEpoch,
+          artifactContentEpoch:
+            resolved.capture.artifact.contentEpoch,
+          completedContentEpoch:
+            resolved.capture.artifact.completedContentEpoch,
+          status: resolved.capture.artifact.status,
+          contextMode: screenContextMode(screenContext),
+          ...screenshotDiagnosticFields(screenshot),
+          accessibility: {
+            status: resolved.capture.artifact.result.accessibility.status,
+            ...(resolved.capture.artifact.result.accessibility.quality === undefined
+              ? {}
+              : {
+                  quality:
+                    resolved.capture.artifact.result.accessibility.quality,
+                }),
+            ...(resolved.capture.artifact.result.accessibility.contentRootFound === undefined
+              ? {}
+              : {
+                  contentRootFound:
+                    resolved.capture.artifact.result.accessibility.contentRootFound,
+                }),
+            ...(resolved.capture.artifact.result.accessibility.semanticNodeCount === undefined
+              ? {}
+              : {
+                  semanticNodeCount:
+                    resolved.capture.artifact.result.accessibility.semanticNodeCount,
+                }),
+            ...(resolved.capture.artifact.result.accessibility.activation === undefined
+              ? {}
+              : {
+                  activationStatus:
+                    resolved.capture.artifact.result.accessibility.activation.status,
+                  activationAttempts:
+                    resolved.capture.artifact.result.accessibility.activation.attempts,
+                  activationWaitMs:
+                    resolved.capture.artifact.result.accessibility.activation.waitMilliseconds,
+                }),
+            ...(resolved.capture.artifact.result.accessibility.failureReason === undefined
+              ? {}
+              : {
+                  failureReason:
+                    resolved.capture.artifact.result.accessibility.failureReason,
+                }),
+            ...(resolved.capture.artifact.result.accessibility.snapshot === undefined
+              ? {}
+              : {
+                  nodeCount:
+                    resolved.capture.artifact.result.accessibility.snapshot.nodeCount,
+                }),
+            ...accessibilityProjection,
+          },
+        });
+      } catch (error) {
+        captureDiagnostics.emit({
+          event: "chat.context_attached",
+          requestId,
+          contextMode: "none",
+          result: "unavailable",
+          reason: signal?.aborted ? "request_cancelled" : "capture_unavailable",
+        });
+        if (!signal?.aborted) {
+          process.stderr.write(
+            `OpenScreen request screen context unavailable: ${
+              error instanceof Error ? error.message : "unknown error"
+            }\n`,
+          );
+        }
+      }
       await runChat(
         {
           requestId: envelope.requestId,
           sessionId: envelope.sessionId,
-          input: envelope.input,
+          input: {
+            ...envelope.input,
+            ...(screenContext === undefined ? {} : { screenContext }),
+          },
         },
         sessionsDirectory,
         client,
@@ -273,7 +403,8 @@ async function run() {
   try {
     for await (const line of lines) {
       try {
-        dispatch(parseInputEnvelope(line));
+        const envelope = parseInputEnvelope(line);
+        dispatch(envelope);
       } catch (error) {
         process.stderr.write(
           `Invalid agent request: ${error instanceof Error ? error.message : "unknown error"}\n`,
@@ -282,9 +413,22 @@ async function run() {
     }
     await Promise.allSettled([...active]);
   } finally {
-    await observationExtension?.stop();
+    await observationExtension.stop();
     await memoryWorker.stop();
+    await captureDiagnostics.flush();
   }
+}
+
+function screenContextMode(context: {
+  ref: { image?: unknown };
+  accessibility?: unknown;
+}) {
+  if (context.ref.image !== undefined && context.accessibility !== undefined) {
+    return "both" as const;
+  }
+  if (context.ref.image !== undefined) return "screenshot_only" as const;
+  if (context.accessibility !== undefined) return "ax_only" as const;
+  return "none" as const;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

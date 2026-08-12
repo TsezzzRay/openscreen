@@ -5,6 +5,7 @@ import Foundation
 final class Monitor {
     private let onSignal: @Sendable (NativeActivitySignal) -> Void
     private let onStatus: @Sendable (SourceStatus) -> Void
+    private let onDiagnostic: @Sendable (NativeDiagnosticEvent) -> Void
     private let visualSource: VisualSource
     private lazy var axSource = AXSource(
         onEvent: { [weak self] event in
@@ -23,7 +24,8 @@ final class Monitor {
         bundleIdentifiers: []
     )
     private var configuration: NativeObservationConfiguration?
-    private var currentWindow: WindowMetadata?
+    private var currentTarget = CachedTargetCache()
+    private var placeholderAnnouncements = PlaceholderAnnouncementGate()
     private var coalescers = [
         NativeActivityKind: Coalescer
     ]()
@@ -35,13 +37,16 @@ final class Monitor {
 
     init(
         onSignal: @escaping @Sendable (NativeActivitySignal) -> Void,
-        onStatus: @escaping @Sendable (SourceStatus) -> Void
+        onStatus: @escaping @Sendable (SourceStatus) -> Void,
+        onDiagnostic: @escaping @Sendable (NativeDiagnosticEvent) -> Void = { _ in }
     ) {
         self.onSignal = onSignal
         self.onStatus = onStatus
+        self.onDiagnostic = onDiagnostic
         self.visualSource = VisualSource(
             onSignal: onSignal,
-            onStatus: onStatus
+            onStatus: onStatus,
+            onDiagnostic: onDiagnostic
         )
     }
 
@@ -83,7 +88,8 @@ final class Monitor {
             center.removeObserver(observer)
         }
         workspaceObservers.removeAll()
-        currentWindow = nil
+        currentTarget.replace(with: nil)
+        placeholderAnnouncements.reset()
         cancelCoalescedSignals()
         coalescers.removeAll()
         axSource.stop()
@@ -163,7 +169,7 @@ final class Monitor {
                     return
                 }
                 Task { @MainActor in
-                    guard self?.currentWindow?.processIdentifier
+                    guard self?.currentTarget.window?.processIdentifier
                         == application.processIdentifier
                     else {
                         return
@@ -183,13 +189,21 @@ final class Monitor {
             excluding: filter,
             configuration: configuration.windowSelection
         )
-        currentWindow = window
+        let shouldEmit = placeholderAnnouncements.shouldEmit(window: window)
+        currentTarget.replace(with: window)
         axSource.observe(processIdentifier: window?.processIdentifier)
         visualSource.restart(
-            for: window,
-            configuration: configuration.visualMonitoring
+            for: currentTarget.window,
+            configuration: configuration.visualMonitoring,
+            validateWindow: { [filter] target in
+                WindowResolver.resolveFrozenTarget(
+                    target,
+                    excluding: filter,
+                    configuration: configuration.windowSelection
+                )
+            }
         )
-        guard let window else {
+        guard shouldEmit, let window else {
             return
         }
         onSignal(
@@ -202,10 +216,32 @@ final class Monitor {
     }
 
     private func emitCached(kind: NativeActivityKind) {
-        guard let window = currentWindow else {
+        guard let configuration else {
             return
         }
-        emit(kind: kind, window: window)
+        let filter = filter
+        let selection = configuration.windowSelection
+        let validation = currentTarget.validate(using: { target in
+            WindowResolver.resolveFrozenTarget(
+                target,
+                excluding: filter,
+                configuration: selection
+            )
+        })
+        switch validation {
+        case .absent:
+            return
+        case .invalidated:
+            onDiagnostic(NativeDiagnosticEvent(
+                event: .cachedTargetRejected,
+                reason: "window_unavailable",
+                generation: nil
+            ))
+            refresh(kind: kind)
+            return
+        case .valid(let window):
+            emit(kind: kind, window: window)
+        }
     }
 
     private func emit(kind: NativeActivityKind, window: WindowMetadata) {
@@ -279,6 +315,74 @@ final class Monitor {
         }
     }
 
+}
+
+enum CachedTargetValidation: Equatable {
+    case absent
+    case invalidated
+    case valid(WindowMetadata)
+}
+
+struct CachedTargetCache {
+    private(set) var window: WindowMetadata?
+
+    init(_ window: WindowMetadata? = nil) {
+        self.window = nil
+        replace(with: window)
+    }
+
+    mutating func replace(with window: WindowMetadata?) {
+        self.window = window?.windowIdentifier == nil ? nil : window
+    }
+
+    mutating func validate(
+        using resolve: (WindowMetadata) -> WindowMetadata?
+    ) -> CachedTargetValidation {
+        guard let window else {
+            return .absent
+        }
+        guard let resolved = resolve(window) else {
+            self.window = nil
+            return .invalidated
+        }
+        self.window = resolved
+        return .valid(resolved)
+    }
+}
+
+struct PlaceholderAnnouncementGate {
+    private struct Key: Equatable {
+        let processIdentifier: pid_t
+        let bundleIdentifier: String?
+        let applicationName: String
+    }
+
+    private var lastPlaceholder: Key?
+
+    mutating func shouldEmit(window: WindowMetadata?) -> Bool {
+        guard let window else {
+            reset()
+            return false
+        }
+        guard window.windowIdentifier == nil else {
+            reset()
+            return true
+        }
+        let key = Key(
+            processIdentifier: window.processIdentifier,
+            bundleIdentifier: window.bundleIdentifier,
+            applicationName: window.applicationName
+        )
+        guard key != lastPlaceholder else {
+            return false
+        }
+        lastPlaceholder = key
+        return true
+    }
+
+    mutating func reset() {
+        lastPlaceholder = nil
+    }
 }
 
 private func monotonicMilliseconds() -> Int64 {

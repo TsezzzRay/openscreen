@@ -31,7 +31,7 @@ func makePanel(contentView: NSView) -> NSPanel {
     let height = min(720, max(320, availableHeight))
     let panel = OpenScreenPanel(
         contentRect: NSRect(x: 0, y: 0, width: 420, height: height),
-        styleMask: [.borderless, .nonactivatingPanel, .fullSizeContentView],
+        styleMask: [.borderless, .fullSizeContentView],
         backing: .buffered,
         defer: false
     )
@@ -59,6 +59,7 @@ final class PanelController {
     private var redrawObservation: AnyCancellable?
     private var hotKey: EventHotKeyRef?
     private var eventHandler: EventHandlerRef?
+    private var activationObservation: NSObjectProtocol?
 
     init(viewModel: ChatViewModel) {
         self.viewModel = viewModel
@@ -82,6 +83,7 @@ final class PanelController {
 
     func togglePanel() {
         if panel.isVisible {
+            clearActivationObservation()
             panel.orderOut(nil)
             return
         }
@@ -89,8 +91,34 @@ final class PanelController {
         if !NSScreen.screens.contains(where: { $0.visibleFrame.intersects(panel.frame) }) {
             positionAtRightEdge()
         }
+        panel.orderFront(nil)
+        guard !NSApp.isActive else {
+            focusPanel()
+            return
+        }
+        activationObservation = NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification,
+            object: NSApp,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.focusPanel()
+            }
+        }
+        NSApp.activate()
+    }
+
+    private func focusPanel() {
+        clearActivationObservation()
+        guard panel.isVisible else { return }
         panel.makeKeyAndOrderFront(nil)
         viewModel.requestInputFocus()
+    }
+
+    private func clearActivationObservation() {
+        guard let activationObservation else { return }
+        NotificationCenter.default.removeObserver(activationObservation)
+        self.activationObservation = nil
     }
 
     private func positionAtRightEdge() {

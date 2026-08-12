@@ -4,7 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { NativeHelperClient } from "../../src/extensions/screen-observation/helper.js";
+import {
+  HelperCaptureError,
+  NativeHelperClient,
+} from "../../src/extensions/screen-observation/helper.js";
 import type {
   NativeActivitySignal,
   NativeHelperConfiguration,
@@ -75,15 +78,30 @@ for await (const line of lines) {
     }) + "\\n");
   }
   if (command.type === "capture") {
+    if (command.target.windowIdentifier === 99) {
+      process.stdout.write(JSON.stringify({
+        requestId: command.requestId,
+        type: "error",
+        code: "target_unavailable",
+        message: "The frozen capture target is unavailable",
+      }) + "\\n");
+      continue;
+    }
     process.stdout.write(JSON.stringify({
       requestId: command.requestId,
       type: "captureResult",
       result: {
+        startedAt: "2026-07-27T00:00:00.900Z",
         capturedAt: "2026-07-27T00:00:01.000Z",
-        window: command.signal.window,
+        validation: {
+          preflightDurationMilliseconds: 2,
+          attestationDurationMilliseconds: 1,
+        },
+        window: command.target,
         screenshot: {
           status: "complete",
           durationMilliseconds: 10,
+          completedAt: "2026-07-27T00:00:00.950Z",
           mimeType: "image/jpeg",
           dataBase64: "aW1hZ2U=",
           width: 100,
@@ -91,7 +109,12 @@ for await (const line of lines) {
         },
         accessibility: {
           status: "complete",
+          quality: "useful",
           durationMilliseconds: 5,
+          completedAt: "2026-07-27T00:00:00.975Z",
+          contentRootFound: false,
+          semanticNodeCount: 0,
+          usefulTextCharacters: 8,
           snapshot: {
             nodeCount: 1,
             truncated: false,
@@ -128,11 +151,16 @@ test("starts, configures, captures, forwards signals, and stops a helper process
   t.after(() => client.stop());
 
   await client.start();
-  const result = await client.capture(testSignal);
+  const result = await client.capture(testSignal.window);
 
   assert.equal(result.window.windowIdentifier, 7);
   assert.equal(result.screenshot.status, "complete");
   assert.equal(result.accessibility.snapshot?.root.title, "Document");
+  await assert.rejects(
+    client.capture({ ...testSignal.window, windowIdentifier: 99 }),
+    (error) => error instanceof HelperCaptureError &&
+      error.code === "target_unavailable",
+  );
   assert.deepEqual(signals, [testSignal]);
   await client.stop();
   assert.equal(client.running, false);
@@ -219,10 +247,27 @@ test("times out only the stalled capture and accepts another capture", async (t)
           requestId: command.requestId,
           type: "captureResult",
           result: {
+            startedAt: "2026-07-27T00:00:00.900Z",
             capturedAt: "2026-07-27T00:00:01.000Z",
-            window: command.signal.window,
-            screenshot: { status: "failed", durationMilliseconds: 1 },
-            accessibility: { status: "failed", durationMilliseconds: 1 },
+            validation: {
+              preflightDurationMilliseconds: 2,
+              attestationDurationMilliseconds: 1,
+            },
+            window: command.target,
+            screenshot: {
+              status: "failed",
+              durationMilliseconds: 1,
+              completedAt: "2026-07-27T00:00:00.950Z",
+            },
+            accessibility: {
+              status: "failed",
+              quality: "unavailable",
+              durationMilliseconds: 1,
+              completedAt: "2026-07-27T00:00:00.975Z",
+              contentRootFound: false,
+              semanticNodeCount: 0,
+              usefulTextCharacters: 0,
+            },
           },
         }) + "\\n");
       }
@@ -246,7 +291,7 @@ test("times out only the stalled capture and accepts another capture", async (t)
   await client.start();
   await assert.rejects(
     Promise.race([
-      client.capture(testSignal),
+      client.capture(testSignal.window),
       new Promise((_, reject) => setTimeout(
         () => reject(new Error("Capture timeout test guard expired")),
         500,
@@ -254,7 +299,7 @@ test("times out only the stalled capture and accepts another capture", async (t)
     ]),
     /Observation helper capture timed out/,
   );
-  const result = await client.capture(testSignal);
+  const result = await client.capture(testSignal.window);
 
   assert.equal(result.screenshot.status, "failed");
   assert.equal(client.running, true);
@@ -400,7 +445,7 @@ test("rejects a malformed capture result without failing the helper", async (t) 
   t.after(() => client.stop());
 
   await client.start();
-  await assert.rejects(client.capture(testSignal), /Invalid helper capture result/);
+  await assert.rejects(client.capture(testSignal.window), /Invalid helper capture result/);
 
   assert.equal(client.running, true);
 });

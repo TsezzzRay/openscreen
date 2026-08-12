@@ -18,6 +18,8 @@ import { testMemoryConfig } from "./test-config.js";
 const observation: ScreenObservation = {
   schemaVersion: 1,
   id: "observation-1",
+  captureId: "capture-1",
+  activityRevision: 1,
   occurredAt: "2026-08-04T10:00:01.000Z",
   capturedAt: "2026-08-04T10:00:01.100Z",
   trigger: { type: "focusedWindowChanged" },

@@ -1,4 +1,5 @@
 import AppKit
+import CoreGraphics
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -6,14 +7,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var panelController: PanelController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        WindowCapture.requestPermission()
+        if !CGPreflightScreenCaptureAccess() {
+            CGRequestScreenCaptureAccess()
+        }
 
         Task {
             do {
                 try await agentClient.start()
                 let viewModel = ChatViewModel(
-                    agentClient: agentClient,
-                    windowCapture: WindowCapture()
+                    agentClient: agentClient
                 )
                 panelController = PanelController(viewModel: viewModel)
                 await viewModel.restoreSessions()

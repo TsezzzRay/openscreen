@@ -138,3 +138,34 @@ test("keeps protocol and harness dependencies pointing inward", () => {
   assert.match(retrievalTypes, /export type RetrieveMemoryArguments\b/);
   assert.doesNotMatch(retrievalTypes, /AgentTool/);
 });
+
+test("keeps screenshot implementation inside ObservationHelper", () => {
+  const packageManifest = readFileSync(resolve("Package.swift"), "utf8");
+  const helperCaptureRoot = resolve("Sources/ObservationHelper/Capture");
+  const helperSources = [
+    "CaptureEngine.swift",
+    "Target.swift",
+    "Windows.swift",
+    "WindowResolver.swift",
+    "../Monitoring/VisualSource.swift",
+  ].map((path) => readFileSync(resolve(helperCaptureRoot, path), "utf8"));
+
+  assert.equal(existsSync(resolve("Sources/CaptureCore")), false);
+  assert.equal(existsSync(resolve(helperCaptureRoot, "Target.swift")), true);
+  assert.equal(existsSync(resolve(helperCaptureRoot, "Windows.swift")), true);
+  assert.doesNotMatch(packageManifest, /CaptureCore/);
+  for (const source of helperSources) {
+    assert.doesNotMatch(source, /import CaptureCore/);
+  }
+});
+
+test("shares one window identity key across observation scheduling and dedupe", () => {
+  const service = readFileSync(
+    resolve("agent/src/extensions/screen-observation/service.ts"),
+    "utf8",
+  );
+
+  assert.match(service, /import \{\s*windowKey\s*\} from "\.\/dedupe\.js";/);
+  assert.match(service, /windowKey\(signal\.window\)/);
+  assert.doesNotMatch(service, /function windowKey\(/);
+});

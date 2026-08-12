@@ -11,10 +11,39 @@ import {
   loadSession,
   renameSession,
 } from "../../src/harness/session/store.js";
+import type { TurnScreenContext } from "../../src/types.js";
 
-function systemImages(path: string) {
-  return [{ id: "system", source: "system_capture" as const, path }];
+function userImages(path: string) {
+  return [{ id: "upload", source: "user_upload" as const, path }];
 }
+
+const screenContext: TurnScreenContext = {
+  ref: {
+    captureId: "capture-1",
+    observationId: "observation-1",
+    intentRevision: 6,
+    artifactRevision: 4,
+    completedRevision: 5,
+    intentContentEpoch: 3,
+    artifactContentEpoch: 2,
+    completedContentEpoch: 3,
+    startedAt: "2026-08-07T00:00:00.000Z",
+    capturedAt: "2026-08-07T00:00:00.100Z",
+    status: "complete",
+    target: { processIdentifier: 100, windowIdentifier: 7 },
+    image: {
+      path: "/tmp/capture-1.jpg",
+      mimeType: "image/jpeg",
+      width: 100,
+      height: 80,
+    },
+  },
+  accessibility: {
+    captureId: "capture-1",
+    application: "Editor",
+    visibleText: "Document",
+  },
+};
 
 test("stores metadata on the first line and replays completed turns and compaction", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "openscreen-sessions-"));
@@ -26,7 +55,7 @@ test("stores metadata on the first line and replays completed turns and compacti
       turn: {
         id: "turn-1",
         user: "Question",
-        images: systemImages("/tmp/screen.png"),
+        images: userImages("/tmp/screen.png"),
         startedAt: "2026-07-19T00:00:01.000Z",
       },
     },
@@ -39,7 +68,7 @@ test("stores metadata on the first line and replays completed turns and compacti
         user: "Question",
         assistant: "Answer",
         reasoning: "Checked the screen",
-        images: systemImages("/tmp/screen.png"),
+        images: userImages("/tmp/screen.png"),
         status: "completed",
         startedAt: "2026-07-19T00:00:01.000Z",
         finishedAt: "2026-07-19T00:00:02.000Z",
@@ -77,7 +106,7 @@ test("stores metadata on the first line and replays completed turns and compacti
     user: "Question",
     assistant: "Answer",
     reasoning: "Checked the screen",
-    images: systemImages("/tmp/screen.png"),
+    images: userImages("/tmp/screen.png"),
     status: "completed",
     startedAt: "2026-07-19T00:00:01.000Z",
     finishedAt: "2026-07-19T00:00:02.000Z",
@@ -281,12 +310,11 @@ test("rejects a completed Turn that rewrites its start facts", async (t) => {
   await assert.rejects(loadSession(directory, session.id), /Turn start mismatch/);
 });
 
-test("persists ordered images and exposes them when restoring visible turns", async (t) => {
+test("persists screen context separately from visible user uploads", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "openscreen-sessions-"));
   t.after(() => rm(directory, { force: true, recursive: true }));
   const session = await createSession(directory);
   const images = [
-    { id: "system", source: "system_capture", path: "/tmp/system.png" },
     { id: "upload-1", source: "user_upload", path: "/tmp/one.png" },
     { id: "upload-2", source: "user_upload", path: "/tmp/two.png" },
   ];
@@ -297,6 +325,7 @@ test("persists ordered images and exposes them when restoring visible turns", as
         id: "turn-1",
         user: "Question",
         images,
+        screenContext,
         startedAt: "2026-07-19T00:00:01.000Z",
       },
     },
@@ -307,6 +336,7 @@ test("persists ordered images and exposes them when restoring visible turns", as
         user: "Question",
         assistant: "Answer",
         images,
+        screenContext,
         status: "completed",
         startedAt: "2026-07-19T00:00:01.000Z",
         finishedAt: "2026-07-19T00:00:02.000Z",
@@ -316,7 +346,32 @@ test("persists ordered images and exposes them when restoring visible turns", as
 
   const loaded = await loadSession(directory, session.id);
   assert.deepEqual(loaded.turns[0]?.images, images);
-  assert.deepEqual(loaded.visibleTurns[0]?.images, images.slice(1));
+  assert.deepEqual(loaded.turns[0]?.screenContext, screenContext);
+  assert.deepEqual(loaded.recordedTurns[0]?.screenContext, screenContext);
+  assert.deepEqual(loaded.visibleTurns[0]?.images, images);
+});
+
+test("rejects an invalid native capture start time in screen context", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "openscreen-sessions-"));
+  t.after(() => rm(directory, { force: true, recursive: true }));
+  const session = await createSession(directory);
+  await appendSessionEvents(directory, session.id, [{
+    type: "turn_started",
+    turn: {
+      id: "turn-1",
+      user: "Question",
+      screenContext: {
+        ...screenContext,
+        ref: { ...screenContext.ref, startedAt: "not-a-timestamp" },
+      },
+      startedAt: "2026-07-19T00:00:01.000Z",
+    },
+  }]);
+
+  await assert.rejects(
+    loadSession(directory, session.id),
+    /Invalid session event/,
+  );
 });
 
 test("restores an unfinished turn as interrupted without adding it to model context", async (t) => {
@@ -329,7 +384,7 @@ test("restores an unfinished turn as interrupted without adding it to model cont
       turn: {
         id: "turn-1",
         user: "Question",
-        images: systemImages("/tmp/screen.png"),
+        images: userImages("/tmp/screen.png"),
         startedAt: "2026-07-19T00:00:01.000Z",
       },
     },
@@ -345,6 +400,7 @@ test("restores an unfinished turn as interrupted without adding it to model cont
     assistant: "Partial answer",
     reasoning: "Partial thought",
     status: "interrupted",
+    images: userImages("/tmp/screen.png"),
   }]);
 });
 
@@ -358,7 +414,7 @@ test("restores failed and cancelled turns into model context with their status",
       turn: {
         id: "failed-turn",
         user: "Why did this fail?",
-        images: systemImages("/tmp/failure.png"),
+        images: userImages("/tmp/failure.png"),
         startedAt: "2026-07-19T00:00:01.000Z",
       },
     },
@@ -392,7 +448,7 @@ test("restores failed and cancelled turns into model context with their status",
       user: "Why did this fail?",
       assistant: "Partial answer",
       reasoning: "",
-      images: systemImages("/tmp/failure.png"),
+      images: userImages("/tmp/failure.png"),
       status: "failed",
       startedAt: "2026-07-19T00:00:01.000Z",
       finishedAt: "2026-07-19T00:00:01.500Z",
@@ -430,6 +486,27 @@ test("rejects session events that use screenshotPath", async (t) => {
   );
 });
 
+test("rejects legacy system_capture images in session events", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "openscreen-sessions-"));
+  t.after(() => rm(directory, { force: true, recursive: true }));
+  const session = await createSession(directory);
+  await appendFile(join(directory, `${session.id}.jsonl`), `${JSON.stringify({
+    type: "turn_started",
+    turn: {
+      id: "old-turn",
+      user: "Old request",
+      images: [{
+        id: "system",
+        source: "system_capture",
+        path: "/tmp/legacy-system.png",
+      }],
+      startedAt: "2026-07-18T00:00:00.000Z",
+    },
+  })}\n`);
+
+  await assert.rejects(loadSession(directory, session.id), /Invalid session event/);
+});
+
 test("rejects the removed turn-level Agent Run flag", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "openscreen-sessions-"));
   t.after(() => rm(directory, { force: true, recursive: true }));
@@ -460,7 +537,7 @@ test("ignores an unterminated final fragment but rejects a corrupt complete line
     turn: {
       id: "turn-after-crash",
       user: "Recovered",
-      images: systemImages("/tmp/recovered.png"),
+      images: userImages("/tmp/recovered.png"),
       startedAt: "2026-07-19T00:00:02.000Z",
     },
   }]);

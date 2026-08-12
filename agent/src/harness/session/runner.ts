@@ -167,6 +167,9 @@ export async function runChat(
         id: requestId,
         user: input.text,
         images: input.images,
+        ...(input.screenContext === undefined
+          ? {}
+          : { screenContext: input.screenContext }),
         startedAt: turnStartedAt,
       },
     }]);
@@ -211,6 +214,7 @@ export async function runChat(
           session,
           undefined,
           memorySummary,
+          input.screenContext,
         );
         if (!Array.isArray(request.input)) throw new Error("Invalid model input");
         request.input.push(...runItems);
@@ -304,6 +308,9 @@ export async function runChat(
       assistant: result.output,
       reasoning: result.reasoning,
       images: input.images,
+      ...(input.screenContext === undefined
+        ? {}
+        : { screenContext: input.screenContext }),
       outputItems: result.outputItems,
       status: "completed" as const,
       startedAt: turnStartedAt!,

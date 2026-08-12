@@ -57,6 +57,7 @@
       "ordinaryCaptureGapMilliseconds": 2000,
       "eventDeduplicationWindowMilliseconds": 1000,
       "sameWindowCaptureGapMilliseconds": 5000,
+      "visualOnlyCaptureGapMilliseconds": 15000,
       "delaysMilliseconds": {
         "mouseClick": 0,
         "focusedElementChanged": 500,
@@ -70,7 +71,11 @@
       }
     },
     "capture": {
-      "requestTimeoutMilliseconds": 10000
+      "requestTimeoutMilliseconds": 10000,
+      "reuseWindowMilliseconds": 2000
+    },
+    "diagnostics": {
+      "retentionMilliseconds": 604800000
     },
     "helperLifecycle": {
       "configurationTimeoutMilliseconds": 2000,
@@ -93,7 +98,7 @@
       "maxWidth": 320,
       "sampleIntervalMilliseconds": 500,
       "queueDepth": 2,
-      "changeThreshold": 0.015,
+      "changeThreshold": 0.05,
       "signatureWidth": 32,
       "signatureHeight": 18
     },

@@ -108,6 +108,8 @@ test("starts Turn Memory while a Chronicle model request is still running", asyn
   await client.recordObservation({
     schemaVersion: 1,
     id: "blocking-chronicle",
+    captureId: "capture-blocking-chronicle",
+    activityRevision: 1,
     occurredAt,
     capturedAt: occurredAt,
     trigger: { type: "focusedWindowChanged" },
@@ -177,6 +179,8 @@ test("persists Observation messages in an independent Node Worker thread", async
   const observation: ScreenObservation = {
     schemaVersion: 1,
     id: "thread-observation",
+    captureId: "capture-thread-observation",
+    activityRevision: 1,
     occurredAt: now.toISOString(),
     capturedAt: now.toISOString(),
     trigger: { type: "focusedWindowChanged" },
@@ -246,6 +250,8 @@ test("persists new Observations while a background model request is running", as
   const makeObservation = (id: string): ScreenObservation => ({
     schemaVersion: 1,
     id,
+    captureId: "capture-" + id,
+    activityRevision: 1,
     occurredAt,
     capturedAt: occurredAt,
     trigger: { type: "focusedWindowChanged" },

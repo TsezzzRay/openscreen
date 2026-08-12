@@ -8,11 +8,6 @@ final class AgentProtocolTests: XCTestCase {
         let sessionID = UUID(uuidString: "00000000-0000-0000-0000-000000000002")!
         let images = [
             ChatImageAttachment(
-                id: "system",
-                source: .systemCapture,
-                path: "/tmp/window.png"
-            ),
-            ChatImageAttachment(
                 id: "upload-1",
                 source: .userUpload,
                 path: "/tmp/one.png"
@@ -40,7 +35,6 @@ final class AgentProtocolTests: XCTestCase {
         XCTAssertEqual(object["sessionId"] as? String, sessionID.uuidString)
         XCTAssertEqual(input["text"] as? String, "What is on screen?")
         XCTAssertEqual(encodedImages, [
-            ["id": "system", "source": "system_capture", "path": "/tmp/window.png"],
             ["id": "upload-1", "source": "user_upload", "path": "/tmp/one.png"],
             ["id": "upload-2", "source": "user_upload", "path": "/tmp/two.png"],
         ])

@@ -17,6 +17,8 @@ function observation(index: number): ScreenObservation {
   return {
     schemaVersion: 1,
     id: String(index),
+    captureId: "capture-" + String(index),
+    activityRevision: index + 1,
     occurredAt,
     capturedAt: occurredAt,
     trigger: { type: "focusedWindowChanged" },

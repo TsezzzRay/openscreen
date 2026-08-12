@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage } from "node:http";
@@ -114,7 +114,7 @@ test("cancels an agent run while a tool is executing", async (t) => {
         text: "Find context",
         images: [{
           id: "screen",
-          source: "system_capture",
+          source: "user_upload",
           path: imagePath,
         }],
       },
@@ -209,7 +209,7 @@ test("fails duplicate tool call IDs without corrupting the session", async (t) =
         text: "Find context",
         images: [{
           id: "screen",
-          source: "system_capture",
+          source: "user_upload",
           path: imagePath,
         }],
       },
@@ -386,10 +386,11 @@ test("rebuilds the agent process context after turn-end compaction", async (t) =
       OPENSCREEN_TURN_MEMORY_MAX_INPUT_TOKENS: "90000",
       OPENSCREEN_CONSOLIDATION_MAX_INPUT_TOKENS: "90000",
       OPENSCREEN_DATA_DIR: sessionsDirectory,
+      OPENSCREEN_HELPER_PATH: join(directory, "missing-observation-helper"),
     },
     stdio: ["pipe", "pipe", "inherit"],
   });
-  t.after(() => agent.kill());
+  t.after(() => stopAgent(agent));
 
   const requests = new Map<string, {
     events: any[];
@@ -442,7 +443,7 @@ test("rebuilds the agent process context after turn-end compaction", async (t) =
         text,
         images: [{
           id: `system-${turnNumber}`,
-          source: "system_capture",
+          source: "user_upload",
           path: image,
         }],
       },
@@ -502,7 +503,7 @@ test("rebuilds the agent process context after turn-end compaction", async (t) =
         text,
         images: [{
           id: `system-${requestNumber + 1}`,
-          source: "system_capture",
+          source: "user_upload",
           path: image,
         }],
       },
@@ -558,7 +559,7 @@ test("rebuilds the agent process context after turn-end compaction", async (t) =
       text: "cancel me",
       images: [{
         id: "system-cancel",
-        source: "system_capture",
+        source: "user_upload",
         path: cancelImage,
       }],
     },
@@ -639,10 +640,11 @@ test("rebuilds the agent process context after turn-end compaction", async (t) =
       OPENAI_BASE_URL: `http://127.0.0.1:${address.port}/v1`,
       OPENAI_MODEL: "MiniMax-M3",
       OPENSCREEN_DATA_DIR: sessionsDirectory,
+      OPENSCREEN_HELPER_PATH: join(directory, "missing-observation-helper"),
     },
     stdio: ["pipe", "pipe", "inherit"],
   });
-  t.after(() => restartedAgent.kill());
+  t.after(() => stopAgent(restartedAgent));
   const restartedRequests = new Map<string, {
     events: any[];
     resolve: (events: any[]) => void;
@@ -693,4 +695,11 @@ async function readJSON(request: IncomingMessage): Promise<any> {
   let body = "";
   for await (const chunk of request) body += chunk;
   return JSON.parse(body);
+}
+
+async function stopAgent(agent: ChildProcess) {
+  if (agent.exitCode !== null || agent.signalCode !== null) return;
+  const exited = once(agent, "exit");
+  agent.stdin?.end();
+  await exited;
 }

@@ -26,9 +26,13 @@ test("business content hashing is independent of object key order", () => {
   );
 });
 
-test("business-content dedup ignores frames, AX roles, capture bookkeeping, and visual signatures", () => {
+test("business-content hashing ignores frames, AX roles, capture bookkeeping, and visual signatures", () => {
   const capture = {
     capturedAt: "2026-07-27T00:00:01.000Z",
+    validation: {
+      preflightDurationMilliseconds: 2,
+      attestationDurationMilliseconds: 1,
+    },
     window: {
       processIdentifier: 101,
       applicationName: "Editor",
@@ -84,6 +88,82 @@ test("business-content dedup ignores frames, AX roles, capture bookkeeping, and 
   );
 });
 
+test("content dedup emits when visual content changes without an AX semantic change", () => {
+  const previous: ObservationContentSignature = {
+    windowKey: "101:7",
+    contentHash: "same",
+    visualSignature: [0, 0],
+  };
+  const current: ObservationContentSignature = {
+    ...previous,
+    visualSignature: [255, 255],
+  };
+
+  assert.equal(shouldEmitObservation(previous, current, false, 0.015), true);
+});
+
+test("uses the runtime visual threshold as the standalone dedupe default", () => {
+  const previous: ObservationContentSignature = {
+    windowKey: "101:7",
+    contentHash: "same",
+    visualSignature: [0, 0],
+  };
+  const current: ObservationContentSignature = {
+    ...previous,
+    visualSignature: [10, 10],
+  };
+
+  assert.equal(shouldEmitObservation(previous, current, false), false);
+});
+
+test("content dedup does not reuse a capture with neither AX nor visual evidence", () => {
+  const unavailable: ObservationContentSignature = {
+    windowKey: "101:7",
+    contentHash: "empty",
+    semanticAvailable: false,
+  };
+
+  assert.equal(shouldEmitObservation(unavailable, unavailable, false), true);
+});
+
+test("does not treat an explicitly shell-only AX snapshot as semantic evidence", () => {
+  const capture = {
+    capturedAt: "2026-07-27T00:00:01.000Z",
+    validation: {
+      preflightDurationMilliseconds: 2,
+      attestationDurationMilliseconds: 1,
+    },
+    window: {
+      processIdentifier: 101,
+      applicationName: "ChatGPT",
+      windowIdentifier: 7,
+    },
+    screenshot: {
+      status: "complete" as const,
+      durationMilliseconds: 10,
+      mimeType: "image/jpeg" as const,
+      dataBase64: "AA==",
+      width: 1,
+      height: 1,
+    },
+    accessibility: {
+      status: "complete" as const,
+      quality: "shell_only" as const,
+      durationMilliseconds: 10,
+      contentRootFound: false,
+      semanticNodeCount: 1,
+      usefulTextCharacters: 0,
+      snapshot: {
+        root: { role: "AXWindow", title: "ChatGPT" },
+        nodeCount: 1,
+        truncated: false,
+      },
+    },
+  };
+
+  assert.equal(contentSignature(capture).semanticAvailable, false);
+});
+
 test("content dedup keeps boundaries and meaningful business-content changes", () => {
   const previous: ObservationContentSignature = {
     windowKey: "101:7",
@@ -106,6 +186,10 @@ test("dedupe advances only after an emitted signature is committed", () => {
   const dedupe = new Dedupe();
   const result = {
     capturedAt: "2026-07-27T00:00:01.000Z",
+    validation: {
+      preflightDurationMilliseconds: 2,
+      attestationDurationMilliseconds: 1,
+    },
     window: {
       processIdentifier: 101,
       applicationName: "Editor",

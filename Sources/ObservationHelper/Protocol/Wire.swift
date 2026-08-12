@@ -10,7 +10,7 @@ enum Wire {
 
     struct Capture: Sendable {
         let requestId: String
-        let signal: NativeActivitySignal
+        let target: WindowMetadata
     }
 
     struct Shutdown: Sendable {
@@ -34,7 +34,7 @@ enum Wire {
             case excludedProcessIdentifiers
             case excludedBundleIdentifiers
             case configuration
-            case signal
+            case target
         }
 
         var requestId: String {
@@ -75,9 +75,9 @@ enum Wire {
                 self = .capture(
                     Capture(
                         requestId: requestId,
-                        signal: try container.decode(
-                            NativeActivitySignal.self,
-                            forKey: .signal
+                        target: try container.decode(
+                            WindowMetadata.self,
+                            forKey: .target
                         )
                     )
                 )
@@ -101,6 +101,7 @@ enum Wire {
         case signal(NativeActivitySignal)
         case captureResult(requestId: String, result: NativeCaptureResult)
         case status(SourceStatus)
+        case diagnostic(NativeDiagnosticEvent)
         case error(requestId: String?, code: String, message: String)
 
         private enum CodingKeys: String, CodingKey {
@@ -113,6 +114,11 @@ enum Wire {
             case status
             case code
             case message
+            case event
+            case reason
+            case generation
+            case windowIdentifier
+            case delayMilliseconds
         }
 
         func encode(to encoder: Encoder) throws {
@@ -139,6 +145,22 @@ enum Wire {
                 try container.encode(status.component.rawValue, forKey: .component)
                 try container.encode(status.state.rawValue, forKey: .status)
                 try container.encodeIfPresent(status.message, forKey: .message)
+            case .diagnostic(let diagnostic):
+                try container.encode("diagnostic", forKey: .type)
+                try container.encode(diagnostic.event.rawValue, forKey: .event)
+                try container.encodeIfPresent(diagnostic.reason, forKey: .reason)
+                try container.encodeIfPresent(
+                    diagnostic.generation,
+                    forKey: .generation
+                )
+                try container.encodeIfPresent(
+                    diagnostic.windowIdentifier,
+                    forKey: .windowIdentifier
+                )
+                try container.encodeIfPresent(
+                    diagnostic.delayMilliseconds,
+                    forKey: .delayMilliseconds
+                )
             case .error(let requestId, let code, let message):
                 try container.encode("error", forKey: .type)
                 try container.encodeIfPresent(requestId, forKey: .requestId)

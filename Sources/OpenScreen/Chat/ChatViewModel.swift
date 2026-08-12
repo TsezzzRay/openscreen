@@ -15,7 +15,6 @@ final class ChatViewModel: ObservableObject {
     @Published private var composerStates: [UUID: ComposerState] = [:]
 
     private let agentClient: AgentClient
-    private let windowCapture: WindowCapture
     private let attachmentStore: ChatAttachmentStore
     private let defaults: UserDefaults
     private var turnCache: [UUID: [ChatTurn]] = [:]
@@ -41,12 +40,10 @@ final class ChatViewModel: ObservableObject {
 
     init(
         agentClient: AgentClient,
-        windowCapture: WindowCapture,
         attachmentStore: ChatAttachmentStore = ChatAttachmentStore(),
         defaults: UserDefaults = .standard
     ) {
         self.agentClient = agentClient
-        self.windowCapture = windowCapture
         self.attachmentStore = attachmentStore
         self.defaults = defaults
     }
@@ -201,14 +198,12 @@ final class ChatViewModel: ObservableObject {
                 turn.status = .completed
             case .cancelled:
                 turn.status = .cancelled
-            case .started, .sessions, .session, .failed:
+            case .started:
+                turn.status = .requesting
+            case .sessions, .session, .failed:
                 break
             }
         }
-    }
-
-    func markRequesting(sessionID: UUID, turnID: UUID) {
-        updateTurn(sessionID: sessionID, turnID: turnID) { $0.status = .requesting }
     }
 
     func retry(turnID: UUID) {
@@ -366,21 +361,13 @@ final class ChatViewModel: ObservableObject {
             }
             var sentToAgent = false
             do {
-                let imageURL = try await windowCapture.captureActiveWindow()
-                try Task.checkCancellation()
-                let images = [ChatImageAttachment(
-                    id: UUID().uuidString,
-                    source: .systemCapture,
-                    path: imageURL.path
-                )] + userAttachments
                 let events = try await agentClient.send(
                     requestID: turnID,
                     sessionID: sessionID,
                     text: text,
-                    images: images
+                    images: userAttachments
                 )
                 sentToAgent = true
-                markRequesting(sessionID: sessionID, turnID: turnID)
                 try Task.checkCancellation()
                 for try await event in events {
                     apply(event, sessionID: sessionID, turnID: turnID)
@@ -418,7 +405,7 @@ final class ChatViewModel: ObservableObject {
                     turnID: turnID,
                     message: sentToAgent
                         ? error.localizedDescription
-                        : "Couldn't capture the active window. Check Screen Recording permission and retry."
+                        : "Request failed. Please retry."
                 )
             }
         }

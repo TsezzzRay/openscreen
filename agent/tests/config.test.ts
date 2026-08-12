@@ -65,6 +65,7 @@ const fileConfig = {
       ordinaryCaptureGapMilliseconds: 2_000,
       eventDeduplicationWindowMilliseconds: 1_000,
       sameWindowCaptureGapMilliseconds: 5_000,
+      visualOnlyCaptureGapMilliseconds: 15_000,
       delaysMilliseconds: {
         mouseClick: 400,
         focusedElementChanged: 500,
@@ -79,6 +80,10 @@ const fileConfig = {
     },
     capture: {
       requestTimeoutMilliseconds: 10_000,
+      reuseWindowMilliseconds: 250,
+    },
+    diagnostics: {
+      retentionMilliseconds: 7 * 24 * 60 * 60_000,
     },
     helperLifecycle: {
       configurationTimeoutMilliseconds: 2_000,
@@ -101,7 +106,7 @@ const fileConfig = {
       maxWidth: 320,
       sampleIntervalMilliseconds: 500,
       queueDepth: 2,
-      changeThreshold: 0.015,
+      changeThreshold: 0.05,
       signatureWidth: 32,
       signatureHeight: 18,
     },
@@ -134,9 +139,42 @@ test("ships OpenChronicle capture timing defaults", () => {
   assert.equal(config.screenObservation.scheduling.eventDeduplicationWindowMilliseconds, 1_000);
   assert.equal(config.screenObservation.scheduling.ordinaryCaptureGapMilliseconds, 2_000);
   assert.equal(config.screenObservation.scheduling.sameWindowCaptureGapMilliseconds, 5_000);
+  assert.equal(
+    config.screenObservation.scheduling.visualOnlyCaptureGapMilliseconds,
+    15_000,
+  );
   assert.equal(config.screenObservation.scheduling.delaysMilliseconds.mouseClick, 0);
   assert.equal(config.screenObservation.scheduling.delaysMilliseconds.keyActivity, 0);
   assert.equal(config.screenObservation.scheduling.delaysMilliseconds.accessibilityChanged, 3_000);
+  assert.equal(config.screenObservation.capture.reuseWindowMilliseconds, 2_000);
+  assert.equal(config.screenObservation.visualMonitoring.changeThreshold, 0.05);
+  assert.equal(
+    config.screenObservation.diagnostics.retentionMilliseconds,
+    7 * 24 * 60 * 60_000,
+  );
+});
+
+test("loads a single visual threshold shared by monitoring and observation", (t) => {
+  const singleThresholdConfig = withConfig(t, {
+    ...fileConfig,
+    screenObservation: {
+      ...fileConfig.screenObservation,
+      visualMonitoring: {
+        ...fileConfig.screenObservation.visualMonitoring,
+        changeThreshold: 0.05,
+      },
+    },
+  });
+
+  const config = loadRuntimeConfig(singleThresholdConfig.path, {
+    OPENAI_API_KEY: "secret",
+  });
+
+  assert.equal(config.screenObservation.visualMonitoring.changeThreshold, 0.05);
+  assert.equal(
+    "captureThreshold" in config.screenObservation.visualMonitoring,
+    false,
+  );
 });
 
 test("uses Ark Kimi through the generic OpenAI-compatible configuration", () => {
@@ -414,6 +452,35 @@ test("rejects invalid screen observation settings", (t) => {
     /screenObservation.capture.requestTimeoutMilliseconds must be a positive integer/,
   );
 
+  const invalidReuseWindow = withConfig(t, {
+    ...fileConfig,
+    screenObservation: {
+      ...fileConfig.screenObservation,
+      capture: {
+        ...fileConfig.screenObservation.capture,
+        reuseWindowMilliseconds: -1,
+      },
+    },
+  });
+  assert.throws(
+    () => loadRuntimeConfig(invalidReuseWindow.path, { OPENAI_API_KEY: "secret" }),
+    /screenObservation.capture.reuseWindowMilliseconds must be a non-negative integer/,
+  );
+
+  const invalidDiagnosticsRetention = withConfig(t, {
+    ...fileConfig,
+    screenObservation: {
+      ...fileConfig.screenObservation,
+      diagnostics: {
+        retentionMilliseconds: 0,
+      },
+    },
+  });
+  assert.throws(
+    () => loadRuntimeConfig(invalidDiagnosticsRetention.path, { OPENAI_API_KEY: "secret" }),
+    /screenObservation.diagnostics.retentionMilliseconds must be a positive integer/,
+  );
+
   const invalidCoalescingInterval = withConfig(t, {
     ...fileConfig,
     screenObservation: {
@@ -428,5 +495,39 @@ test("rejects invalid screen observation settings", (t) => {
       OPENAI_API_KEY: "secret",
     }),
     /screenObservation.activityMonitoring.coalescingIntervalMilliseconds must be a positive integer/,
+  );
+
+  const invalidVisualCaptureGap = withConfig(t, {
+    ...fileConfig,
+    screenObservation: {
+      ...fileConfig.screenObservation,
+      scheduling: {
+        ...fileConfig.screenObservation.scheduling,
+        visualOnlyCaptureGapMilliseconds: 0,
+      },
+    },
+  });
+  assert.throws(
+    () => loadRuntimeConfig(invalidVisualCaptureGap.path, {
+      OPENAI_API_KEY: "secret",
+    }),
+    /screenObservation.scheduling.visualOnlyCaptureGapMilliseconds must be a positive integer/,
+  );
+
+  const invalidVisualChangeThreshold = withConfig(t, {
+    ...fileConfig,
+    screenObservation: {
+      ...fileConfig.screenObservation,
+      visualMonitoring: {
+        ...fileConfig.screenObservation.visualMonitoring,
+        changeThreshold: 1.1,
+      },
+    },
+  });
+  assert.throws(
+    () => loadRuntimeConfig(invalidVisualChangeThreshold.path, {
+      OPENAI_API_KEY: "secret",
+    }),
+    /screenObservation.visualMonitoring.changeThreshold must be between 0 and 1/,
   );
 });

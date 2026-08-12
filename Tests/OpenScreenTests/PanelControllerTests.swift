@@ -55,7 +55,10 @@ final class PanelControllerTests: XCTestCase {
         XCTAssertFalse(panel.hidesOnDeactivate)
         XCTAssertFalse(panel.isOpaque)
         XCTAssertEqual(panel.backgroundColor, .clear)
-        XCTAssertTrue(panel.styleMask.contains(.nonactivatingPanel))
+        XCTAssertFalse(
+            panel.styleMask.contains(.nonactivatingPanel),
+            "The chat panel must activate OpenScreen for mouse and keyboard input"
+        )
         XCTAssertTrue(panel.collectionBehavior.contains(.canJoinAllSpaces))
         XCTAssertTrue(panel.collectionBehavior.contains(.fullScreenAuxiliary))
         XCTAssertTrue(panel.canBecomeKey)
@@ -63,6 +66,21 @@ final class PanelControllerTests: XCTestCase {
         XCTAssertTrue(panel.isMovableByWindowBackground)
         XCTAssertEqual(panel.frame.width, 420, accuracy: 0.1)
         XCTAssertLessThanOrEqual(panel.frame.height, 720)
+    }
+
+    func testPanelWaitsForApplicationActivationBeforeTakingKeyFocus() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: repositoryRoot
+                .appendingPathComponent("Sources/OpenScreen/App/PanelController.swift"),
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(source.contains("NSApplication.didBecomeActiveNotification"))
+        XCTAssertTrue(source.contains("NSApp.activate()"))
     }
 
     func testPanelHostsOnlySwiftUIContent() {
