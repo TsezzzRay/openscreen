@@ -1,56 +1,10 @@
 {
-  "model": "kimi-k2.7-code",
-  "baseURL": "https://ark.cn-beijing.volces.com/api/plan/v3",
-  "context": {
-    "windowTokens": 272000,
-    "compactAtTokens": 244800,
-    "keepRecentTokens": 20000,
-    "maxOutputTokens": 21760,
-    "summaryMaxOutputTokens": 4096,
-    "minimumRecentTurns": 2
+  "agent": {
+    "provider": "minimax-cn",
+    "model": "MiniMax-M3",
+    "thinking": "medium"
   },
-  "session": {
-    "eventFlushBytes": 4096,
-    "eventFlushMilliseconds": 250
-  },
-  "memory": {
-    "worker": {
-      "intervalMilliseconds": 60000,
-      "maxJobsPerTick": 100,
-      "leaseMilliseconds": 3600000,
-      "heartbeatMilliseconds": 90000,
-      "retryDelayMilliseconds": 3600000,
-      "maxAttempts": 3,
-      "maxConsecutiveExpiredLeases": 3
-    },
-    "chronicle": {
-      "maxInputTokens": 244800,
-      "maxOutputTokens": 4096,
-      "observationWindowMilliseconds": 60000,
-      "observationGraceMilliseconds": 15000,
-      "maxSourcesPerRequest": 10
-    },
-    "turnMemory": {
-      "maxInputTokens": 244800,
-      "maxOutputTokens": 4096,
-      "turnIdleMilliseconds": 1800000,
-      "turnHardCapMilliseconds": 7200000
-    },
-    "consolidation": {
-      "maxInputTokens": 244800,
-      "maxOutputTokens": 4096,
-      "maxSources": 512,
-      "cooldownMilliseconds": 21600000
-    },
-    "evidence": {
-      "successRetentionMilliseconds": 86400000,
-      "failedRetentionMilliseconds": 604800000,
-      "screenshotRetentionMilliseconds": 86400000,
-      "abandonedGraceMilliseconds": 3600000,
-      "maxBytes": 2147483648
-    }
-  },
-  "screenObservation": {
+  "capture": {
     "enabled": true,
     "scheduling": {
       "tickIntervalMilliseconds": 100,
@@ -70,7 +24,7 @@
         "visualChanged": 10000
       }
     },
-    "capture": {
+    "requests": {
       "requestTimeoutMilliseconds": 10000,
       "reuseWindowMilliseconds": 2000
     },

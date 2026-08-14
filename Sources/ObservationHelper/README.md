@@ -44,9 +44,9 @@ Stdout is reserved for protocol messages. Diagnostics are written to stderr so
 they cannot corrupt the JSON Lines stream. Node ignores an accidental non-JSON
 stdout line but treats an incompatible version or malformed structured protocol
 message as a fatal helper error. The wire contract and validation on the Node
-side live in
-`agent/src/extensions/screen-observation/protocol.ts`. Node and the helper are built and
-released together, so the current wire format has no version negotiation.
+side live in `agent/src/capture/native/protocol.ts`. Node and the helper are
+built and released together, so the current wire format has no version
+negotiation.
 
 ## Signal sources
 
@@ -93,9 +93,10 @@ The native configuration groups are:
 | `visualMonitoring` | stream width, sample interval, queue depth, change threshold, and signature dimensions |
 | `windowSelection` | minimum normal-window dimensions and maximum aspect ratio |
 
-Node-only observation settings in `config.json` control whether observation is
-enabled, capture delays and caps, the one-second per-event deduplication window,
-the two-second global capture gap, the five-second same-window capture gap,
+Node-only observation settings under `capture` in `config.json` control whether
+passive observation is enabled, capture delays and caps, the one-second
+per-event deduplication window, the two-second global capture gap, the
+five-second same-window capture gap,
 business-content deduplication, the per-request capture timeout, the two-second
 completed-artifact reuse window, capture diagnostics retention,
 configuration/shutdown timeouts, and scheduler tick frequency. The default
@@ -105,20 +106,21 @@ helper. Observation settings are not environment-variable overrides. The helper
 executable path remains a deployment concern supplied through
 `OPENSCREEN_HELPER_PATH` when needed.
 
-The `enabled` flag disables passive capture scheduling, not request capture;
+`capture.enabled` disables passive capture scheduling, not request capture;
 Node still starts the helper to serve chat requests.
 
 `visualMonitoring.changeThreshold` is the single perceptual threshold used by
 Swift visual-change candidates, Node's pre-capture gate, and Node's post-capture
 Observation comparison. The Node gate compares against the last successfully
-persisted Observation, so smaller visual candidates do not consume a physical
-Capture and failed or reused observations do not advance the baseline. Explicit
+accepted Observation in the current process, so smaller visual candidates do
+not consume a physical Capture and failed or reused observations do not advance
+the baseline. Explicit
 input and window-boundary captures are not blocked by the visual-only gate.
 After capture, Node compares the application, window title, focused role and
 value, visible text, and URL, plus the downsampled visual signature. A material
-change in either channel persists a new Observation; timestamps, raw AX
-structure, coordinates, and JPEG encoding bytes do not participate in Evidence
-identity.
+change in either channel creates a new in-memory Observation; timestamps, raw
+AX structure, coordinates, and JPEG encoding bytes do not participate in
+Observation identity.
 
 Protocol versions, activity/status enums, secure-field redaction, foreground
 window semantics, and self-capture exclusion are compatibility or privacy
@@ -208,8 +210,8 @@ For the cross-process protocol and runtime tests:
 
 ```bash
 npm run build:agent-tests
-node --test agent/dist-test/tests/config.test.js \
-  agent/dist-test/tests/screen-observation/*.test.js
+node --test agent/dist-test/tests/runtime-config.test.js \
+  "agent/dist-test/tests/capture/*.test.js"
 ```
 
 Normal development startup builds both Node and the helper and supplies the

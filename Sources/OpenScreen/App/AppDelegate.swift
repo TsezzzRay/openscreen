@@ -5,6 +5,7 @@ import CoreGraphics
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let agentClient = AgentClient()
     private var panelController: PanelController?
+    private var terminationPending = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if !CGPreflightScreenCaptureAccess() {
@@ -25,8 +26,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    func applicationWillTerminate(_ notification: Notification) {
-        Task { await agentClient.stop() }
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard !terminationPending else { return .terminateLater }
+        terminationPending = true
+        Task {
+            await agentClient.stop()
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {

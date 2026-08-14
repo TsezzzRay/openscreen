@@ -1,6 +1,32 @@
 import AppKit
 import Foundation
 
+enum ChatImageSource: String, Codable, Sendable {
+    case userUpload = "user_upload"
+}
+
+struct ChatImageAttachment: Identifiable, Equatable, Sendable {
+    let id: String
+    let source: ChatImageSource
+    let path: String
+    let mimeType: ProductImageMimeType
+
+    init(
+        id: String,
+        source: ChatImageSource,
+        path: String,
+        mimeType: ProductImageMimeType = .png
+    ) {
+        self.id = id
+        self.source = source
+        self.path = path
+        self.mimeType = mimeType
+    }
+
+    var url: URL { URL(fileURLWithPath: path) }
+    var productAttachment: ProductImageAttachment { .init(path: path, mimeType: mimeType) }
+}
+
 enum ChatAttachmentError: LocalizedError {
     case invalidImage
     case pngEncodingFailed
@@ -66,7 +92,8 @@ actor ChatAttachmentStore {
         return ChatImageAttachment(
             id: UUID().uuidString,
             source: .userUpload,
-            path: destination.path
+            path: destination.path,
+            mimeType: .png
         )
     }
 

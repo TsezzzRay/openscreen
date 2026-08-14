@@ -3,31 +3,34 @@
 OpenScreen is an early-stage, open-source macOS assistant that can answer
 questions about the window you are using and work with local files and commands.
 
-Press `Option + Space` to open a floating panel and ask a question. OpenScreen
-captures the most recently confirmed external foreground window, combines a
-matching screenshot with useful Accessibility content when available, and
-sends the request to a Responses API-compatible vision provider.
+Press `Option + Space` to open the floating panel. When a prompt is sent,
+OpenScreen asks the Capture service for the most recently confirmed external
+foreground window and gives the resulting screenshot and useful Accessibility
+content to the local Agent as generic injected context. Capture failure does not
+prevent a text-only Agent run.
+
+The Agent runtime is built on `@earendil-works/pi-agent-core` and
+`@earendil-works/pi-ai`. OpenScreen does not maintain a second Agent Loop,
+Session implementation, model adapter, or compaction engine.
 
 > OpenScreen is under active development. It has model-directed local system
 > tools, but no dedicated click, type, scroll, or application-control tools.
-> Issues and pull requests are temporarily disabled while the core product is
-> changing.
 
 ## Current capabilities
 
 - Global `Option + Space` shortcut and a movable floating panel.
-- Strictly fused request and passive-activity capture using one exact-window
-  ScreenCaptureKit result.
-- Event-driven foreground-window observation through a native macOS helper.
-- A streaming Agent Loop with durable model steps and tool results.
+- Native foreground-window signals and exact-window screenshot/Accessibility
+  capture through `ObservationHelper`.
+- Streaming answers, reasoning, and tool lifecycle updates from the pi Agent
+  harness.
 - Local `read`, `ls`, `grep`, `find`, `write`, `edit`, and `bash` tools.
-- Persistent multi-session chat with create, switch, rename, cancel, and editable
-  retry behavior.
-- Markdown responses, streaming status, screenshot previews, and user image
-  attachments.
-- Automatic context compaction near the configured model limit.
-- Background Chronicle and Turn Memory processing, durable local long-term
-  memory, and English-only internal context retrieval.
+- Persistent JSONL Sessions with create, switch, rename, and cancellation.
+- Per-Session thinking-level controls; all seven local tools are always enabled.
+- Automatic pi context compaction near the configured model's context limit, plus
+  manual compaction from the Swift UI.
+- Markdown responses, screenshot previews, and PNG/JPEG user attachments.
+- Concurrent work in different Sessions; each Session accepts one prompt at a
+  time.
 
 ## Requirements
 
@@ -35,25 +38,22 @@ sends the request to a Responses API-compatible vision provider.
 - Screen Recording and Accessibility permission. Input Monitoring is also
   needed for click and keyboard-activity signals.
 - Swift 6.2 toolchain.
-- Node.js 22.13 or later and npm. The Agent uses the built-in `node:sqlite`
-  module.
-- An API key and a reasoning-capable Responses API-compatible model that
-  supports streaming, image input, function calling, and
-  `/responses/input_tokens`.
+- Node.js 22.19 or later and npm.
+- Credentials for the configured pi provider. The checked-in default is
+  `minimax-cn/MiniMax-M3` and uses `MINIMAX_CN_API_KEY`.
 
 ## Run locally
 
-Install dependencies and create the local environment file:
+Install dependencies and create the optional project environment file:
 
 ```bash
 npm ci
 cp .env.example .env
 ```
 
-Set `OPENAI_API_KEY` in `.env`, then review `model` and `baseURL` in
-`config.json`. `OPENAI_MODEL` and `OPENAI_BASE_URL` can override those provider
-values. The API key is read only from the environment; non-secret runtime
-defaults remain in `config.json`.
+Set `MINIMAX_CN_API_KEY` in `.env`, or export it in the launching environment.
+Existing process environment values take precedence over `.env`. Provider
+credentials are never read from `config.json`.
 
 Start OpenScreen from the repository root:
 
@@ -65,94 +65,102 @@ Grant the requested macOS permissions, press `Option + Space`, enter a question,
 and press `Enter`. Use `Shift + Enter` for a newline and `Control + C` in the
 launching terminal to stop the development process.
 
-See the [Agent configuration reference](agent/README.md#runtime-configuration)
-for configuration groups, overrides, and validation behavior.
+The `agent` group in `config.json` selects the single pi provider, model, and
+thinking level. The `capture` group contains native and
+Node-side Capture settings. Configuration is strict: unknown or missing fields
+stop startup. See the
+[Agent configuration reference](agent/README.md#runtime-configuration).
 
 ## Privacy and security
 
-OpenScreen observes only the foreground window and excludes its own processes
-to prevent capture loops. It does not record raw keys or typed key values, and
-secure Accessibility fields are redacted. Chat requests may send the user
-prompt, a matching request JPEG, a bounded useful Accessibility projection,
-and user-selected images to the configured provider. Background Memory requests
-send compact semantic projections of Observations or closed Turns; they do not
-include raw Observation screenshots, full Accessibility trees, or reasoning.
+OpenScreen excludes its own processes from capture, does not record raw keys or
+typed key values, and redacts secure Accessibility fields. A prompt may send the
+following data to the configured provider:
 
-Sessions, captures, diagnostics, activity evidence, generated summaries, and
-long-term memory are stored locally under
-`~/Library/Application Support/OpenScreen/` by default. Retention and recovery
-details are defined in the
-[Agent persistence reference](agent/README.md#persistence) and
-[memory reference](agent/README.md#chronicle-and-memory-persistence). Native
-permission, redaction, and capture-failure behavior are defined in the
-[ObservationHelper README](Sources/ObservationHelper/README.md).
+- prompt text and user-selected images;
+- a matching request screenshot and bounded useful Accessibility projection;
+- model responses, reasoning context, and tool calls/results required by the
+  continuing Agent run; and
+- pi-generated compaction summaries.
 
-The seven system tools run with the operating-system permissions of the local
-Agent process. They accept absolute paths, and `bash` executes shell commands
-from the directory where OpenScreen was launched. There is currently no
-built-in approval prompt or sandbox. Tool calls and their visible results are
-returned to the configured provider as the Agent Loop continues and are stored
-in Session history. Complete truncated Bash output is stored locally under the
-`tool-output/` data directory, while only its visible bounded tail is returned
-to the model. Run OpenScreen only in an environment where that access is
-acceptable.
+When passive capture is enabled, Capture may persist local artifacts in response
+to activity even without a prompt. Passive artifacts are not independently sent
+to a model. There is no separate background long-term-memory extraction
+pipeline.
 
-Review the configured provider's data policy before sending sensitive content.
+By default, local application data is stored under
+`~/Library/Application Support/OpenScreen/`:
+
+```text
+sessions/              pi JSONL Sessions, grouped by working directory
+capture-artifacts/     private structured Capture artifacts
+screen-captures/       private JPEGs for successful captures
+diagnostics/           content-free Capture lifecycle diagnostics
+user-attachments/      Swift-managed PNG copies of uploaded or pasted images
+```
+
+Session JSONL contains conversation and Agent state. pi persists message content
+inline, so user and hidden injected image blocks include Base64 image data in
+the Session file. Swift also decodes each uploaded or pasted image and writes a
+managed PNG copy under `user-attachments/` for local preview and submission.
+Removing a pending attachment deletes its copy when it is not already used by a
+turn, and a failed multi-image import deletes copies created earlier in that
+import. Copies retained for submitted turns currently have no retention or
+deletion UI. Capture files and directories are created with private permissions.
+Review the selected provider's data policy before sending sensitive content.
+
+The seven system tools run with the operating-system permissions and environment
+of the local Agent process. Relative paths and `bash` start from the repository
+directory used to launch OpenScreen; absolute paths are accepted. There is no
+built-in approval prompt or filesystem sandbox.
 
 ## Current limitations
 
 - Development launch only; there is no signed app bundle or installer.
 - No click, type, scroll, or other application-control tools.
-- Memory retrieval exists as an internal read API but is not registered as a
-  model-facing tool.
-- No session deletion, search, or cloud sync.
-- Only one request per session can run at a time; different sessions can stream
-  concurrently.
-- No automatic chat retries or settings interface. Retry restores the previous
-  prompt for editing and resolves the current screen context again when
-  resubmitted.
-- Chat automatically receives only the bounded `memory_summary.md`; targeted
-  memory retrieval and Memory UI controls are not exposed in the app.
+- No separate long-term-memory subsystem, retrieval tool, or memory UI.
+- No Session deletion, search, or cloud sync.
+- No built-in provider or model selection UI. The single default is configured
+  in `config.json`; an unknown provider/model pair fails at startup.
+- Capture artifacts, Session files, and user-attachment copies retained for
+  submitted turns do not currently have a product retention or deletion UI.
 
 ## Architecture
 
 ```text
-macOS app (Swift, AppKit, SwiftUI)
-    -> JSON Lines over stdin/stdout
-local Agent (Node.js, TypeScript, OpenAI SDK)
-    -> JSON Lines over stdin/stdout
-ObservationHelper (Swift, AXObserver, CGEventTap, ScreenCaptureKit)
-
-local Agent
-    -> capture coordinator (Join / Reuse / New)
-    -> retained text, bounded AX JSON, matching JPEG, and user images
-    -> streaming Agent Loop + local system tools
-    -> configured Responses API-compatible provider
-
-local Agent
-    -> Chronicle / Turn Memory / Consolidation Worker Threads
-    -> SQLite WAL + private evidence files
-    -> current long-term memory + bounded chat summary
-    -> SQLite FTS5 context index
+SwiftUI / AppKit
+    -> product JSONL commands and events
+Transport
+    -> Application API
+Application Runtime
+    -> Agent API   -> pi AgentHarness / JsonlSessionRepo / system tools
+    -> Capture API -> Capture scheduling / fusion / persistence
+                         -> helper JSONL -> ObservationHelper
 ```
 
-The macOS app owns the user interface and user attachments. The Node Agent owns
-capture coordination, model and tool execution, Sessions, and durable
-application state. ObservationHelper owns native activity signals and
-exact-window capture.
+The boundaries are intentionally one-way:
+
+- `agent` knows pi and generic Agent inputs, but does not import Capture,
+  Application, Transport, or Swift types.
+- `capture` owns native observation, capture policy, artifacts, and diagnostics;
+  it does not import Agent, pi, Application, or Transport.
+- `application` is the only place that maps a `CapturedContext` into generic
+  `AgentInjectedContext`.
+- `transport` depends only on the Application API.
+- `agent/src/main.ts` is the sole concrete composition root.
 
 Component references:
 
-- [OpenScreen Agent](agent/README.md) — Agent Loop, tools, configuration,
-  Sessions, capture fusion, and Memory.
+- [OpenScreen Agent](agent/README.md) — boundaries, pi runtime, tools, Sessions,
+  configuration, Capture integration, and product protocol.
 - [ObservationHelper](Sources/ObservationHelper/README.md) — native signals,
-  capture, permissions, privacy, and failure behavior.
+  exact-window capture, permissions, privacy, and failure behavior.
 - [Development rules](AGENTS.md) — repository commands, testing, Git/worktree,
   and documentation policy.
 
 ## Development
 
-Run the Agent and Swift test suites:
+Run the Agent and Swift test suites from the repository root:
 
 ```bash
 npm run test:agent

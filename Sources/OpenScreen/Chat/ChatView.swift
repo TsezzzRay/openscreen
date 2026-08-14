@@ -10,7 +10,7 @@ extension ChatTurnStatus {
         case .generating: "Generating…"
         case .completed: "Completed"
         case .failed: "Failed"
-        case .cancelled: "Cancelled"
+        case .aborted: "Cancelled"
         case .interrupted: "Interrupted"
         }
     }
@@ -22,14 +22,14 @@ extension ChatTurnStatus {
     var isInProgress: Bool {
         switch self {
         case .capturing, .requesting, .generating: true
-        case .completed, .failed, .cancelled, .interrupted: false
+        case .completed, .failed, .aborted, .interrupted: false
         }
     }
 }
 
 struct ChatScrollTrigger: Equatable {
-    let sessionID: UUID?
-    let turnID: UUID?
+    let sessionID: String?
+    let turnID: String?
     let turnCount: Int
     let reasoningLength: Int
     let answerLength: Int
@@ -47,6 +47,17 @@ struct ChatImagePreviewState {
 
     mutating func dismiss() {
         url = nil
+    }
+}
+
+enum ChatAgentControlsPresentation {
+    static let headerAccessibilityLabels = ["Agent controls"]
+}
+
+enum ChatTurnPresentation {
+    static func historicalImageLabel(for turn: ChatTurn) -> String? {
+        guard turn.attachments.isEmpty, turn.historicalImageCount > 0 else { return nil }
+        return "\(turn.historicalImageCount) image\(turn.historicalImageCount == 1 ? "" : "s")"
     }
 }
 
@@ -131,7 +142,8 @@ enum ChatScrollPosition {
 struct ChatView: View {
     @ObservedObject var viewModel: ChatViewModel
     @State private var showsHistory = false
-    @State private var renamedSessionID: UUID?
+    @State private var showsAgentControls = false
+    @State private var renamedSessionID: String?
     @State private var renameTitle = ""
     @State private var followsLatest = true
     @State private var composerHeight = ChatComposerLayout.minimumHeight
@@ -214,6 +226,12 @@ struct ChatView: View {
                     .padding(.horizontal, 16)
                     .padding(.bottom, 6)
             }
+
+            if let error = viewModel.compactionError {
+                sessionErrorBanner(error)
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 6)
+            }
         }
     }
 
@@ -228,7 +246,7 @@ struct ChatView: View {
                     .clipShape(Circle())
             }
             .buttonStyle(.plain)
-            .disabled(viewModel.isManagingSession)
+            .disabled(sessionMutationBusy)
             .accessibilityLabel("Chat history")
             .popover(isPresented: $showsHistory) { historyPopover }
 
@@ -244,6 +262,19 @@ struct ChatView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
+            Button {
+                showsAgentControls.toggle()
+            } label: {
+                Image(systemName: "slider.horizontal.3")
+                    .frame(width: 30, height: 30)
+                    .background(Color(nsColor: .controlBackgroundColor))
+                    .clipShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .disabled(viewModel.currentSessionID == nil)
+            .accessibilityLabel(ChatAgentControlsPresentation.headerAccessibilityLabels[0])
+            .popover(isPresented: $showsAgentControls) { agentControlsPopover }
+
             Menu {
                 Button("Rename Chat", systemImage: "pencil") {
                     beginRename(
@@ -252,7 +283,7 @@ struct ChatView: View {
                     )
                 }
                 .disabled(
-                    viewModel.isManagingSession || viewModel.isSending ||
+                    sessionMutationBusy || viewModel.isSending ||
                     viewModel.currentSessionID == nil
                 )
             } label: {
@@ -272,11 +303,66 @@ struct ChatView: View {
                     .clipShape(Circle())
             }
             .buttonStyle(.plain)
-            .disabled(viewModel.isManagingSession)
+            .disabled(sessionMutationBusy)
             .accessibilityLabel("New chat")
         }
         .padding(.horizontal, 14)
         .frame(height: 58)
+    }
+
+    private var controlsAreBusy: Bool {
+        viewModel.isManagingSession || viewModel.isSending ||
+            viewModel.isUpdatingAgentState || viewModel.isCompacting
+    }
+
+    private var sessionMutationBusy: Bool {
+        viewModel.isManagingSession || viewModel.isUpdatingAgentState ||
+            viewModel.isCompacting
+    }
+
+    private var agentControlsPopover: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Agent")
+                .font(.headline)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Thinking")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Picker("Thinking", selection: Binding(
+                    get: { viewModel.thinking },
+                    set: { value in Task { await viewModel.selectThinking(value) } }
+                )) {
+                    ForEach(ProductThinkingLevel.allCases) { level in
+                        Text(level.rawValue).tag(level)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .disabled(controlsAreBusy)
+            }
+
+            Divider()
+
+            Button {
+                Task { await viewModel.compact() }
+            } label: {
+                if viewModel.isCompacting {
+                    Label("Compacting…", systemImage: "hourglass")
+                } else {
+                    Label("Compact Session", systemImage: "arrow.down.right.and.arrow.up.left")
+                }
+            }
+            .disabled(controlsAreBusy)
+
+            if let result = viewModel.compactionResult {
+                Text("Compacted \(result.tokensBefore) tokens")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(14)
+        .frame(width: 280)
     }
 
     private var historyPopover: some View {
@@ -311,7 +397,7 @@ struct ChatView: View {
         .frame(width: 300)
     }
 
-    private func historyRow(_ session: ChatSessionSummary) -> some View {
+    private func historyRow(_ session: ProductSessionSummary) -> some View {
         HStack(spacing: 8) {
             Button {
                 viewModel.selectSession(session.id)
@@ -319,7 +405,7 @@ struct ChatView: View {
             } label: {
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 6) {
-                        Text(session.title)
+                        Text(session.displayName)
                             .lineLimit(1)
                         if viewModel.activeSessionIDs.contains(session.id) {
                             Circle()
@@ -327,7 +413,7 @@ struct ChatView: View {
                                 .frame(width: 6, height: 6)
                         }
                     }
-                    Text(formattedTimestamp(session.updatedAt))
+                    Text(formattedTimestamp(session.createdAt))
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
@@ -339,7 +425,7 @@ struct ChatView: View {
             Menu {
                 Button("Rename", systemImage: "pencil") {
                     showsHistory = false
-                    beginRename(id: session.id, title: session.title)
+                    beginRename(id: session.id, title: session.displayName)
                 }
             } label: {
                 Image(systemName: "ellipsis")
@@ -348,10 +434,10 @@ struct ChatView: View {
             .menuStyle(.borderlessButton)
             .fixedSize()
             .disabled(
-                viewModel.isManagingSession ||
+                sessionMutationBusy ||
                 viewModel.activeSessionIDs.contains(session.id)
             )
-            .accessibilityLabel("Actions for \(session.title)")
+            .accessibilityLabel("Actions for \(session.displayName)")
         }
         .padding(.horizontal, 9)
         .padding(.vertical, 8)
@@ -619,7 +705,7 @@ struct ChatView: View {
             .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
     }
 
-    private func renameOverlay(sessionID: UUID) -> some View {
+    private func renameOverlay(sessionID: String) -> some View {
         ZStack {
             Color.black.opacity(0.12)
                 .contentShape(Rectangle())
@@ -700,14 +786,14 @@ struct ChatView: View {
         }
     }
 
-    private func commitRename(_ sessionID: UUID) {
+    private func commitRename(_ sessionID: String) {
         let title = renameTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !title.isEmpty else { return }
         viewModel.renameSession(id: sessionID, title: title)
         renamedSessionID = nil
     }
 
-    private func beginRename(id: UUID?, title: String) {
+    private func beginRename(id: String?, title: String) {
         guard let id else { return }
         renamedSessionID = id
         renameTitle = title
@@ -728,10 +814,16 @@ private struct ChatTurnView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 13) {
-            userMessage
+            if !turn.question.isEmpty {
+                userMessage
+            }
 
             if !turn.reasoning.isEmpty {
                 reasoningDisclosure
+            }
+
+            if !turn.toolActivities.isEmpty {
+                toolActivityList
             }
 
             if !turn.answer.isEmpty {
@@ -781,6 +873,10 @@ private struct ChatTurnView: View {
                 }
                 .defaultScrollAnchor(.trailing)
                 .scrollIndicators(.hidden)
+            } else if let label = ChatTurnPresentation.historicalImageLabel(for: turn) {
+                Label(label, systemImage: "photo.on.rectangle.angled")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             MarkdownMessageView(turn.question, alignment: .trailing, role: .question)
@@ -820,6 +916,31 @@ private struct ChatTurnView: View {
         }
     }
 
+    private var toolActivityList: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(turn.toolActivities) { tool in
+                HStack(alignment: .firstTextBaseline, spacing: 7) {
+                    if tool.status == .running {
+                        ProgressView()
+                            .controlSize(.mini)
+                    } else {
+                        Image(systemName: tool.isError ? "exclamationmark.triangle" : "wrench")
+                    }
+                    Text(tool.name)
+                        .font(.caption.weight(.medium))
+                    if !tool.text.isEmpty {
+                        Text(tool.text)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
+                }
+                .foregroundStyle(tool.isError ? Color.red : Color.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
     private var statusRow: some View {
         HStack(spacing: 7) {
             if turn.status.isInProgress {
@@ -830,7 +951,7 @@ private struct ChatTurnView: View {
                 .font(.caption)
                 .foregroundStyle(turn.status == .failed ? Color.red : Color.secondary)
             Spacer()
-            if turn.status == .failed || turn.status == .cancelled {
+            if turn.status == .failed || turn.status == .aborted {
                 Button("Retry", action: onRetry)
                     .buttonStyle(.plain)
                     .font(.caption.weight(.medium))

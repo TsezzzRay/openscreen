@@ -1,165 +1,206 @@
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import {
+  existsSync,
+  readFileSync,
+  readdirSync,
+} from "node:fs";
+import { dirname, extname, join, relative, resolve } from "node:path";
 import test from "node:test";
 
-test("organizes agent core and harness code by responsibility", () => {
-  const sourceRoot = resolve("agent/src");
-  const expectedFiles = [
-    "process.ts",
-    "loop.ts",
-    "types.ts",
-    "config.ts",
-    "model-token-count.ts",
-    "protocol.ts",
-    "harness/session/runner.ts",
-    "harness/session/store.ts",
-    "harness/session/events.ts",
-    "harness/session/lock.ts",
-    "harness/session/context.ts",
-    "harness/session/types.ts",
-    "harness/compaction/compact.ts",
-    "harness/compaction/summary.ts",
-    "harness/memory/db/database.ts",
-    "harness/memory/db/schema.ts",
-    "harness/memory/db/attempts.ts",
-    "harness/memory/evidence.ts",
-    "harness/memory/types.ts",
-    "harness/memory/chronicle/model-projection.ts",
-    "harness/memory/chronicle/processor.ts",
-    "harness/memory/chronicle/repository.ts",
-    "harness/memory/chronicle/summarizer.ts",
-    "harness/memory/turn-memory/model-projection.ts",
-    "harness/memory/turn-memory/processor.ts",
-    "harness/memory/turn-memory/repository.ts",
-    "harness/memory/turn-memory/extractor.ts",
-    "harness/memory/read/long-term-index.ts",
-    "harness/memory/read/search.ts",
-    "harness/memory/shared/request-budget.ts",
-    "harness/memory/shared/structured-output.ts",
-    "harness/memory/consolidate/processor.ts",
-    "harness/memory/consolidate/repository.ts",
-    "harness/memory/consolidate/publication.ts",
-    "harness/memory/consolidate/workspace.ts",
-    "harness/memory/worker/client.ts",
-    "harness/memory/worker/runtime.ts",
-    "harness/memory/worker/thread.ts",
-    "extensions/screen-observation/extension.ts",
-    "extensions/screen-observation/types.ts",
-    "tools/registry.ts",
-    "tools/executor.ts",
-    "tools/errors.ts",
-    "tools/shared/arguments.ts",
-    "tools/shared/file-mutation-queue.ts",
-    "tools/shared/output-accumulator.ts",
-    "tools/shared/truncate.ts",
-    "tools/system/index.ts",
-    "tools/system/read.ts",
-    "tools/system/ls.ts",
-    "tools/system/grep.ts",
-    "tools/system/find.ts",
-    "tools/system/write.ts",
-    "tools/system/edit.ts",
-    "tools/system/bash.ts",
-    "tools/retrieve-memory/types.ts",
-  ];
-  const removedPaths = [
+import {
+  moduleSpecifiersForSources,
+  type ImportBoundarySource,
+} from "./import-boundary.js";
+
+const sourceRoot = resolve("agent/src");
+const testsRoot = resolve("agent/tests");
+
+function sourcesUnder(root: string): ImportBoundarySource[] {
+  return readdirSync(root, { recursive: true })
+    .filter((entry): entry is string =>
+      typeof entry === "string" && extname(entry) === ".ts"
+    )
+    .map((entry) => {
+      const fileName = join(root, entry);
+      return { fileName, source: readFileSync(fileName, "utf8") };
+    });
+}
+
+function localTypeScriptTarget(fileName: string, specifier: string): string | undefined {
+  if (!specifier.startsWith(".")) return undefined;
+  const target = resolve(dirname(fileName), specifier);
+  return target.endsWith(".js") ? `${target.slice(0, -3)}.ts` : target;
+}
+
+test("contains only the clean TypeScript production layout", () => {
+  const entries = readdirSync(sourceRoot, { withFileTypes: true })
+    .map((entry) => entry.name)
+    .sort();
+
+  assert.deepEqual(entries, [
+    "agent",
+    "application",
+    "capture",
     "main.ts",
-    "chat",
-    "activity",
-    "session",
-    "screen-observation",
-    "harness/memory/validation.ts",
-    "harness/memory/timeline",
-    "harness/memory/retrieval",
-    "harness/memory/database.ts",
-    "harness/memory/db/values.ts",
-    "harness/memory/activity/intake.ts",
-    "harness/memory/activity/projection.ts",
-    "harness/memory/activity",
-    "harness/memory/consolidate/jobs.ts",
-    "harness/memory/stage1",
-    "harness/memory/phase2",
-    "harness/memory/processor.ts",
-    "harness/memory/store.ts",
-    "harness/memory/lock.ts",
-    "contracts",
-    "plugins",
+    "runtime-config.ts",
+    "transport",
+  ]);
+});
+
+test("removes every explicitly forbidden legacy production path", () => {
+  const forbidden = [
+    "config.ts",
+    "loop.ts",
+    "model-token-count.ts",
+    "process.ts",
+    "protocol.ts",
+    "types.ts",
+    "harness",
+    "tools",
+    "extensions",
   ];
 
   assert.deepEqual(
-    expectedFiles.filter((path) => !existsSync(resolve(sourceRoot, path))),
+    forbidden.filter((entry) => existsSync(join(sourceRoot, entry))),
     [],
-    "missing files from the approved source layout",
-  );
-  assert.deepEqual(
-    removedPaths.filter((path) => existsSync(resolve(sourceRoot, path))),
-    [],
-    "removed source paths remain",
   );
 });
 
-test("keeps protocol and harness dependencies pointing inward", () => {
-  const sourceRoot = resolve("agent/src");
-  const protocol = readFileSync(resolve(sourceRoot, "protocol.ts"), "utf8");
-  const runner = readFileSync(
-    resolve(sourceRoot, "harness/session/runner.ts"),
-    "utf8",
-  );
-  const rootTypes = readFileSync(resolve(sourceRoot, "types.ts"), "utf8");
-  const observationExtension = readFileSync(
-    resolve(sourceRoot, "extensions/screen-observation/extension.ts"),
-    "utf8",
-  );
-  const chronicleProjection = readFileSync(
-    resolve(sourceRoot, "harness/memory/chronicle/model-projection.ts"),
-    "utf8",
-  );
-  const chronicleSummarizer = readFileSync(
-    resolve(sourceRoot, "harness/memory/chronicle/summarizer.ts"),
-    "utf8",
-  );
-  const turnMemoryProjection = readFileSync(
-    resolve(sourceRoot, "harness/memory/turn-memory/model-projection.ts"),
-    "utf8",
-  );
-  const memoryTypes = readFileSync(
-    resolve(sourceRoot, "harness/memory/types.ts"),
-    "utf8",
-  );
-  const retrievalTypes = readFileSync(
-    resolve(sourceRoot, "tools/retrieve-memory/types.ts"),
-    "utf8",
-  );
-  const contextRetrieval = readFileSync(
-    resolve(sourceRoot, "harness/memory/read/search.ts"),
-    "utf8",
-  );
+test("source and tests do not import the deleted backend or direct OpenAI package", () => {
+  const sources = [...sourcesUnder(sourceRoot), ...sourcesUnder(testsRoot)];
+  const specifiers = moduleSpecifiersForSources(sources);
+  const legacyProcessEntry = ["agent/dist", "process.js"].join("/");
+  const legacyAttemptCommand = ["record", "attempt"].join("_");
+  const forbiddenFiles = new Set([
+    "config.ts",
+    "loop.ts",
+    "model-token-count.ts",
+    "process.ts",
+    "protocol.ts",
+    "types.ts",
+  ].map((entry) => join(sourceRoot, entry)));
+  const violations: string[] = [];
 
-  assert.doesNotMatch(protocol, /harness\//);
-  assert.doesNotMatch(runner, /protocol\.js/);
-  assert.doesNotMatch(rootTypes, /export type AgentRun(?:Step|ToolResult)?\b/);
-  assert.doesNotMatch(observationExtension, /harness\/(?:session|memory)/);
-  assert.doesNotMatch(observationExtension, /AgentTool/);
-  assert.match(
-    observationExtension,
-    /export type ScreenObservationExtensionOptions\b/,
-  );
-  assert.match(chronicleProjection, /extensions\/screen-observation\/types\.js/);
-  assert.match(chronicleProjection, /export function projectChronicleObservation\b/);
-  assert.doesNotMatch(chronicleProjection, /dataBase64|turn-memory|session\//);
-  assert.doesNotMatch(chronicleSummarizer, /raw_memory|TurnMemory/);
-  assert.doesNotMatch(turnMemoryProjection, /screen-observation|Chronicle/);
-  assert.match(memoryTypes, /export type LongTermMemory\b/);
-  assert.match(
-    memoryTypes,
-    /evidenceSourceIds: \[string, \.\.\.string\[\]\]/,
-  );
-  assert.doesNotMatch(memoryTypes, /export type MemoryItem\b/);
-  assert.match(retrievalTypes, /export type RetrieveMemoryArguments\b/);
-  assert.doesNotMatch(retrievalTypes, /AgentTool/);
-  assert.match(contextRetrieval, /export class ContextRetrieval\b/);
-  assert.doesNotMatch(contextRetrieval, /AgentTool|tools\/|protocol\.js/);
+  for (const { fileName, source } of sources) {
+    if (
+      source.includes(legacyProcessEntry) ||
+      source.includes(legacyAttemptCommand)
+    ) {
+      violations.push(`${relative(resolve(), fileName)}: legacy runtime protocol`);
+    }
+    for (const specifier of specifiers.get(fileName) ?? []) {
+      const target = localTypeScriptTarget(fileName, specifier);
+      if (
+        specifier === "openai" ||
+        (target !== undefined && forbiddenFiles.has(target)) ||
+        (target !== undefined && target.startsWith(`${join(sourceRoot, "harness")}/`)) ||
+        (target !== undefined && target.startsWith(`${join(sourceRoot, "tools")}/`))
+      ) {
+        violations.push(`${relative(resolve(), fileName)}: ${specifier}`);
+      }
+    }
+  }
+
+  assert.deepEqual(violations, []);
+});
+
+test("keeps Agent, Capture, Application, and Transport boundaries strict", () => {
+  const sources = sourcesUnder(sourceRoot);
+  const specifiers = moduleSpecifiersForSources(sources);
+  const violations: string[] = [];
+
+  for (const { fileName } of sources) {
+    const path = relative(sourceRoot, fileName);
+    for (const specifier of specifiers.get(fileName) ?? []) {
+      if (
+        path.startsWith("agent/") &&
+        /(?:capture|application|transport)/.test(specifier)
+      ) {
+        violations.push(`${path}: ${specifier}`);
+      }
+      if (
+        path.startsWith("capture/") &&
+        (/(?:agent|application|transport)/.test(specifier) ||
+          specifier.includes("pi-agent-core") ||
+          specifier.includes("pi-ai"))
+      ) {
+        violations.push(`${path}: ${specifier}`);
+      }
+      if (
+        path.startsWith("application/") &&
+        !path.endsWith("api.ts") &&
+        specifier.startsWith("..") &&
+        specifier !== "../agent/api.js" &&
+        specifier !== "../capture/api.js"
+      ) {
+        violations.push(`${path}: ${specifier}`);
+      }
+      if (
+        path.startsWith("transport/") &&
+        !specifier.startsWith("node:") &&
+        specifier !== "../application/api.js" &&
+        !specifier.startsWith("./")
+      ) {
+        violations.push(`${path}: ${specifier}`);
+      }
+    }
+  }
+
+  assert.deepEqual(violations, []);
+});
+
+test("keeps the complete TypeScript production module graph acyclic", () => {
+  const sources = sourcesUnder(sourceRoot);
+  const sourceNames = new Set(sources.map(({ fileName }) => fileName));
+  const specifiers = moduleSpecifiersForSources(sources);
+  const graph = new Map(sources.map(({ fileName }) => [
+    fileName,
+    (specifiers.get(fileName) ?? [])
+      .map((specifier) => localTypeScriptTarget(fileName, specifier))
+      .filter((target): target is string =>
+        target !== undefined && sourceNames.has(target)
+      ),
+  ]));
+  const visiting = new Set<string>();
+  const visited = new Set<string>();
+  const visit = (fileName: string, path: string[]) => {
+    if (visiting.has(fileName)) {
+      const start = path.indexOf(fileName);
+      assert.fail(
+        `Production import cycle: ${[...path.slice(start), fileName]
+          .map((entry) => relative(sourceRoot, entry))
+          .join(" -> ")}`,
+      );
+    }
+    if (visited.has(fileName)) return;
+    visiting.add(fileName);
+    for (const dependency of graph.get(fileName) ?? []) {
+      visit(dependency, [...path, fileName]);
+    }
+    visiting.delete(fileName);
+    visited.add(fileName);
+  };
+  for (const { fileName } of sources) visit(fileName, []);
+});
+
+test("main is the sole concrete composition root", () => {
+  const sources = sourcesUnder(sourceRoot);
+  const specifiers = moduleSpecifiersForSources(sources);
+  const composers: string[] = [];
+
+  for (const { fileName } of sources) {
+    const imports = specifiers.get(fileName) ?? [];
+    if (
+      imports.some((item) => item.includes("agent/pi/")) &&
+      imports.some((item) => item.endsWith("capture/service.js")) &&
+      imports.some((item) => item.endsWith("application/runtime.js")) &&
+      imports.some((item) => item.endsWith("transport/jsonl-server.js"))
+    ) {
+      composers.push(relative(sourceRoot, fileName));
+    }
+  }
+
+  assert.deepEqual(composers, ["main.ts"]);
 });
 
 test("keeps screenshot implementation inside ObservationHelper", () => {
@@ -184,7 +225,7 @@ test("keeps screenshot implementation inside ObservationHelper", () => {
 
 test("shares one window identity key across observation scheduling and dedupe", () => {
   const service = readFileSync(
-    resolve("agent/src/extensions/screen-observation/service.ts"),
+    resolve("agent/src/capture/background-capture.ts"),
     "utf8",
   );
 

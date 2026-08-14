@@ -1,395 +1,295 @@
 # OpenScreen Agent
 
-The OpenScreen Agent is the local Node.js process behind the macOS app. It
-owns model and tool execution, Session persistence, context compaction, capture
-coordination, and the background Memory pipeline. See the
-[project README](../README.md) for product setup, requirements, privacy, and
-current limitations, and [AGENTS.md](../AGENTS.md) for development rules.
+The OpenScreen Agent is the local Node.js process behind the macOS app. It uses
+`@earendil-works/pi-agent-core` for Agent execution, JSONL Sessions,
+compaction, thinking state, and tool execution.
+`@earendil-works/pi-ai` supplies the provider and model registry.
+
+OpenScreen adds only product boundaries, local tools, Capture, and a thin
+Application Runtime. See the [project README](../README.md) for setup, privacy,
+and current product limitations, and [AGENTS.md](../AGENTS.md) for development
+rules.
 
 ## Source layout
 
 ```text
-src/
-├── process.ts                 JSONL transport, dispatch, and concurrency
-├── loop.ts                    model and tool execution loop
-├── types.ts                   shared Agent Loop and stream types
-├── config.ts                  runtime configuration loading and validation
-├── protocol.ts                wire request parsing and response serialization
-├── extensions/
-│   └── screen-observation/    hosted macOS observation capability
-├── tools/
-│   ├── registry.ts            immutable active-tool snapshot and capability prompt
-│   ├── executor.ts            tool-call execution and durable result events
-│   ├── system/                read, list, search, mutation, and Bash tools
-│   ├── shared/                validation, truncation, output, and mutation helpers
-│   └── retrieve-memory/       unregistered model-facing retrieval types
-└── harness/
-    ├── session/
-    │   ├── runner.ts          one chat command lifecycle
-    │   ├── context.ts         model context construction
-    │   ├── events.ts          persisted events, validation, and replay
-    │   ├── store.ts           session file operations
-    │   ├── lock.ts            per-session concurrency lock
-    │   └── types.ts           session domain types
-    ├── compaction/            retained-context compaction and summaries
-    └── memory/
-        ├── db/                SQLite connection, schema, attempts, helpers
-        ├── evidence.ts        structured/JPEG Observation evidence and cleanup
-        ├── chronicle/         passive screen activity organization
-        ├── turn-memory/       terminal Turn extraction and Session scan progress
-        ├── read/              bounded summary loading and context retrieval
-        ├── shared/            request, job, budget, and source-snapshot contracts
-        ├── consolidate/       global merge, publication, Git baseline
-        ├── worker/            independent role-specific Worker orchestration
-        └── types.ts           current long-term-memory contract
+agent/src/
+├── agent/
+│   ├── api.ts                    Capture-neutral Agent contract
+│   └── pi/
+│       ├── service.ts            AgentService facade and commands
+│       ├── session-runtime.ts    pi harness and JSONL Session ownership
+│       ├── prompt-runner.ts      prompt events, images, and cancellation
+│       ├── session-projection.ts linear active-branch transcript projection
+│       └── tools/                seven focused tools plus shared support
+├── capture/
+│   ├── api.ts                    Agent-neutral Capture contract
+│   ├── service.ts                native lifecycle and Capture composition
+│   ├── native/                    ObservationHelper client and wire contract
+│   ├── background-capture.ts     passive scheduling and coverage
+│   ├── coordinator.ts            Join / Reuse / New capture fusion
+│   ├── observation.ts            observation DTO and normalization
+│   ├── observation-resolver.ts   observation identity and persistence
+│   ├── accessibility-projector.ts bounded useful AX projection
+│   ├── context-projector.ts      neutral CapturedContext assembly
+│   ├── artifact.ts               Capture Artifact DTO ownership
+│   ├── artifact-store.ts         private local Capture persistence
+│   ├── diagnostics.ts            content-free operational events
+│   └── config.ts                 Capture configuration validation
+├── application/
+│   ├── api.ts                    product commands, events, and DTOs
+│   └── runtime.ts                thin Agent/Capture use-case composition
+├── transport/
+│   ├── jsonl-codec.ts            strict command/event JSON shapes
+│   └── jsonl-server.ts           correlated stdin/stdout lifecycle
+├── runtime-config.ts             strict config and optional `.env` loading
+└── main.ts                       sole concrete composition root
 ```
 
-`process.ts` communicates with the Swift process through JSON Lines on
-standard input and output. `protocol.ts` owns that wire format; harness code
-does not depend on it. Chat requests are mapped to session commands before
-entering `session/runner.ts`, which builds model context and invokes
-`loop.ts`. `process.ts` creates one immutable system-tool registry rooted at the
-launch directory and passes its snapshot into each Agent Run. Chronicle, Turn
-Memory, and Global Memory Consolidation each run in their own background Worker
-Thread and are not connected to that registry. A slow Chronicle request
-therefore cannot delay Turn Memory work.
+## Boundary rules
+
+The dependency direction is enforced by tests:
+
+```text
+Transport -> Application API
+Application Runtime -> Agent API + Capture API
+Agent pi adapter -> pi-agent-core + pi-ai
+Capture service -> ObservationHelper protocol
+main.ts -> all concrete implementations
+```
+
+- `agent/` has no dependency on Capture, Application, Transport, or Swift. A
+  prompt accepts only text, user images, and optional generic injected context.
+- `capture/` has no dependency on Agent, pi, Application, Transport, or Swift.
+  It owns helper lifecycle, scheduling, fusion, deduplication, projection,
+  persistence, and diagnostics.
+- `application/` imports only the public Agent and Capture APIs. It converts a
+  `CapturedContext` into generic `AgentInjectedContext`; neither lower-level
+  module knows about that mapping.
+- `transport/` imports only the Application API.
+- `main.ts` is the only module allowed to construct concrete Agent, Capture,
+  Application, and Transport implementations together.
+
+There is no Capture adapter inside the Agent and no Agent orchestrator inside
+Capture.
+
+## Request flow
+
+1. Swift sends one strict product command with a non-empty `requestId`.
+2. Transport validates the complete JSON shape and dispatches commands without
+   imposing global serialization.
+3. For a prompt, Application first requests Capture. Capture failure is reported
+   to stderr and the prompt continues without screen context. Cancellation while
+   Capture is running prevents the Agent call.
+4. Application maps a successful capture to hidden generic context. It does not
+   expose Capture concepts through the Agent API.
+5. `PiAgentService` loads user and injected images, runs `AgentHarness.prompt`,
+   and maps pi stream events to the product event stream.
+6. After a successful answer, Application asks pi whether the current context
+   needs automatic compaction.
+7. Each request emits exactly one terminal `completed` or `failed` event. An
+   output-stream failure stops the transport even while stdin remains open.
+
+One prompt may run per Session. Different Sessions and non-conflicting product
+commands can proceed concurrently. Prompt preparation and execution, compaction,
+Session rename, and thinking mutations for the same Session use one mutation
+queue, while abort remains able to interrupt a prompt
+directly. If abort arrives before the provider request, including while prompt
+images or pi turn state are being prepared, guards at pi's agent-start and
+provider-request hooks end the prompt without calling the provider. After the
+provider-request hook, pi's run controller propagates cancellation to the active
+provider stream. A UI listener failure cannot change Agent execution or
+persistence.
+
+## pi Agent capabilities
+
+`PiAgentService` delegates these behaviors to pi:
+
+- configured-model lookup and streaming;
+- the Agent Loop and model-directed tool calls;
+- reasoning levels from `off` through `max`, subject to model support;
+- append-only JSONL Session persistence and reopening;
+- current-branch context and thinking-state restoration; and
+- context accounting and compaction summaries.
+
+OpenScreen projects pi state into product DTOs for Swift. The transcript contains
+user, assistant, and tool messages; a custom message is included as context only
+when pi marks it for display. Only the current pi branch is projected; raw leaf
+bookkeeping and other internal Session entries are not exposed through the
+product protocol. The product has no tree navigation, historical-prompt editing,
+or persisted historical-image replay.
+
+Thinking changes are appended to the Session and restored when it is reopened.
+An explicit `off` thinking change therefore remains
+`off` after reopening even when configuration has a non-`off` initial level.
+The configured provider/model is the only model authority; historical model
+changes are ignored and the product protocol has no model enumeration or switch.
+All seven registered tools are always active; historical active-tool entries are
+ignored and the product has no tool-switching command or UI.
+
+Automatic compaction uses pi's `DEFAULT_COMPACTION_SETTINGS` and the configured
+model's context window. It checks the last valid assistant usage after each
+successful prompt. Manual compaction accepts optional instructions and is
+available independently of that threshold.
 
 ## System tools
 
-The production registry exposes seven tools:
+The production tool set contains seven pi `AgentTool` implementations:
 
 | Tool | Implemented behavior |
 | --- | --- |
-| `read` | Reads UTF-8 files with 1-indexed continuation and bounded output. |
-| `ls` | Lists directories alphabetically, including dotfiles. |
-| `grep` | Searches file content with the packaged ripgrep binary. |
-| `find` | Finds paths with ripgrep glob semantics and repository ignores. |
-| `write` | Creates or completely replaces a UTF-8 file and its parent directories. |
+| `read` | Reads UTF-8 text with a 1-indexed offset, optional line limit, and continuation notice. |
+| `ls` | Lists a directory alphabetically, including dotfiles and directory suffixes. |
+| `grep` | Searches file content with the packaged ripgrep binary and ignore-file semantics. |
+| `find` | Finds sorted paths with ripgrep glob and ignore-file semantics. |
+| `write` | Creates or completely replaces a UTF-8 file and parent directories. |
 | `edit` | Applies unique, non-overlapping exact-text replacements to one file. |
-| `bash` | Runs a shell command from the Agent launch directory and merges stdout and stderr. |
+| `bash` | Executes a shell command with merged, bounded stdout/stderr and an optional timeout. |
 
-Relative paths resolve from `process.cwd()` and absolute paths are accepted.
-The tools do not impose a filesystem sandbox or approval gate; they run with the
-permissions and environment of the Agent process. `write` and `edit` serialize
-mutations to the same canonical file, including symlink aliases. Independent
-file mutations may overlap.
+Relative paths resolve from the directory where the Agent was launched and
+absolute paths are accepted. The tools have no OpenScreen approval gate or
+filesystem sandbox; they run with the Agent process permissions and environment.
+`write`, `edit`, and `bash` declare sequential execution. pi schedules tools
+according to their execution mode.
 
-Visible text output is bounded. General tool output keeps at most 2,000 lines or
-50 KiB, `grep` additionally keeps at most 500 characters per matching line, and
-the read/search tools report how to continue or refine a truncated result.
-When Bash output is truncated, the complete byte stream is written under the
-data root's `tool-output/` directory and the visible result includes that path.
+General visible output uses pi's 2,000-line / 50 KiB bound. `grep` and `find`
+also bound captured search records to 40 KiB before product formatting and
+report when the result count or byte cap was reached. If pi truncates shell
+output, it may return a temporary full-output path in tool details.
 
-Sibling tool calls from one model step execute concurrently and their results
-are appended to model context in the model's original call order. Every call
-records started and finished events in the Agent Run. Validation errors,
-non-zero command exits, timeouts, and execution failures become model-visible
-failed tool results; cancellation stops the run instead of fabricating a tool
-result. The registry and active capability prompt are fixed when the Agent
-process starts.
+## Capture integration
 
-## Domain boundaries
+Capture owns a single `NativeCaptureService`. It starts `ObservationHelper`,
+tracks the latest confirmed external foreground target, schedules optional
+passive observations, and shares one coordinator between passive and explicit
+request capture:
 
-The Agent is the composition center, but each capability owns its domain:
+1. **Join** an in-flight physical capture for the same process/window target.
+2. **Reuse** a completed artifact while the configured reuse window remains
+   valid and the same target is current.
+3. **New** otherwise, with physical native captures serialized by the
+   coordinator.
 
-- A `Turn` is one user interaction and its user-visible outcome.
-- An `AgentRun` is one execution attempt for a Turn. It has an independent ID,
-  refers to its Turn through `turnId`, and owns model steps and tool results. A
-  Turn may have zero or more Agent Runs.
-- A conversation summary belongs only to retained model context. It is not an
-  activity record or long-term memory.
-- `ScreenObservationExtension` is a hosted extension. It owns native observation
-  lifecycle and the single capture coordinator shared by passive activity and
-  chat requests. It emits canonical `ScreenObservation` values and resolves
-  request screen context, but is not callable by the model and is not an
-  `AgentTool`.
-- A Chronicle activity is a factual description derived only from passive
-  Observation source IDs. Chronicle cannot create a raw Memory candidate.
-- A Turn Memory extraction belongs only to a closed batch of terminal Turns and
-  contains exactly `raw_memory`, `turn_summary`, and `turn_slug`.
-- `LongTermMemory` is current synthesized knowledge supported by immutable
-  Chronicle or Turn Memory source snapshots. Conflicting or removed evidence
-  rewrites the current block; the pipeline does not retain Memory versions.
-- `tools/retrieve-memory` defines model-facing retrieval argument and result
-  types, but it is not registered in the current production tool snapshot.
-  Memory owns the data being queried; the Tool boundary owns model-facing
-  arguments and results.
-- `ContextRetrieval` is the Memory-owned read boundary. It has no dependency on
-  the Agent Loop, wire protocol, model tool types, capture lifecycle, or UI.
+Capture writes accepted structured artifacts under `capture-artifacts/`, JPEGs
+under `screen-captures/`, and UTC-daily operational events under `diagnostics/`.
+Artifact directories use mode `0700` and files use mode `0600`. Diagnostics may
+contain identifiers, statuses, decisions, sizes, counts, and timings, but their
+sanitizer drops content fields such as prompts, titles, URLs, screenshot bytes,
+or Accessibility text.
 
-Runtime status remains local to its owner: session owns Turn and Run status,
-the observation extension owns helper health, memory owns processing outcomes,
-and `process.ts` keeps request queues and abort controllers private. There is
-no shared runtime snapshot or centralized contracts directory.
+`accessibility-projector.ts` bounds useful Accessibility content to 10,000 JSON
+characters; `context-projector.ts` assembles only a neutral `CapturedContext`.
+Application then
+serializes capture identity, time, status, application/window metadata, and the
+Accessibility projection into at most 12,000 text characters, with the JPEG as
+a generic injected image. The context is persisted by pi as a hidden custom
+message and omitted from the visible transcript; it remains present in the
+pi Session context and provider context.
+
+`capture.enabled` controls passive scheduling only. The helper still starts and
+explicit prompt capture remains available when it is `false`. Native details,
+permission behavior, and failure reasons are owned by the
+[ObservationHelper README](../Sources/ObservationHelper/README.md).
+
+## Product protocol
+
+Swift starts `node agent/dist/main.js` and exchanges newline-delimited JSON on
+stdin/stdout. Every line carries `requestId` for correlation.
+Swift rejects requests when the child is not running, drains its final stdout
+before reporting process exit, and closes stdin for a bounded graceful shutdown
+before terminating a child that does not exit.
+
+Commands:
+
+- `list_sessions`, `create_session`, `get_session`, `rename_session`;
+- `prompt` (text and optional new images) and `abort`;
+- `compact`; and
+- `set_thinking`.
+
+Events cover Session responses, streaming answer and reasoning deltas,
+tool start/update/finish, final answer and context usage, compaction,
+state updates, abort acknowledgement, and one terminal result. Unknown commands,
+unknown fields, and malformed values are rejected instead of being ignored.
+
+Transport contains no pi or Capture logic. Application contains no JSON parser
+or stream framing logic.
 
 ## Runtime configuration
 
-Non-secret defaults live in the repository-level
-[`config.json`](../config.json). `OPENAI_API_KEY` is required from the process
-environment or `.env`. `OPENAI_MODEL` and `OPENAI_BASE_URL` can override the
-provider fields. Context, Session, and Memory model-token settings support
-explicit environment-variable overrides, while [`.env.example`](../.env.example)
-intentionally shows only the three common provider variables. Scheduling,
-retry, and retention policy is configured in JSON so there is one visible
-source of truth.
+Non-secret startup configuration is read once from repository-level
+[`config.json`](../config.json). The root must contain exactly `agent` and
+`capture`; each nested object is also validated with an exact schema.
 
-Configuration is grouped by responsibility:
+`agent` contains:
 
-- `context`: model window, compaction threshold, retained context, output
-  budgets, and minimum recent turns.
-- `session`: streaming event flush size and interval.
-- `memory.worker`: background interval, per-tick work limit, lease, heartbeat,
-  retry delay, attempt limit, and expired-lease limit.
-- `memory.chronicle`: Chronicle model budgets, Observation windows, grace, and
-  sources per request.
-- `memory.turnMemory`: Turn extraction budgets and idle/hard-cap boundaries.
-- `memory.consolidation`: model budgets, selected-source cap, and success cooldown.
-- `memory.evidence`: structured/JPEG retention, abandoned-file grace, and disk cap.
-- `screenObservation.capture`: native request timeout and the strict completed-
-  capture reuse window (two seconds by default).
-- `screenObservation.diagnostics`: private capture-event retention (seven days
-  by default).
+| Field | Meaning |
+| --- | --- |
+| `provider` | The single pi provider identifier. |
+| `model` | The single default model identifier within that provider. |
+| `thinking` | Initial thinking level for a new Session with no explicit thinking change. |
 
-`screenObservation.enabled` gates continuous passive scheduling only. The
-Helper still starts so an explicit chat request can capture its frozen target.
+The checked-in selection is `minimax-cn/MiniMax-M3` with thinking `medium`.
+Unknown provider/model pairs fail startup.
 
-Configuration is loaded once when the Agent process starts. Invalid,
-incomplete, or internally inconsistent values stop startup with an explicit
-error. Chat requests use `reasoning.effort: "minimal"` for MiniMax M3 and
-`reasoning.summary: "auto"` for other configured Responses API-compatible
-models.
+`capture` contains:
 
-## Persistence
+- `enabled` for passive scheduling;
+- `scheduling` delays, gaps, caps, deduplication, and tick interval;
+- `requests` timeout and completed-artifact reuse window;
+- `diagnostics` retention;
+- `helperLifecycle` configure/shutdown timeouts; and
+- the native `activityMonitoring`, `accessibility`, `screenshot`,
+  `visualMonitoring`, and `windowSelection` groups sent to the helper.
 
-Sessions are stored as one append-only JSONL file per session. `store.ts`
-owns file I/O, while `events.ts` owns event validation and replay. The header
-contains session metadata; subsequent records represent turn lifecycle
-events, streamed text, Agent Run steps, tool results, and compaction.
+At startup, `main.ts` first loads an optional `.env` from `process.cwd()` using
+Node's environment-file parser. Values already present in the process environment
+are not overwritten. Secrets belong only in the environment or `.env`, never in
+`config.json`. The default pi `minimax-cn` provider uses
+`MINIMAX_CN_API_KEY` and its built-in `https://api.minimaxi.com/anthropic`
+endpoint.
 
-The Session JSONL remains the fact source for Turns. Replay exposes a separate
-recorded-Turn view containing completed, failed, cancelled, and interrupted
-Turns; interrupted Turns stay outside future chat context but are still valid
-Turn Memory evidence. The Memory Worker stores each Session file version and
-scan outcome in SQLite. Unchanged valid files are not reparsed every minute;
-unchanged invalid files are reported once and skipped across restarts. Startup
-still performs the one-time interrupted-Turn recovery pass.
+Supported OpenScreen process variables:
 
-Each captured Turn may also contain a `screenContext` value. Its reference
-binds `captureId`, optional persisted `observationId`, activity revision, capture status, exact
-process/window identity, and optional JPEG metadata. The matching bounded AX
-projection (at most 10,000 JSON characters) is stored inline. The JPEG is
-atomically written with mode `0600` to the data root's `screen-captures/`
-directory. Session parsing rejects the previous client-supplied
-`system_capture` image format; the Swift wire accepts only user uploads.
+| Variable | Meaning |
+| --- | --- |
+| `OPENSCREEN_CONFIG_PATH` | Override the application config file path. |
+| `OPENSCREEN_DATA_DIR` | Override the complete Node data root. |
+| `OPENSCREEN_HELPER_PATH` | Override the ObservationHelper executable. |
+| `OPENSCREEN_BUNDLE_ID` | Add a bundle identifier to Capture self-exclusion. |
 
-## Request capture fusion
+## Persistence and failure behavior
 
-The extension freezes only the latest confirmed external foreground target.
-Every activity signal increments its revision. Both consumers then use the
-same coordinator:
+The default data root is
+`~/Library/Application Support/OpenScreen/`. `OPENSCREEN_DATA_DIR` replaces that
+entire Node data root. Swift independently keeps managed PNG copies of uploaded
+or pasted images under the default
+`~/Library/Application Support/OpenScreen/user-attachments/` directory;
+`OPENSCREEN_DATA_DIR` does not relocate that Swift-owned directory.
 
-1. **Join** an in-flight physical capture when process ID and window ID are
-   identical, including across small same-window activity revision changes.
-2. **Reuse** the latest completed artifact only while it is no older than the
-   configured two-second window and the same target remains current.
-3. **New** otherwise, with physical native captures serialized through one
-   queue.
+pi stores Sessions below `sessions/`, grouped by an encoded launch working
+directory. Each Session is one append-only JSONL file containing its header,
+messages, tool results, thinking changes, compaction summaries, labels, and pi
+bookkeeping.
+pi serializes message content inline, so user and hidden injected images
+are stored as Base64 blocks in the Session JSONL. There is no legacy Session
+migration or compatibility reader. Swift removes an unused pending attachment
+copy when the user removes it and cleans up copies already written by a failed
+multi-image import. There is currently no product retention or deletion UI for
+Session files or attachment copies retained for submitted turns. Startup
+validates the configured provider/model, and every new or reopened Session uses
+that default instead of restoring historical model selection.
 
-Revision is retained for ordering, Observation identity, and diagnostics; it is
-not a target epoch. Only a confirmed process/window identity change invalidates
-an admitted capture. Signals without an exact window ID are recorded as
-ineligible and do not enter passive scheduling.
+Capture storage is independent of Session storage. Application passes only a
+neutral projected value between the two services; neither service reads the
+other's files.
 
-Observation resolution is also shared. The same capture/revision persists at
-most one Observation; a request can reference the Observation already created
-for passive activity. Ordinary activity references the last Observation only
-when both its AX business content and perceptual visual signature remain below
-the configured change threshold. A request artifact covers pending passive
-activity for the same window through its own frozen revision; newer revisions
-remain eligible for capture.
-
-The helper validates the frozen target before native work, captures Screenshot
-and AX against that window, and attests the target again afterward. The
-coordinator also rejects a mismatched result or a changed target identity.
-Screenshot-only and AX-only results remain valid partial successes. The model
-receives the JPEG and a compact canonical AX JSON text block when useful,
-followed by user uploads. Web/document roots are projected before non-content
-browser groups, shell-only AX subtrees are omitted, and each text node has a
-per-block cap so one value cannot crowd out the rest of the page. Screen content
-is explicitly marked as untrusted data. The full AX snapshot remains in the
-Observation, while the exact bounded model projection is persisted with the
-Turn.
-
-Operational events are appended asynchronously to private UTC-daily JSONL files
-under the data root's `diagnostics/` directory. Events correlate request,
-capture, Observation, target token, Join/Reuse/New decision, queue wait,
-preflight, screenshot, AX, attestation, persistence, and total timings. They
-include artifact status, dimensions, byte counts, node counts, and projected
-node/character counts, projection inclusion/omission reason, revision drift,
-native/model truncation, activity kind, planner decision, semantic/visual
-change outcome, request coverage counts, and AX failure reason, but never
-prompt text, window titles, URLs, screenshot bytes, or AX content. Logging
-failure never blocks capture or chat.
-
-## Chronicle and memory persistence
-
-The single memory root is
-`~/Library/Application Support/OpenScreen/memory/` by default:
-
-```text
-memory/
-├── memory.sqlite3
-├── evidence/
-│   ├── structured/
-│   └── screenshots/
-├── MEMORY.md
-├── memory_summary.md
-├── raw_memories.md
-├── rollout_summaries/
-└── .git/
-```
-
-`OPENSCREEN_DATA_DIR` keeps its existing meaning as the Session directory; its
-parent becomes the data root for memory. `OPENSCREEN_MEMORY_DIR` can override
-only the memory root. That override must point to a dedicated directory.
-OpenScreen marks the directory and creates its own nested Git repository; it
-refuses to adopt an enclosing repository or an existing user-owned repository.
-
-At the start of each chat Turn, the Agent reads only `memory_summary.md` from
-the Memory root and adds it before the conversation summary as developer context. The summary is
-limited to 2,500 locally estimated tokens and the complete request still passes
-through normal token budgeting. Missing or unreadable Memory does not block
-chat. `MEMORY.md`, `raw_memories.md`, rollout summaries, and Observation
-evidence are never automatically loaded into chat context. This is independent
-of the current Turn's explicitly fused screenshot/AX context described above.
-
-SQLite is the structured truth for Chronicle sources/windows/activities, Turn
-sources/batches/extractions, producer jobs, durable Session scan progress,
-model-attempt audits, Consolidation job
-state, ownership tokens, watermarks, publication recovery, evidence links, and
-the local context retrieval index.
-Connections enable foreign keys, WAL, a five-second busy timeout, and immediate
-write transactions. The directory is mode `0700` and the database is mode
-`0600`. The coordinator initializes the database before spawning the Chronicle,
-Turn Memory, and Consolidation Worker Threads; runtime processing is confined
-to those role-specific Workers.
-
-Observation evidence is atomically written before the source row: a mode-`0600`
-JSON file without Base64 and a separate mode-`0600` JPEG. Chronicle requests use
-only the compact SQLite projection and never load either sidecar. JPEGs expire
-after 24 hours; structured evidence expires after 24 hours on success or seven
-days on failure. Cleanup also removes abandoned files after one hour and evicts
-the oldest Observation groups when the default 2 GiB cap is exceeded. Turn
-evidence remains in Session JSONL instead of being duplicated.
-
-Producer timing and input rules are deterministic:
-
-- Observations use closed UTC one-minute windows, become eligible 15 seconds
-  after the window ends, and send no more than ten sources per request. A late
-  Observation increments the processing generation, fences any old worker, and
-  replaces the current result after a successful retry.
-- Terminal Turns from the same Session accumulate until 30 minutes of idle
-  time, a two-hour hard cap, or the effective Turn Memory context budget.
-  The prospective complete batch is measured before each Turn is added. The
-  Provider `/responses/input_tokens` result is used when valid; an unsupported,
-  failed, or impossible zero count falls back to the Codex-compatible local
-  estimate `ceil(UTF-8 request bytes / 4)`. If the new Turn would exceed the
-  budget, the existing batch is sealed without it and the Turn is measured
-  again in a new batch. Splits occur only between complete Turns. New Turns
-  arriving after a batch is sealed belong to the next batch.
-- Observation requests include only IDs, times, application/bundle/window,
-  URL, focused-element facts, and visible text. Turn requests include IDs,
-  times, code-owned status, user text, final assistant text, and compact tool
-  names/results. Neither request includes reasoning, streaming deltas, response
-  protocol fields, screenshots, full AX trees, or duplicate output items.
-- Every model generation is budgeted before it starts. Turn Memory uses at most
-  70% of the model window and also reserves the configured output budget. An
-  oversized single source becomes a persisted retryable error; it is not
-  discarded and does not produce a heuristic content fallback.
-
-Chronicle output must cover every input source exactly once and may not invent a
-source. Generated summaries are English; quoted evidence retains its source
-language. Chronicle describes what happened and cannot emit `raw_memory`.
-Durable memory is limited to
-explicit, stable user facts, preferences, long-term goals, project decisions,
-or lasting state. Greetings, model-capability questions, concept explanations,
-temporary errors, assistant-only suggestions, ordinary browsing, and one-off
-actions are skipped. A single
-passive screen observation cannot establish a preference, and an unsuccessful
-Turn cannot prove success.
-
-Consolidation follows the Codex global-consolidation pattern. SQLite contains
-one global job. A worker claims a one-hour lease and
-heartbeats every 90 seconds. Failures wait one hour and have three attempts.
-Lease expiry is tracked separately from model failure: after three consecutive
-abandoned leases the job waits one hour before another owner may try, without
-consuming the model-failure attempts. These are the defaults under
-`memory.worker`, and both producers use the same job settings. Worker startup and
-timer failures are written to stderr. After success, new input waits for the
-default six-hour cooldown from `memory.consolidation`. The claim snapshots an
-input watermark and copies the corresponding generic source rows and evidence links,
-so replacements arriving during a run remain pending for the next run without
-changing the active request.
-
-Before consolidation, Chronicle and Turn summaries are synchronized to
-`rollout_summaries/`; only Turn extractions with non-empty `raw_memory` are
-eligible for consolidation and only those values enter `raw_memories.md`.
-SQLite retains the previous successful selection, so the next immutable
-snapshot explicitly marks sources as added, retained, or removed. A one-commit disposable Git repository
-provides the real change set; SQLite, WAL, evidence, and publication staging
-are ignored. No Git change with valid artifacts completes without a model call.
-Otherwise Consolidation sends the complete diff plus current memory and applies exact
-token counting; an oversized request becomes a retryable error instead of
-silently truncating evidence. It validates a structured full-memory result and
-stages both output files. Final file replacement, Git baseline recreation, and
-SQLite completion run under one short cross-process write lock, preventing an
-expired worker from publishing after a replacement takes ownership. The summary
-always begins with `v1`. A publication journal and Git baseline recover a crash
-between the file and database updates. The baseline is a diff mechanism rather
-than memory history; after replacement, its reflog and unreachable objects are
-pruned so superseded memory is not retained as hidden Git history.
-
-Memory uses one physical root. Scopes are logical values: global, application,
-web domain, document, project, workflow, person, organization, and topic.
-Screen evidence can therefore produce application, site, document, person, or
-workflow memory without pretending everything is a coding project. Project
-scope requires explicit project evidence. Memory records learned context and
-does not replace fixed project rules in files such as `AGENTS.md` or `README.md`.
-
-## Context retrieval
-
-`harness/memory/read/search.ts` exposes two read-only entry points for other
-modules:
-
-- `search` performs bounded keyword retrieval with optional kind, time,
-  application, and result-limit filters.
-- `recent` returns the latest matching context without requiring keywords.
-
-Both return stable document IDs, timestamps, source IDs, generated content,
-application/window metadata when available, and a bounded excerpt. The five
-document kinds are raw `screen_observation`, generated
-`chronicle_activity`, `chronicle_summary`, `turn_summary`, and the current
-`long_term_memory` set. Turn summary details include the corresponding
-`raw_memory`; long-term-memory results include both consolidation source IDs and
-immutable evidence source IDs.
-
-Schema v5 adds a denormalized retrieval document table and an external-content
-SQLite FTS5 index. Database triggers keep Observation projections, Chronicle
-activities and summaries, and Turn Memory extractions synchronized with the
-index. Opening a schema-v4 database migrates it in one transaction and
-backfills all existing producer rows. Current long-term memory remains owned by
-`MEMORY.md`; the read layer hashes and parses that existing artifact, then
-updates its structured cache and FTS rows only when the published content
-changes. It does not add another memory artifact or modify Consolidation.
-
-Keyword queries use FTS5 `unicode61 remove_diacritics 2`, quoted searchable
-terms with implicit AND semantics, and BM25 ordering. The retrieval contract is
-English-only. It performs no language detection, translation, CJK tokenization,
-embedding search, or model reranking. Non-English source text remains stored,
-but retrieval quality for it is unspecified.
-
-Memory-tool registration, UI controls, additional secret redaction, heuristic
-fallback, and memory-version history remain outside this pipeline.
+Capture startup, request, or shutdown failures are diagnostics rather than
+Application-wide Agent failures. A prompt uses text and user images when Capture
+is unavailable. Provider, Session, validation, busy, not-found, and cancellation
+failures are mapped to stable product error codes. The JSONL transport treats
+output failure as fatal and waits for already-dispatched work at clean EOF.
+Application shutdown also waits for aborted executions to finish before Capture
+and the pi execution environment are cleaned up.
 
 ## Tests
 
@@ -399,5 +299,9 @@ From the repository root:
 npm run test:agent
 ```
 
-The command builds the production Agent, builds the test target, and runs the
-Node.js test suite.
+The command builds the production Agent, builds the test target, and runs all
+Node tests recursively. Changes to the Swift product protocol also require:
+
+```bash
+swift test
+```

@@ -282,15 +282,15 @@ final class ChatRenderingTests: XCTestCase {
         XCTAssertFalse(ChatTurnStatus.completed.showsInTranscript)
         XCTAssertTrue(ChatTurnStatus.generating.showsInTranscript)
         XCTAssertTrue(ChatTurnStatus.failed.showsInTranscript)
-        XCTAssertTrue(ChatTurnStatus.cancelled.showsInTranscript)
+        XCTAssertTrue(ChatTurnStatus.aborted.showsInTranscript)
         XCTAssertTrue(ChatTurnStatus.interrupted.showsInTranscript)
     }
 
     func testChatScrollTriggerTracksVisibleMessageChanges() {
-        let sessionID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
-        let turnID = UUID(uuidString: "00000000-0000-0000-0000-000000000002")!
+        let sessionID = "session-1"
+        let turnID = "turn-1"
         func trigger(
-            sessionID: UUID? = sessionID,
+            sessionID: String? = sessionID,
             reasoningLength: Int = 0,
             answerLength: Int = 0,
             status: ChatTurnStatus = .requesting,
@@ -315,7 +315,7 @@ final class ChatRenderingTests: XCTestCase {
         XCTAssertNotEqual(base, trigger(status: .completed))
         XCTAssertNotEqual(base, trigger(turnError: "Failed"))
         XCTAssertNotEqual(base, trigger(sessionError: "Couldn't load chats"))
-        XCTAssertNotEqual(base, trigger(sessionID: UUID()))
+        XCTAssertNotEqual(base, trigger(sessionID: "session-2"))
     }
 
     func testChatScrollPositionUsesBottomThreshold() {
@@ -364,8 +364,8 @@ final class ChatRenderingTests: XCTestCase {
         defer { window.orderOut(nil) }
         hostingView.layoutSubtreeIfNeeded()
 
-        let firstSessionID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
-        let firstTurnID = UUID(uuidString: "00000000-0000-0000-0000-000000000002")!
+        let firstSessionID = "session-1"
+        let firstTurnID = "turn-1"
         let complexMarkdown = String(repeating: "Long paragraph for scrolling.\n\n", count: 80) + """
         # Details
 
@@ -380,56 +380,77 @@ final class ChatRenderingTests: XCTestCase {
         {"second": 2}
         ```
         """
-        viewModel.apply(.init(
+        viewModel.apply(productSessionView(
             id: firstSessionID,
-            title: "Long response",
-            createdAt: "2026-07-20T00:00:00.000Z",
-            updatedAt: "2026-07-20T00:00:00.000Z",
-            turns: [.init(
-                id: firstTurnID,
-                user: "Show details",
-                assistant: complexMarkdown,
-                reasoning: "Checking the current screen",
-                status: .generating,
-                error: nil
-            )]
+            name: "Long response",
+            messages: [
+                .init(id: firstTurnID, role: .user, timestamp: "1", text: "Show details"),
+                .init(
+                    id: "answer-1",
+                    role: .assistant,
+                    timestamp: "2",
+                    text: complexMarkdown,
+                    reasoning: "Checking the current screen"
+                ),
+            ]
         ))
         let scrollView = try await waitForChatScrollView(in: hostingView)
         try await waitUntilAtBottom(scrollView, layoutRoot: hostingView)
 
         viewModel.apply(
-            .init(sessionID: firstSessionID, type: .answerDelta, delta: "\nStreaming tail"),
+            .init(
+                requestId: firstTurnID,
+                type: .answerDelta,
+                sessionId: firstSessionID,
+                delta: "\nStreaming tail"
+            ),
             sessionID: firstSessionID,
             turnID: firstTurnID
         )
         try await waitUntilAtBottom(scrollView, layoutRoot: hostingView)
 
-        let secondSessionID = UUID(uuidString: "00000000-0000-0000-0000-000000000003")!
-        let failedTurnID = UUID(uuidString: "00000000-0000-0000-0000-000000000004")!
-        viewModel.apply(.init(
+        let secondSessionID = "session-2"
+        let failedTurnID = "turn-2"
+        viewModel.apply(productSessionView(
             id: secondSessionID,
-            title: "Failed retry",
-            createdAt: "2026-07-20T00:00:00.000Z",
-            updatedAt: "2026-07-20T00:00:00.000Z",
-            turns: [.init(
-                id: failedTurnID,
-                user: "Retry this",
-                assistant: String(repeating: "Previous output\n\n", count: 80),
-                reasoning: nil,
-                status: .failed,
-                error: "Request failed. Please retry."
-            )]
+            name: "Failed retry",
+            messages: [
+                .init(id: failedTurnID, role: .user, timestamp: "1", text: "Retry this"),
+                .init(
+                    id: "answer-2",
+                    role: .assistant,
+                    timestamp: "2",
+                    text: String(repeating: "Previous output\n\n", count: 80)
+                ),
+            ]
         ))
+        viewModel.markTurnFailed(
+            sessionID: secondSessionID,
+            turnID: failedTurnID,
+            message: "Request failed. Please retry."
+        )
         try await waitUntilAtBottom(scrollView, layoutRoot: hostingView)
 
         viewModel.retry(turnID: failedTurnID)
         XCTAssertEqual(viewModel.draft, "Retry this")
         viewModel.startTurn(
             sessionID: secondSessionID,
-            id: UUID(),
+            id: UUID().uuidString,
             question: viewModel.draft
         )
         try await waitUntilAtBottom(scrollView, layoutRoot: hostingView)
+    }
+
+    private func productSessionView(
+        id: String,
+        name: String,
+        messages: [ProductTranscriptMessage]
+    ) -> ProductSessionView {
+        ProductSessionView(
+            session: .init(id: id, createdAt: "2026-07-20T00:00:00.000Z", name: name),
+            messages: messages,
+            state: .init(thinking: .off)
+        )
     }
 
     func testChatViewUsesNativeMaterial() {
@@ -453,6 +474,13 @@ final class ChatRenderingTests: XCTestCase {
         XCTAssertEqual(materialView?.alphaValue ?? 0, 0.68, accuracy: 0.01)
     }
 
+    func testChatViewExposesOnlyAgentControlsInTheHeader() {
+        XCTAssertEqual(
+            ChatAgentControlsPresentation.headerAccessibilityLabels,
+            ["Agent controls"]
+        )
+    }
+
     func testScreenshotPreviewStatePresentsAndDismissesImage() {
         let attachment = ChatImageAttachment(
             id: "preview",
@@ -466,6 +494,20 @@ final class ChatRenderingTests: XCTestCase {
 
         state.dismiss()
         XCTAssertNil(state.url)
+    }
+
+    func testReopenedTurnShowsImageCountWithoutInventingAttachmentPaths() {
+        let turn = ChatTurn(
+            id: "historical",
+            question: "Compare these",
+            historicalImageCount: 3,
+            reasoning: "",
+            answer: "Compared",
+            status: .completed
+        )
+
+        XCTAssertEqual(ChatTurnPresentation.historicalImageLabel(for: turn), "3 images")
+        XCTAssertTrue(turn.attachments.isEmpty)
     }
 
     func testChatViewUsesNativeOverlayScrollers() async throws {
