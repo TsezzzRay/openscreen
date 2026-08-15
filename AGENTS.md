@@ -1,3 +1,21 @@
+# Project North Star
+
+This section defines the project's highest-priority product direction. When a
+rule elsewhere in this document conflicts with this direction, the Project
+North Star takes precedence.
+
+Build a macOS desktop Agent application that provides a full interface for
+conversations, task management, history, and configuration, with an
+always-on-top overlay invoked through a global keyboard shortcut as a
+lightweight, immediate alternative entry point. The Agent uses current and
+recent screen activity, foreground application state, Agent interaction
+history, task execution records, and user instructions to understand the
+working context. The Agent can explain interfaces, organize information, review
+work progress, and provide operational guidance. It can also click, type,
+search, invoke applications, execute Bash commands, and complete multi-step
+tasks across applications. It provides continuous, real-time, context-aware
+assistance while minimizing interruptions to the user's existing workflow.
+
 # Development Rules
 
 ## Conversational Style
