@@ -39,7 +39,7 @@ protocol AgentProductClient: Sendable {
 }
 
 actor AgentClient: AgentProductClient {
-    static let launchArguments = ["node", "agent/dist/main.js"]
+    static let launchArguments = ["node", "runtime/dist/main.js"]
 
     struct DecodedLine {
         let requestID: String

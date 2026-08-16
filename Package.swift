@@ -7,16 +7,9 @@ let package = Package(
     platforms: [.macOS(.v15)],
     targets: [
         .executableTarget(name: "OpenScreen"),
-        .executableTarget(
-            name: "ObservationHelper",
-            exclude: ["README.md"]
-        ),
         .testTarget(
             name: "OpenScreenTests",
-            dependencies: [
-                "OpenScreen",
-                "ObservationHelper",
-            ]
+            dependencies: ["OpenScreen"]
         ),
     ]
 )

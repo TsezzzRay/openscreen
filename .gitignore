@@ -3,8 +3,8 @@
 .swiftpm/
 .superpowers/
 node_modules/
-agent/dist/
-agent/dist-test/
+runtime/dist/
+runtime/dist-test/
 .env
 .vscode/
 .worktrees/

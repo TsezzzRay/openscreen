@@ -102,7 +102,7 @@ final class AgentProtocolTests: XCTestCase {
     }
 
     func testAgentClientEntrypointIsProductMain() {
-        XCTAssertEqual(AgentClient.launchArguments, ["node", "agent/dist/main.js"])
+        XCTAssertEqual(AgentClient.launchArguments, ["node", "runtime/dist/main.js"])
     }
 
     func testProductProtocolAndUIHaveNoModelEnumerationOrSwitching() throws {

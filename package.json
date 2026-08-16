@@ -6,15 +6,15 @@
     "node": ">=22.19.0"
   },
   "scripts": {
-    "build:agent": "node -e \"require('node:fs').rmSync('agent/dist', { recursive: true, force: true })\" && tsc -p agent/tsconfig.json",
-    "build:agent-tests": "node -e \"require('node:fs').rmSync('agent/dist-test', { recursive: true, force: true })\" && tsc -p agent/tsconfig.test.json",
-    "build:helper": "swift build --product ObservationHelper",
-    "test:agent": "npm run build:agent && npm run build:agent-tests && node --test \"agent/dist-test/tests/**/*.test.js\"",
-    "dev": "npm run build:agent && npm run build:helper && OPENSCREEN_HELPER_PATH=\"$PWD/.build/debug/ObservationHelper\" swift run OpenScreen"
+    "build:runtime": "node -e \"require('node:fs').rmSync('runtime/dist', { recursive: true, force: true })\" && tsc -p runtime/tsconfig.json",
+    "build:runtime-tests": "node -e \"require('node:fs').rmSync('runtime/dist-test', { recursive: true, force: true })\" && tsc -p runtime/tsconfig.test.json",
+    "test:runtime": "npm run build:runtime && npm run build:runtime-tests && node --test \"runtime/dist-test/tests/**/*.test.js\"",
+    "dev": "npm run build:runtime && swift run OpenScreen"
   },
   "dependencies": {
     "@earendil-works/pi-agent-core": "0.80.7",
     "@earendil-works/pi-ai": "0.80.7",
+    "@screenpipe/sdk": "0.4.3",
     "@vscode/ripgrep": "^1.18.0",
     "typebox": "1.1.38"
   },

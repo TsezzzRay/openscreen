@@ -48,9 +48,8 @@ Run commands from the repository or current worktree root.
 
 ```bash
 npm ci                    # Install Node.js dependencies
-npm run build:agent       # Build the production Node Agent
-npm run build:agent-tests # Build the Node Agent test target
-npm run build:helper      # Build ObservationHelper
+npm run build:runtime     # Build the production Node Agent
+npm run build:runtime-tests # Build the Node Agent test target
 swift build               # Build all Swift targets
 npm run dev               # Build and launch the development application
 ```
@@ -59,15 +58,17 @@ npm run dev               # Build and launch the development application
 provider. Run it only when the user requests a live launch or when manual
 verification requires it.
 
+`@screenpipe/sdk` is pinned to an exact version because the runtime reads its
+SQLite `frames` table directly. Review the upstream schema by hand before
+changing that version.
+
 ## Testing
 
-- After TypeScript Agent changes, run `npm run test:agent`.
-- After Swift application or ObservationHelper changes, run `swift test`.
+- After TypeScript Agent changes, run `npm run test:runtime`.
+- After Swift application changes, run `swift test`.
 - After a Swift/Node protocol change, run both full suites.
 - If a test file changes, run the affected test while iterating and then its
   full relevant suite before completion.
-- For a focused native-helper check, use
-  `swift test --filter ObservationHelperTests`.
 - Documentation-only changes do not require code tests, but all documented
   commands, paths, anchors, and behavior must be checked against the current
   branch.
@@ -110,8 +111,7 @@ Documentation ownership:
 | --- | --- |
 | Product capability, requirements, startup, privacy summary, or top-level process relationship | `README.md` |
 | Development commands, testing, Git/worktree practice, or documentation policy | `AGENTS.md` |
-| Node Agent, Agent Loop, tools, Session, Memory, configuration, or persistence behavior | `agent/README.md` |
-| Native signals, exact-window capture, permissions, Helper protocol, or native failure behavior | `Sources/ObservationHelper/README.md` |
+| Node Agent, Agent Loop, tools, Session, Memory, configuration, or persistence behavior | `runtime/README.md` |
 
 Documentation consistency is enforced through review and these Agent rules, not
 through a documentation CI job.
