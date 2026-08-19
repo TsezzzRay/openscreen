@@ -44,12 +44,14 @@ test("accepts only actual Memory file ranges read during the current Turn", asyn
   t.after(() => rm(root, { recursive: true, force: true }));
   await mkdir(join(root, "rollout_summaries"));
   await writeFile(join(root, "MEMORY.md"), "# Memory\nline two\nline three\n");
+  await writeFile(join(root, "ACTIVITY.md"), "# Activity\nline two\n");
   await writeFile(
     join(root, "rollout_summaries", "turn-a.md"),
     "rollout_id: turn:a\n# Turn A\nresult\n",
   );
   const tracker = new MemoryFileAccessTracker(root, "/workspace");
   tracker.recordFileRange(join(root, "MEMORY.md"), 1, 2);
+  tracker.recordFileRange(join(root, "ACTIVITY.md"), 1, 1);
   tracker.recordFileRange(join(root, "rollout_summaries", "turn-a.md"), 1, 3);
 
   const citation = await validateMemoryCitation(JSON.stringify({
@@ -59,6 +61,11 @@ test("accepts only actual Memory file ranges read during the current Turn", asyn
       lineEnd: 2,
       note: "Task group registry",
     }, {
+      path: "ACTIVITY.md",
+      lineStart: 1,
+      lineEnd: 1,
+      note: "Screen activity observation",
+    }, {
       path: "rollout_summaries/turn-a.md",
       lineStart: 2,
       lineEnd: 3,
@@ -67,7 +74,7 @@ test("accepts only actual Memory file ranges read during the current Turn", asyn
     rolloutIds: ["turn:a"],
   }), root, tracker);
 
-  assert.equal(citation.entries.length, 2);
+  assert.equal(citation.entries.length, 3);
   assert.deepEqual(citation.rolloutIds, ["turn:a"]);
   await assert.rejects(validateMemoryCitation(JSON.stringify({
     entries: [{

@@ -36,7 +36,7 @@ export function screenpipeSourceId(
   generationId: string,
   frameId: string,
 ): string {
-  return `screenpipe-frame:${JSON.stringify([generationId, frameId])}`;
+  return `screenpipe-frame:${generationId}:${frameId}`;
 }
 
 export function screenpipeMonitorKey(snapshotPath: string): string | undefined {

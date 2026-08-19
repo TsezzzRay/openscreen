@@ -31,16 +31,7 @@ const memoryFixture = {
   enabled: true,
   worker: {
     intervalMilliseconds: 5_000,
-    maxJobsPerTick: 2,
-    leaseMilliseconds: 60_000,
-    retryDelayMilliseconds: 30_000,
-    maxAttempts: 3,
-  },
-  turnMemory: {
-    maxInputTokens: 32_000,
-    maxOutputTokens: 4_000,
-    idleMilliseconds: 1_800_000,
-    hardCapMilliseconds: 7_200_000,
+    maxChronicleWindowsPerTick: 2,
   },
   chronicle: {
     windowMilliseconds: 60_000,
@@ -49,15 +40,12 @@ const memoryFixture = {
     maxInputTokens: 8_000,
     maxOutputTokens: 2_000,
   },
-  consolidation: {
-    maxChangedSourcesPerRun: 128,
-    maxInputTokens: 64_000,
-    maxOutputTokens: 8_000,
-    summaryMaxTokens: 2_500,
-    cooldownMilliseconds: 21_600_000,
+  observationalMemory: {
+    interactive: { messageTokens: 6_000, observationTokens: 8_000 },
+    screenActivity: { messageTokens: 2_000, observationTokens: 3_000 },
   },
   retention: {
-    chronicleUnreferencedMilliseconds: 7_776_000_000,
+    chronicleRolloutMaxAgeMilliseconds: 7_776_000_000,
   },
 };
 
@@ -124,7 +112,7 @@ test("loads only clean pi selection, Capture, and Memory configuration", (t) => 
   assert.equal(config.agent.model, "claude-sonnet-4-5");
   assert.equal(config.agent.thinking, "medium");
   assert.equal(config.capture.screenpipe.retention.maxBytes, 10_737_418_240);
-  assert.equal(config.memory.turnMemory.idleMilliseconds, 1_800_000);
+  assert.equal(config.memory.observationalMemory.interactive.observationTokens, 8_000);
   assert.equal("apiKey" in config, false);
   assert.equal("baseURL" in config, false);
   assert.equal("session" in config, false);
@@ -140,7 +128,7 @@ test("rejects legacy, secret-bearing, and malformed clean configuration", (t) =>
       ...cleanConfig(),
       memory: {
         ...memoryFixture,
-        worker: { ...memoryFixture.worker, maxAttempts: 0 },
+        worker: { ...memoryFixture.worker, maxChronicleWindowsPerTick: 0 },
       },
     },
     { ...cleanConfig(), context: {} },

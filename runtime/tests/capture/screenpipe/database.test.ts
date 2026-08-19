@@ -158,7 +158,7 @@ test("reads the newest valid frame for each monitor with numeric stable ordering
 
   assert.deepEqual(source.latestFrames(), [
     {
-      sourceId: 'screenpipe-frame:["generation-7","12"]',
+      sourceId: 'screenpipe-frame:generation-7:12',
       generationId: "generation-7",
       frameId: "12",
       monitorKey: "1",
@@ -173,7 +173,7 @@ test("reads the newest valid frame for each monitor with numeric stable ordering
       visibleText: "newest by id",
     },
     {
-      sourceId: 'screenpipe-frame:["generation-7","23"]',
+      sourceId: 'screenpipe-frame:generation-7:23',
       generationId: "generation-7",
       frameId: "23",
       monitorKey: "2",
@@ -185,7 +185,7 @@ test("reads the newest valid frame for each monitor with numeric stable ordering
       visibleText: "second display",
     },
     {
-      sourceId: 'screenpipe-frame:["generation-7","31"]',
+      sourceId: 'screenpipe-frame:generation-7:31',
       generationId: "generation-7",
       frameId: "31",
       monitorKey: "3",
@@ -197,7 +197,7 @@ test("reads the newest valid frame for each monitor with numeric stable ordering
       visibleText: "third",
     },
     {
-      sourceId: 'screenpipe-frame:["generation-7","41"]',
+      sourceId: 'screenpipe-frame:generation-7:41',
       generationId: "generation-7",
       frameId: "41",
       monitorKey: "10",
@@ -284,7 +284,7 @@ test("drops rows with invalid frame fields and preserves nullable fields", async
   const frames = source.latestFrames();
   assert.deepEqual(frames, [
     {
-      sourceId: 'screenpipe-frame:["generation-nullable","56"]',
+      sourceId: 'screenpipe-frame:generation-nullable:56',
       generationId: "generation-nullable",
       frameId: "56",
       monitorKey: "4",
@@ -294,7 +294,7 @@ test("drops rows with invalid frame fields and preserves nullable fields", async
       imagePath: "/missing/1770000000015_m4.jpg",
     },
     {
-      sourceId: 'screenpipe-frame:["generation-nullable","57"]',
+      sourceId: 'screenpipe-frame:generation-nullable:57',
       generationId: "generation-nullable",
       frameId: "57",
       monitorKey: "5",
@@ -513,7 +513,7 @@ test("keeps the incremental cursor independent from latest-frame refresh state",
   assert.deepEqual(source.framesAfter(0, 1), {
     frames: [
       {
-        sourceId: 'screenpipe-frame:["generation-independent-cursor","11"]',
+        sourceId: 'screenpipe-frame:generation-independent-cursor:11',
         generationId: "generation-independent-cursor",
         frameId: "11",
         monitorKey: "1",

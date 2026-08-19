@@ -7,16 +7,7 @@ const valid = {
   enabled: true,
   worker: {
     intervalMilliseconds: 5_000,
-    maxJobsPerTick: 2,
-    leaseMilliseconds: 60_000,
-    retryDelayMilliseconds: 30_000,
-    maxAttempts: 3,
-  },
-  turnMemory: {
-    maxInputTokens: 32_000,
-    maxOutputTokens: 4_000,
-    idleMilliseconds: 1_800_000,
-    hardCapMilliseconds: 7_200_000,
+    maxChronicleWindowsPerTick: 2,
   },
   chronicle: {
     windowMilliseconds: 60_000,
@@ -25,19 +16,16 @@ const valid = {
     maxInputTokens: 8_000,
     maxOutputTokens: 2_000,
   },
-  consolidation: {
-    maxChangedSourcesPerRun: 128,
-    maxInputTokens: 64_000,
-    maxOutputTokens: 8_000,
-    summaryMaxTokens: 2_500,
-    cooldownMilliseconds: 21_600_000,
+  observationalMemory: {
+    interactive: { messageTokens: 6_000, observationTokens: 8_000 },
+    screenActivity: { messageTokens: 2_000, observationTokens: 3_000 },
   },
   retention: {
-    chronicleUnreferencedMilliseconds: 7_776_000_000,
+    chronicleRolloutMaxAgeMilliseconds: 7_776_000_000,
   },
 };
 
-test("parses only the strict Memory worker, Turn, consolidation, and retention policy", () => {
+test("parses the strict Memory worker, chronicle, observational memory, and retention policy", () => {
   assert.deepEqual(parseMemoryConfig(valid), valid);
 });
 
@@ -45,33 +33,27 @@ test("rejects unknown, non-positive, and inconsistent Memory values", () => {
   for (const input of [
     { ...valid, extra: true },
     { ...valid, enabled: "yes" },
-    { ...valid, worker: { ...valid.worker, maxAttempts: 0 } },
+    { ...valid, worker: { ...valid.worker, maxChronicleWindowsPerTick: 0 } },
     {
       ...valid,
-      turnMemory: {
-        ...valid.turnMemory,
-        maxOutputTokens: valid.turnMemory.maxInputTokens,
+      chronicle: { ...valid.chronicle, maxOutputTokens: valid.chronicle.maxInputTokens },
+    },
+    {
+      ...valid,
+      chronicle: { ...valid.chronicle, maxSourcesPerRequest: 11 },
+    },
+    {
+      ...valid,
+      observationalMemory: {
+        ...valid.observationalMemory,
+        interactive: { messageTokens: 9_000, observationTokens: 8_000 },
       },
     },
     {
       ...valid,
-      turnMemory: {
-        ...valid.turnMemory,
-        hardCapMilliseconds: valid.turnMemory.idleMilliseconds,
-      },
-    },
-    {
-      ...valid,
-      consolidation: {
-        ...valid.consolidation,
-        maxOutputTokens: valid.consolidation.maxInputTokens,
-      },
-    },
-    {
-      ...valid,
-      consolidation: {
-        ...valid.consolidation,
-        summaryMaxTokens: valid.consolidation.maxOutputTokens + 1,
+      observationalMemory: {
+        ...valid.observationalMemory,
+        interactive: { messageTokens: 6_000 },
       },
     },
   ]) {

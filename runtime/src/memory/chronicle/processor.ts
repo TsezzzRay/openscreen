@@ -1,12 +1,14 @@
 import {
   hasApi,
+  type Context,
   type Model,
   type Models,
   type SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
 
-import { projectPendingMemoryArtifacts } from "../artifact-projector.js";
-import type { ChronicleRepository } from "./repository.js";
+import type { WritePathDeps } from "../mastra/write-path.js";
+import { recordChronicleWindow } from "../mastra/write-path.js";
+import { chronicleObservationText, renderChronicleRollout } from "./rollout.js";
 import {
   buildChronicleContext,
   CHRONICLE_SUMMARY_TOOL_NAME,
@@ -17,6 +19,12 @@ import type {
   ChronicleFrameProjection,
   ChronicleSummary,
 } from "./types.js";
+
+// Keeps the forced-tool-call + recursive-split model logic from the original
+// implementation unchanged. Drops claim/lease/heartbeat/complete — there is
+// no job queue anymore, just a single background loop calling this directly
+// for each due window (see cursors.ts's dueChronicleWindows /
+// loadChronicleWindowFrames / markChronicleWindowSummarized).
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -43,91 +51,82 @@ function nextChunk(
   throw new Error("A single Chronicle source exceeds the input budget");
 }
 
-export async function processNextChronicle({
-  repository,
+export interface ChronicleWindowPolicy {
+  maxSourcesPerRequest: number;
+  maxInputTokens: number;
+  maxOutputTokens: number;
+}
+
+// A rejected tool call (bad shape, duplicate/missing source, etc.) previously
+// failed the whole batch immediately, burning one of the window's limited
+// MAX_SUMMARIZE_ATTEMPTS retries on what is often a one-off structured-output
+// slip. Real diagnostics.log data showed MiniMax tripping every validation
+// layer (top-level shape, empty activities, per-activity shape, duplicate
+// source coverage) within a single hour under load. Giving the model the
+// rejection reason and a chance to resubmit — mirroring the existing
+// stopReason:"length" repair path — fixes most of these in place instead of
+// losing the batch. The schema itself stays exact; only the number of chances
+// to satisfy it goes up.
+const MAX_REPAIR_ATTEMPTS = 2;
+
+export async function summarizeChronicleWindow({
+  windowId,
+  frames,
+  policy,
   models,
   model,
-  workerId,
-  memoryRoot,
+  writePath,
   now = Date.now,
   signal,
 }: {
-  repository: ChronicleRepository;
+  windowId: string;
+  frames: readonly ChronicleFrameProjection[];
+  policy: ChronicleWindowPolicy;
   models: Models;
   model: Model<string>;
-  workerId: string;
-  memoryRoot: string;
+  writePath: WritePathDeps;
   now?: () => number;
   signal?: AbortSignal;
 }): Promise<
-  | { status: "no_job" }
-  | {
-      status: "processed";
-      jobKey: string;
-      requestCount: number;
-      projectedArtifacts: number;
-      projectionError?: string;
-    }
-  | { status: "failed"; jobKey: string; error: string }
+  | { status: "summarized"; requestCount: number }
+  | { status: "failed"; error: string }
 > {
-  const claim = repository.claimNext({ workerId, now: now() });
-  if (claim === null) return { status: "no_job" };
-  const controller = new AbortController();
-  const abort = () => controller.abort(signal?.reason);
-  if (signal?.aborted) abort();
-  else signal?.addEventListener("abort", abort, { once: true });
-  const heartbeat = setInterval(() => {
-    if (!repository.heartbeat(claim, now())) {
-      controller.abort("Chronicle ownership lost");
-    }
-  }, Math.max(1_000, Math.floor(repository.policy.worker.leaseMilliseconds / 3)));
-  heartbeat.unref();
   let requestCount = 0;
   try {
-    const pending = repository.loadClaimSources(claim);
     const outputs: ChronicleSummary[] = [];
-    const summarize = async (
-      frames: readonly ChronicleFrameProjection[],
+    const request = async (
+      context: Context,
+      batch: readonly ChronicleFrameProjection[],
+      repairsLeft: number,
     ): Promise<ChronicleSummary[]> => {
-      if (controller.signal.aborted) {
-        throw controller.signal.reason ?? new Error("Chronicle aborted");
-      }
-      if (!repository.heartbeat(claim, now())) {
-        throw new Error("Chronicle ownership lost");
-      }
-      const context = buildChronicleContext(frames);
+      if (signal?.aborted) throw signal.reason ?? new Error("Chronicle aborted");
       const options = {
-        maxTokens: repository.policy.maxOutputTokens,
+        maxTokens: policy.maxOutputTokens,
         temperature: 0,
         cacheRetention: "none",
-        signal: controller.signal,
+        signal,
       } satisfies SimpleStreamOptions;
       const response = hasApi(model, "anthropic-messages")
         ? await models.complete(model, context, {
             ...options,
-            toolChoice: {
-              type: "tool",
-              name: CHRONICLE_SUMMARY_TOOL_NAME,
-            },
+            toolChoice: { type: "tool", name: CHRONICLE_SUMMARY_TOOL_NAME },
           })
         : await models.completeSimple(model, context, options);
       requestCount += 1;
-      if (controller.signal.aborted) {
-        throw controller.signal.reason ?? new Error("Chronicle aborted");
-      }
+      if (signal?.aborted) throw signal.reason ?? new Error("Chronicle aborted");
       if (response.stopReason === "error" || response.stopReason === "aborted") {
         throw new Error(
           response.errorMessage ?? `Chronicle model stopped with ${response.stopReason}`,
         );
       }
       if (response.stopReason === "length") {
-        if (frames.length === 1) {
+        if (batch.length === 1) {
           throw new Error("Chronicle model reached its output limit for one source");
         }
-        const split = Math.ceil(frames.length / 2);
+        const split = Math.ceil(batch.length / 2);
         return [
-          ...await summarize(frames.slice(0, split)),
-          ...await summarize(frames.slice(split)),
+          ...await summarize(batch.slice(0, split)),
+          ...await summarize(batch.slice(split)),
         ];
       }
       if (response.stopReason !== "toolUse") {
@@ -143,52 +142,57 @@ export async function processNextChronicle({
       if (toolCall.name !== CHRONICLE_SUMMARY_TOOL_NAME) {
         throw new Error(`Unexpected Chronicle tool ${toolCall.name}`);
       }
-      return [parseChronicleSummary(
-        toolCall.arguments,
-        new Set(frames.map(({ sourceId }) => sourceId)),
-      )];
+      try {
+        return [parseChronicleSummary(
+          toolCall.arguments,
+          new Set(batch.map(({ sourceId }) => sourceId)),
+        )];
+      } catch (error) {
+        if (repairsLeft <= 0) throw error;
+        const repairContext: Context = {
+          ...context,
+          messages: [
+            ...context.messages,
+            response,
+            {
+              role: "toolResult",
+              toolCallId: toolCall.id,
+              toolName: toolCall.name,
+              content: [{
+                type: "text",
+                text: `Rejected: ${message(error)}. Re-submit ${CHRONICLE_SUMMARY_TOOL_NAME} with corrected arguments covering the same sources.`,
+              }],
+              isError: true,
+              timestamp: now(),
+            },
+          ],
+        };
+        return request(repairContext, batch, repairsLeft - 1);
+      }
     };
+    const summarize = (
+      batch: readonly ChronicleFrameProjection[],
+    ): Promise<ChronicleSummary[]> =>
+      request(buildChronicleContext(batch), batch, MAX_REPAIR_ATTEMPTS);
     let offset = 0;
-    while (offset < pending.length) {
-      const frames = nextChunk(
-        pending,
-        offset,
-        repository.policy.maxSourcesPerRequest,
-        repository.policy.maxInputTokens,
-      );
-      outputs.push(...await summarize(frames));
-      offset += frames.length;
+    while (offset < frames.length) {
+      const batch = nextChunk(frames, offset, policy.maxSourcesPerRequest, policy.maxInputTokens);
+      outputs.push(...await summarize(batch));
+      offset += batch.length;
     }
-    if (controller.signal.aborted) {
-      throw controller.signal.reason ?? new Error("Chronicle aborted");
-    }
-    repository.complete(claim, combine(outputs), now());
+    const summary = combine(outputs);
+    const rollout = renderChronicleRollout({
+      jobKey: windowId,
+      sources: frames,
+      summary,
+      generatedAt: now(),
+    });
+    await recordChronicleWindow(writePath, chronicleObservationText(summary), {
+      relativePath: rollout.relativePath,
+      content: rollout.content,
+    });
+    return { status: "summarized", requestCount };
   } catch (error) {
-    const errorMessage = message(error);
-    repository.fail(claim, errorMessage, now());
-    return { status: "failed", jobKey: claim.jobKey, error: errorMessage };
-  } finally {
-    clearInterval(heartbeat);
-    signal?.removeEventListener("abort", abort);
-  }
-  try {
-    return {
-      status: "processed",
-      jobKey: claim.jobKey,
-      requestCount,
-      projectedArtifacts: await projectPendingMemoryArtifacts(
-        memoryRoot,
-        repository,
-        now(),
-      ),
-    };
-  } catch (error) {
-    return {
-      status: "processed",
-      jobKey: claim.jobKey,
-      requestCount,
-      projectedArtifacts: 0,
-      projectionError: message(error),
-    };
+    return { status: "failed", error: message(error) };
   }
 }

@@ -58,9 +58,8 @@ npm run dev               # Build and launch the development application
 provider. Run it only when the user requests a live launch or when manual
 verification requires it.
 
-`@screenpipe/sdk` is pinned to an exact version because the runtime reads its
-SQLite `frames` table directly. Review the upstream schema by hand before
-changing that version.
+Review the upstream schema by hand before changing the pinned `@screenpipe/sdk`
+version; see [Capture integration](runtime/README.md#capture-integration).
 
 ## Testing
 

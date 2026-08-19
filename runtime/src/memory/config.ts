@@ -2,16 +2,7 @@ export interface MemoryConfig {
   enabled: boolean;
   worker: {
     intervalMilliseconds: number;
-    maxJobsPerTick: number;
-    leaseMilliseconds: number;
-    retryDelayMilliseconds: number;
-    maxAttempts: number;
-  };
-  turnMemory: {
-    maxInputTokens: number;
-    maxOutputTokens: number;
-    idleMilliseconds: number;
-    hardCapMilliseconds: number;
+    maxChronicleWindowsPerTick: number;
   };
   chronicle: {
     windowMilliseconds: number;
@@ -20,15 +11,12 @@ export interface MemoryConfig {
     maxInputTokens: number;
     maxOutputTokens: number;
   };
-  consolidation: {
-    maxChangedSourcesPerRun: number;
-    maxInputTokens: number;
-    maxOutputTokens: number;
-    summaryMaxTokens: number;
-    cooldownMilliseconds: number;
+  observationalMemory: {
+    interactive: { messageTokens: number; observationTokens: number };
+    screenActivity: { messageTokens: number; observationTokens: number };
   };
   retention: {
-    chronicleUnreferencedMilliseconds: number;
+    chronicleRolloutMaxAgeMilliseconds: number;
   };
 }
 
@@ -68,32 +56,26 @@ function nonNegativeInteger(value: unknown): number {
   return value;
 }
 
+function observationalMemoryPolicy(value: unknown): {
+  messageTokens: number;
+  observationTokens: number;
+} {
+  const policy = record(value);
+  exact(policy, ["messageTokens", "observationTokens"]);
+  const result = {
+    messageTokens: positiveInteger(policy.messageTokens),
+    observationTokens: positiveInteger(policy.observationTokens),
+  };
+  if (result.messageTokens > result.observationTokens) invalid();
+  return result;
+}
+
 export function parseMemoryConfig(value: unknown): MemoryConfig {
   const root = record(value);
-  exact(root, [
-    "enabled",
-    "worker",
-    "turnMemory",
-    "chronicle",
-    "consolidation",
-    "retention",
-  ]);
+  exact(root, ["enabled", "worker", "chronicle", "observationalMemory", "retention"]);
   if (typeof root.enabled !== "boolean") invalid();
   const worker = record(root.worker);
-  exact(worker, [
-    "intervalMilliseconds",
-    "maxJobsPerTick",
-    "leaseMilliseconds",
-    "retryDelayMilliseconds",
-    "maxAttempts",
-  ]);
-  const turnMemory = record(root.turnMemory);
-  exact(turnMemory, [
-    "maxInputTokens",
-    "maxOutputTokens",
-    "idleMilliseconds",
-    "hardCapMilliseconds",
-  ]);
+  exact(worker, ["intervalMilliseconds", "maxChronicleWindowsPerTick"]);
   const chronicle = record(root.chronicle);
   exact(chronicle, [
     "windowMilliseconds",
@@ -102,30 +84,15 @@ export function parseMemoryConfig(value: unknown): MemoryConfig {
     "maxInputTokens",
     "maxOutputTokens",
   ]);
-  const consolidation = record(root.consolidation);
-  exact(consolidation, [
-    "maxChangedSourcesPerRun",
-    "maxInputTokens",
-    "maxOutputTokens",
-    "summaryMaxTokens",
-    "cooldownMilliseconds",
-  ]);
+  const observationalMemory = record(root.observationalMemory);
+  exact(observationalMemory, ["interactive", "screenActivity"]);
   const retention = record(root.retention);
-  exact(retention, ["chronicleUnreferencedMilliseconds"]);
+  exact(retention, ["chronicleRolloutMaxAgeMilliseconds"]);
   const result: MemoryConfig = {
     enabled: root.enabled,
     worker: {
       intervalMilliseconds: positiveInteger(worker.intervalMilliseconds),
-      maxJobsPerTick: positiveInteger(worker.maxJobsPerTick),
-      leaseMilliseconds: positiveInteger(worker.leaseMilliseconds),
-      retryDelayMilliseconds: positiveInteger(worker.retryDelayMilliseconds),
-      maxAttempts: positiveInteger(worker.maxAttempts),
-    },
-    turnMemory: {
-      maxInputTokens: positiveInteger(turnMemory.maxInputTokens),
-      maxOutputTokens: positiveInteger(turnMemory.maxOutputTokens),
-      idleMilliseconds: positiveInteger(turnMemory.idleMilliseconds),
-      hardCapMilliseconds: positiveInteger(turnMemory.hardCapMilliseconds),
+      maxChronicleWindowsPerTick: positiveInteger(worker.maxChronicleWindowsPerTick),
     },
     chronicle: {
       windowMilliseconds: positiveInteger(chronicle.windowMilliseconds),
@@ -134,28 +101,19 @@ export function parseMemoryConfig(value: unknown): MemoryConfig {
       maxInputTokens: positiveInteger(chronicle.maxInputTokens),
       maxOutputTokens: positiveInteger(chronicle.maxOutputTokens),
     },
-    consolidation: {
-      maxChangedSourcesPerRun: positiveInteger(
-        consolidation.maxChangedSourcesPerRun,
-      ),
-      maxInputTokens: positiveInteger(consolidation.maxInputTokens),
-      maxOutputTokens: positiveInteger(consolidation.maxOutputTokens),
-      summaryMaxTokens: positiveInteger(consolidation.summaryMaxTokens),
-      cooldownMilliseconds: positiveInteger(consolidation.cooldownMilliseconds),
+    observationalMemory: {
+      interactive: observationalMemoryPolicy(observationalMemory.interactive),
+      screenActivity: observationalMemoryPolicy(observationalMemory.screenActivity),
     },
     retention: {
-      chronicleUnreferencedMilliseconds: positiveInteger(
-        retention.chronicleUnreferencedMilliseconds,
+      chronicleRolloutMaxAgeMilliseconds: positiveInteger(
+        retention.chronicleRolloutMaxAgeMilliseconds,
       ),
     },
   };
   if (
-    result.turnMemory.maxOutputTokens >= result.turnMemory.maxInputTokens ||
-    result.turnMemory.hardCapMilliseconds <= result.turnMemory.idleMilliseconds ||
     result.chronicle.maxSourcesPerRequest > 10 ||
-    result.chronicle.maxOutputTokens >= result.chronicle.maxInputTokens ||
-    result.consolidation.maxOutputTokens >= result.consolidation.maxInputTokens ||
-    result.consolidation.summaryMaxTokens > result.consolidation.maxOutputTokens
+    result.chronicle.maxOutputTokens >= result.chronicle.maxInputTokens
   ) {
     invalid();
   }

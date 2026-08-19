@@ -21,16 +21,7 @@
     "enabled": true,
     "worker": {
       "intervalMilliseconds": 5000,
-      "maxJobsPerTick": 2,
-      "leaseMilliseconds": 60000,
-      "retryDelayMilliseconds": 30000,
-      "maxAttempts": 3
-    },
-    "turnMemory": {
-      "maxInputTokens": 32000,
-      "maxOutputTokens": 4000,
-      "idleMilliseconds": 1800000,
-      "hardCapMilliseconds": 7200000
+      "maxChronicleWindowsPerTick": 2
     },
     "chronicle": {
       "windowMilliseconds": 60000,
@@ -39,15 +30,18 @@
       "maxInputTokens": 8000,
       "maxOutputTokens": 2000
     },
-    "consolidation": {
-      "maxChangedSourcesPerRun": 128,
-      "maxInputTokens": 64000,
-      "maxOutputTokens": 8000,
-      "summaryMaxTokens": 2500,
-      "cooldownMilliseconds": 21600000
+    "observationalMemory": {
+      "interactive": {
+        "messageTokens": 6000,
+        "observationTokens": 8000
+      },
+      "screenActivity": {
+        "messageTokens": 2000,
+        "observationTokens": 3000
+      }
     },
     "retention": {
-      "chronicleUnreferencedMilliseconds": 7776000000
+      "chronicleRolloutMaxAgeMilliseconds": 7776000000
     }
   }
 }

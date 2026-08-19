@@ -6,19 +6,46 @@ import test from "node:test";
 
 import { JsonlSessionRepo } from "@earendil-works/pi-agent-core";
 import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
-import {
-  createModels,
-  fauxAssistantMessage,
-  fauxProvider,
-  fauxToolCall,
-} from "@earendil-works/pi-ai";
+import { fauxAssistantMessage, type Model, type Models } from "@earendil-works/pi-ai";
 
-import {
-  MemoryRuntime,
-} from "../../../src/memory/runtime.js";
+import type { MemoryConfig } from "../../../src/memory/config.js";
+import { MemoryRuntime } from "../../../src/memory/runtime.js";
 
-test("scans Pi Sessions, processes due batches, and recovers pending artifacts", async (t) => {
-  const root = await mkdtemp(join(tmpdir(), "openscreen-memory-runtime-"));
+// Never actually sent; huge observationalMemory thresholds below mean no
+// Observer/Reflector call is ever triggered in this test, and nothing here
+// exercises Chronicle's model call either — Turn Memory no longer has its
+// own extraction model call at all (that judgment now belongs to Mastra's
+// Observer, exercised separately/manually in the migration's Stage A spike).
+process.env.MINIMAX_CN_API_KEY ??= "test-key";
+const HUGE = 100_000_000;
+
+function runtimeConfig(): MemoryConfig {
+  return {
+    enabled: true,
+    worker: { intervalMilliseconds: 60_000, maxChronicleWindowsPerTick: 2 },
+    chronicle: {
+      windowMilliseconds: 60_000,
+      graceMilliseconds: 15_000,
+      maxSourcesPerRequest: 10,
+      maxInputTokens: 8_000,
+      maxOutputTokens: 2_000,
+    },
+    observationalMemory: {
+      interactive: { messageTokens: HUGE, observationTokens: HUGE },
+      screenActivity: { messageTokens: HUGE, observationTokens: HUGE },
+    },
+    retention: { chronicleRolloutMaxAgeMilliseconds: 90 * 24 * 60 * 60_000 },
+  };
+}
+
+const unusedModels = {
+  complete: async () => assert.fail("no Chronicle model call expected in this test"),
+  completeSimple: async () => assert.fail("no Chronicle model call expected in this test"),
+} as unknown as Models;
+const unusedModel = { id: "unused" } as Model<string>;
+
+test("scans a completed Turn, writes it to Mastra, and archives its rollout — no extraction model call", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "openscreen-turn-memory-runtime-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const env = new NodeExecutionEnv({ cwd: root });
   t.after(() => env.cleanup());
@@ -30,72 +57,21 @@ test("scans Pi Sessions, processes due batches, and recovers pending artifacts",
     content: "记住使用 node:sqlite",
     timestamp: Date.parse("2026-08-15T10:00:00.000Z"),
   });
-  const answer = fauxAssistantMessage("Implemented.");
+  const answer = fauxAssistantMessage("Implemented with node:sqlite.");
   answer.timestamp = Date.parse("2026-08-15T10:00:01.000Z");
   await session.appendMessage(answer);
 
-  const faux = fauxProvider({
-    provider: `faux-${Math.random().toString(36).slice(2)}`,
-    models: [{ id: "memory-model" }],
-  });
-  faux.setResponses([fauxAssistantMessage(fauxToolCall("submit_turn_memory", {
-    raw_memory: "The project uses node:sqlite.",
-    turn_summary: "The user requested node:sqlite and it was implemented.",
-    turn_slug: "use-node-sqlite",
-    tasks: [{
-      title: "Use node:sqlite",
-      outcome: "success",
-      preference_signals: [],
-      reusable_knowledge: ["Use node:sqlite for the Memory database."],
-      failure_lessons: [],
-      references: [],
-      keywords: ["node:sqlite", "记住"],
-    }],
-  }), { stopReason: "toolUse" })]);
-  const models = createModels();
-  models.setProvider(faux.provider);
-  let now = Date.now();
   const memoryRoot = join(root, "memory");
+  let now = Date.now();
   const runtime = new MemoryRuntime({
     cwd: root,
     sessionsRoot,
     memoryRoot,
     env,
-    models,
-    model: faux.getModel(),
-    config: {
-      enabled: true,
-      worker: {
-        intervalMilliseconds: 60_000,
-        maxJobsPerTick: 2,
-        leaseMilliseconds: 10_000,
-        retryDelayMilliseconds: 1_000,
-        maxAttempts: 3,
-      },
-      turnMemory: {
-        maxInputTokens: 8_000,
-        maxOutputTokens: 2_000,
-        idleMilliseconds: 10,
-        hardCapMilliseconds: 1_000,
-      },
-      chronicle: {
-        windowMilliseconds: 60_000,
-        graceMilliseconds: 15_000,
-        maxSourcesPerRequest: 10,
-        maxInputTokens: 8_000,
-        maxOutputTokens: 2_000,
-      },
-      consolidation: {
-        maxChangedSourcesPerRun: 10,
-        maxInputTokens: 16_000,
-        maxOutputTokens: 4_000,
-        summaryMaxTokens: 1_000,
-        cooldownMilliseconds: 1_000,
-      },
-      retention: {
-        chronicleUnreferencedMilliseconds: 90 * 24 * 60 * 60 * 1_000,
-      },
-    },
+    models: unusedModels,
+    model: unusedModel,
+    agent: { provider: "minimax-cn", model: "test-model" },
+    config: runtimeConfig(),
     gitBranch: async () => "feature/memory",
     now: () => now,
   });
@@ -105,63 +81,74 @@ test("scans Pi Sessions, processes due batches, and recovers pending artifacts",
   now += 11;
   await runtime.runOnce();
 
-  assert.match(
-    await readFile(join(memoryRoot, "raw_memories.md"), "utf8"),
-    /node:sqlite/,
-  );
-  assert.equal(faux.state.callCount, 1);
-  const [rollout] = await readdir(join(memoryRoot, "rollout_summaries"));
-  assert.ok(rollout);
-  faux.setResponses([fauxAssistantMessage(fauxToolCall("submit_memory_consolidation", {
-    task_groups: [{
-      key: "openscreen-memory",
-      title: "OpenScreen Memory",
-      scope: { type: "project", key: "openscreen", label: "OpenScreen" },
-      applies_to: [root],
-      tasks: [{
-        key: "use-node-sqlite",
-        title: "Use node:sqlite",
-        outcome: "success",
-        rollout_summary_files: [`rollout_summaries/${rollout}`],
-        keywords: ["node:sqlite", "记住"],
-        user_preferences: [],
-        reusable_knowledge: ["Use node:sqlite for Memory."],
-        failure_lessons: [],
-      }],
-    }],
-    summary: {
-      user_profile: [],
-      user_preferences: [],
-      general_tips: ["Search Memory before changing persistence."],
-      recent_memory: [{
-        date: "2026-08-15",
-        scope: "project:openscreen",
-        text: "OpenScreen Memory uses node:sqlite.",
-        task_group_keys: ["openscreen-memory"],
-      }],
-      older_memory_topics: [],
-    },
-  }), { stopReason: "toolUse" })]);
-  await runtime.runOnce();
-  assert.match(
-    await readFile(join(memoryRoot, "MEMORY.md"), "utf8"),
-    /node:sqlite/,
-  );
-  assert.equal(faux.state.callCount, 2);
-  await runtime.stop();
+  const [rolloutName] = await readdir(join(memoryRoot, "rollout_summaries"));
+  assert.ok(rolloutName?.startsWith("turn-"));
+  const rollout = await readFile(join(memoryRoot, "rollout_summaries", rolloutName!), "utf8");
+  assert.match(rollout, /记住使用 node:sqlite/);
+  assert.match(rollout, /Implemented with node:sqlite\./);
+  assert.match(rollout, /rollout_id: turn:/);
 
+  // Huge thresholds mean observe() no-ops, so MEMORY.md exists but is empty —
+  // proves the write actually reached Mastra (a thread was created and a
+  // message saved) and the projector ran without erroring.
+  assert.equal(await readFile(join(memoryRoot, "MEMORY.md"), "utf8"), "");
+
+  await runtime.stop();
   const restarted = new MemoryRuntime({
     cwd: root,
     sessionsRoot,
     memoryRoot,
     env,
-    models,
-    model: faux.getModel(),
+    models: unusedModels,
+    model: unusedModel,
+    agent: { provider: "minimax-cn", model: "test-model" },
     config: runtime.config,
     gitBranch: async () => "feature/memory",
     now: () => now,
   });
   t.after(() => restarted.stop());
   await restarted.start();
-  assert.equal(faux.state.callCount, 2);
+  await restarted.runOnce();
+  // Same Turn, already scanned: no new rollout file.
+  const rolloutsAfterRestart = await readdir(join(memoryRoot, "rollout_summaries"));
+  assert.equal(rolloutsAfterRestart.length, 1);
+});
+
+test("notifySession scans on demand without waiting for the interval tick", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "openscreen-turn-memory-runtime-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const env = new NodeExecutionEnv({ cwd: root });
+  t.after(() => env.cleanup());
+  const sessionsRoot = join(root, "sessions");
+  const repo = new JsonlSessionRepo({ fs: env, sessionsRoot });
+  const session = await repo.create({ cwd: root });
+  const metadata = await session.getMetadata();
+  await session.appendMessage({
+    role: "user",
+    content: "Ping",
+    timestamp: Date.parse("2026-08-15T10:00:00.000Z"),
+  });
+  const answer = fauxAssistantMessage("Pong.");
+  answer.timestamp = Date.parse("2026-08-15T10:00:01.000Z");
+  await session.appendMessage(answer);
+
+  const memoryRoot = join(root, "memory");
+  const runtime = new MemoryRuntime({
+    cwd: root,
+    sessionsRoot,
+    memoryRoot,
+    env,
+    models: unusedModels,
+    model: unusedModel,
+    agent: { provider: "minimax-cn", model: "test-model" },
+    config: runtimeConfig(),
+    gitBranch: async () => "feature/memory",
+    now: () => Date.now(),
+  });
+  t.after(() => runtime.stop());
+  await runtime.start();
+
+  await runtime.notifySession(metadata.id);
+  const [rolloutName] = await readdir(join(memoryRoot, "rollout_summaries"));
+  assert.ok(rolloutName?.startsWith("turn-"));
 });

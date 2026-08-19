@@ -28,7 +28,7 @@ function frame(
   generationId = "generation-1",
 ): ScreenFrameSource {
   return {
-    sourceId: `screenpipe-frame:["${generationId}","${monitorKey}"]`,
+    sourceId: `screenpipe-frame:${generationId}:${monitorKey}`,
     generationId,
     frameId: monitorKey,
     monitorKey,
@@ -72,8 +72,8 @@ test("reads one atomic snapshot and returns ordered canonical JPEG bytes", async
     await realpath(one),
   ]);
   assert.deepEqual((context.images ?? []).map((image) => image.sourceId), [
-    'screenpipe-frame:["generation-1","2"]',
-    'screenpipe-frame:["generation-1","1"]',
+    'screenpipe-frame:generation-1:2',
+    'screenpipe-frame:generation-1:1',
   ]);
   assert.deepEqual((context.images ?? []).map((image) => Buffer.from(image.data)), [
     twoBytes,
@@ -187,10 +187,10 @@ test("omits a frame whose generation differs from the atomic snapshot", async (t
   const context = await service.capture("request-1");
 
   assert.deepEqual(context.frames.map((item) => item.sourceId), [
-    'screenpipe-frame:["generation-1","2"]',
+    'screenpipe-frame:generation-1:2',
   ]);
   assert.deepEqual((context.images ?? []).map((image) => image.sourceId), [
-    'screenpipe-frame:["generation-1","2"]',
+    'screenpipe-frame:generation-1:2',
   ]);
 });
 

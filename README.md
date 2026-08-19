@@ -3,18 +3,16 @@
 OpenScreen is an early-stage, open-source macOS assistant that can answer
 questions about the window you are using and work with local files and commands.
 
-Press `Option + Space` to open the floating panel. When a prompt is sent,
-OpenScreen reads the latest valid Screenpipe frame for every display and gives
-the screenshots plus bounded frame metadata and visible text to the local Agent
-as generic injected context. Capture failure does not prevent a text-only Agent
-run.
+Press `Option + Space` to open the floating panel. Each prompt is answered with
+the current screen attached, and a capture failure still leaves a working
+text-only Agent run.
 
 The Agent runtime is built on `@earendil-works/pi-agent-core` and
 `@earendil-works/pi-ai`. OpenScreen does not maintain a second Agent Loop,
 Session implementation, model adapter, or compaction engine.
 
-> OpenScreen is under active development. It has model-directed local system
-> tools, but no dedicated click, type, scroll, or application-control tools.
+> OpenScreen is under active development. See
+> [Current limitations](#current-limitations) before relying on it.
 
 ## Current capabilities
 
@@ -28,13 +26,13 @@ Session implementation, model adapter, or compaction engine.
 - Per-Session thinking-level controls; all seven local tools are always enabled.
 - Automatic pi context compaction near the configured model's context limit, plus
   manual compaction from the Swift UI.
-- Background Turn Memory extraction from completed pi Session branches into
-  locally searchable rollout summaries.
+- Background Turn recording from completed pi Session branches into locally
+  searchable rollout summaries.
 - Background Chronicle extraction from Screenpipe frame streams into locally
   searchable activity rollouts with exact source-frame provenance.
-- Codex-style consolidated `MEMORY.md` and bounded `memory_summary.md`, with
-  progressive retrieval through the existing file tools and audited hidden
-  citations.
+- Continuously compressed `MEMORY.md` and `ACTIVITY.md` observation logs, both
+  injected each Turn, with detail retrieval through the existing file tools and
+  audited hidden citations.
 - Markdown responses, screenshot previews, and PNG/JPEG user attachments.
 - Concurrent work in different Sessions; each Session accepts one prompt at a
   time.
@@ -72,82 +70,51 @@ Grant the requested macOS permissions, press `Option + Space`, enter a question,
 and press `Enter`. Use `Shift + Enter` for a newline and `Control + C` in the
 launching terminal to stop the development process.
 
-The `agent` group in `config.json` selects the single pi provider, model, and
-thinking level. The `capture` group contains Screenpipe enablement, exclusions,
-and retention. The `memory` group controls Chronicle windows, Turn extraction,
-global consolidation, leases, retries, token limits, cooldown, and rollout
-retention. Configuration is strict: unknown or missing fields stop startup. See
-the
+Startup behavior is configured in `config.json`, which is strict: unknown or
+missing fields stop startup. Every field is documented in the
 [Agent configuration reference](runtime/README.md#runtime-configuration).
 
 ## Privacy and security
 
-OpenScreen excludes its own window title and does not configure Screenpipe to
-record keystrokes or clipboard content. A prompt may send the following data to
-the configured provider:
+Everything except model requests stays on the local machine. OpenScreen excludes
+its own window title and does not configure Screenpipe to record keystrokes or
+clipboard content.
 
-- prompt text and user-selected images;
-- the latest valid screenshot from each display and bounded Screenpipe frame
-  metadata or visible text;
-- model responses, reasoning context, and tool calls/results required by the
-  continuing Agent run;
-- pi-generated compaction summaries;
-- background Turn Memory requests containing terminal user text, final
-  assistant text, bounded tool results, terminal status, exact source frame IDs,
-  and the latest relevant compaction summary;
-- background Chronicle requests containing bounded frame metadata and visible
-  text, but no screenshot bytes, Base64, or image path; and
-- background global Memory requests containing current Memory artifacts, their
-  Git diff, and active or changed Turn rollout evidence in the consolidation
-  snapshot.
-
-When Screenpipe is enabled, it persists event-driven frame rows and JPEGs even
-without a prompt. Chronicle sends bounded text projections of those frames to
-the configured model; it never sends the JPEG bytes. Turn Memory does not
-include reasoning blocks, image Base64, streaming deltas, or raw hidden screen
-text. Memory generation uses the
-configured Agent model and is enabled by default; set `memory.enabled` to
-`false` to disable its scans, consolidation, prompt injection, and model
-requests.
+A prompt sends its text and images, the latest screenshot from each display,
+bounded frame metadata and visible text, and the responses, reasoning, and tool
+results the continuing run needs. Background Memory adds bounded *text* requests
+only — Chronicle summarization and the observation processors never send
+screenshot bytes, Base64, or image paths. Memory is enabled by default; set
+`memory.enabled` to `false` to stop every background scan, observation, prompt
+injection, and model request. The exact payloads are documented in
+[Chronicle Memory](runtime/README.md#chronicle-memory) and
+[Observational Memory](runtime/README.md#observational-memory).
 
 By default, local application data is stored under
 `~/Library/Application Support/OpenScreen/`:
 
 ```text
 sessions/              pi JSONL Sessions, grouped by working directory
-memory/                SQLite truth, Turn rollouts, current Memory, and private Git baseline
+memory/                Mastra observation store, cursors, rollouts, and projected Memory files
 screenpipe/generations/ private SDK SQLite/JPEG generations
 user-attachments/      Swift-managed PNG copies of uploaded or pasted images
 ```
 
-Session JSONL contains conversation and Agent state. pi persists message content
-inline, so user and hidden injected image blocks include Base64 image data in
-the Session file. Swift also decodes each uploaded or pasted image and writes a
-managed PNG copy under `user-attachments/` for local preview and submission.
-Removing a pending attachment deletes its copy when it is not already used by a
-turn, and a failed multi-image import deletes copies created earlier in that
-import. Copies retained for submitted turns currently have no retention or
-deletion UI. Screenpipe generations rotate at the UTC day or configured age
-boundary. The checked-in policy removes inactive generations after seven days
-and also evicts the oldest inactive generations when total usage exceeds 10
-GiB, but only after Chronicle has durably completed that generation. Capture
-files and directories are created with private permissions. Review the selected
-provider's data policy before sending sensitive content.
+Sessions embed every screenshot and user image as inline Base64, and Screenpipe
+keeps writing frame rows and JPEGs even when no prompt is sent. Because the
+observation processors discard raw messages once compressed, `rollout_summaries/`
+holds the only local copy of the pre-compression text. Files and directories are
+created with private permissions and are never uploaded anywhere by OpenScreen.
+Rotation, retention, and crash behavior for each of these directories are
+documented in
+[Persistence and failure behavior](runtime/README.md#persistence-and-failure-behavior).
 
-The Memory directory is an OpenScreen-owned Git repository with no remote. It
-keeps one parentless baseline commit for diff, publication recovery, and
-rollback. Successful consolidation replaces that commit and prunes the previous
-commit, reflog, and unreachable objects; it is not a Memory history or backup.
-`memory_summary.md` is loaded dynamically for each Agent Turn and is not
-appended to the pi Session. Detailed lookup uses the existing file tools over
-`MEMORY.md` and a bounded number of rollout files. Memory is treated as
-untrusted, possibly stale evidence and cannot override current instructions or
-verified state.
-
-The seven system tools run with the operating-system permissions and environment
-of the local Agent process. Relative paths and `bash` start from the repository
-directory used to launch OpenScreen; absolute paths are accepted. There is no
-built-in approval prompt or filesystem sandbox.
+The local tools run with the Agent process's own permissions and environment,
+with no approval gate and no filesystem sandbox; see
+[System tools](runtime/README.md#system-tools). Memory is treated as untrusted,
+possibly stale evidence and cannot override current instructions or verified
+state. Review the selected provider's data policy before sending sensitive
+content.
 
 ## Current limitations
 
@@ -155,9 +122,8 @@ built-in approval prompt or filesystem sandbox.
 - No click, type, scroll, or other application-control tools.
 - No dedicated Memory retrieval tool, Memory UI, or automatic access to
   historical screenshots. Memory lookup uses the existing file tools.
-- `@screenpipe/sdk@0.4.3` is pinned as the production Capture backend. Display
-  frames are independent streams; OpenScreen does not synthesize a cross-display
-  capture group or apply freshness, skew, or request watermark rules.
+- `@screenpipe/sdk@0.4.3` is pinned as the production Capture backend, and each
+  display is an independent frame stream rather than a synchronized group.
 - No Session deletion, search, or cloud sync.
 - No built-in provider or model selection UI. The single default is configured
   in `config.json`; an unknown provider/model pair fails at startup.
@@ -178,25 +144,14 @@ Application Runtime
 Composition Root
     -> Memory Runtime -> Chronicle frame cursor / activity rollouts
                       -> pi Session branch scan / Turn rollouts
-                      -> global consolidation / one-commit Git workspace
-                      -> per-Turn summary context / file retrieval / citation
+                      -> Mastra observation threads / LibSQL store
+                      -> MEMORY.md + ACTIVITY.md / file retrieval / citation
 ```
 
-The boundaries are intentionally one-way:
-
-- `agent` knows pi and generic Agent inputs, but does not import Capture,
-  Application, Transport, or Swift types.
-- `capture` owns the Screenpipe recorder, private generations, strict frame
-  projection, latest-per-display request reads, and retention; it does not
-  import Agent, pi, Application, or Transport.
-- `memory` owns background Session scanning, extraction and consolidation jobs,
-  SQLite truth, rollout projection, the dedicated Git workspace, retention, and
-  the dynamic read context. It uses pi Session/model APIs but does not import
-  Capture, Application, or Transport modules.
-- `application` is the only place that maps a `CapturedContext` into generic
-  `AgentInjectedContext`.
-- `transport` depends only on the Application API.
-- `runtime/src/main.ts` is the sole concrete composition root.
+Every dependency runs one way down that list, and `runtime/src/main.ts` is the
+sole concrete composition root. The per-module import rules are enforced by
+tests and documented in
+[Boundary rules](runtime/README.md#boundary-rules).
 
 Component references:
 
@@ -207,14 +162,8 @@ Component references:
 
 ## Development
 
-Run the Agent and Swift test suites from the repository root:
-
-```bash
-npm run test:runtime
-swift test
-```
-
-Read [AGENTS.md](AGENTS.md) before making changes.
+Read [AGENTS.md](AGENTS.md) before making changes. It owns the build, test, and
+Git commands for this repository.
 
 ## License
 

@@ -12,8 +12,12 @@
     "dev": "npm run build:runtime && swift run OpenScreen"
   },
   "dependencies": {
+    "@ai-sdk/anthropic": "4.0.39",
     "@earendil-works/pi-agent-core": "0.80.7",
     "@earendil-works/pi-ai": "0.80.7",
+    "@mastra/core": "1.59.0",
+    "@mastra/libsql": "1.20.0",
+    "@mastra/memory": "1.26.2",
     "@screenpipe/sdk": "0.4.3",
     "@vscode/ripgrep": "^1.18.0",
     "typebox": "1.1.38"

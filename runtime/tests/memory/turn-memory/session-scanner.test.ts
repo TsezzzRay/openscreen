@@ -10,23 +10,9 @@ import type {
   SessionTreeEntry,
 } from "@earendil-works/pi-agent-core";
 
-import { openMemoryDatabase } from "../../../src/memory/database.js";
-import { TurnMemoryRepository } from "../../../src/memory/turn-memory/repository.js";
-import {
-  scanTurnMemorySession,
-} from "../../../src/memory/turn-memory/session-scanner.js";
-
-const policy = {
-  maxInputTokens: 8_000,
-  maxOutputTokens: 2_000,
-  idleMilliseconds: 30 * 60_000,
-  hardCapMilliseconds: 2 * 60 * 60_000,
-  worker: {
-    leaseMilliseconds: 60_000,
-    retryDelayMilliseconds: 1_000,
-    maxAttempts: 3,
-  },
-};
+import { openMemoryCursors } from "../../../src/memory/cursors.js";
+import { scanTurnMemorySession } from "../../../src/memory/turn-memory/session-scanner.js";
+import type { TurnMemorySource } from "../../../src/memory/turn-memory/types.js";
 
 function message(
   id: string,
@@ -65,9 +51,13 @@ function session(branch: SessionTreeEntry[]): Session<JsonlSessionMetadata> {
 test("does not advance past an unfinished Turn and resumes after restart", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "openscreen-session-scanner-"));
   t.after(() => rm(root, { recursive: true, force: true }));
-  const database = openMemoryDatabase(root);
-  t.after(() => database.close());
-  const repository = new TurnMemoryRepository(database, policy);
+  const cursors = openMemoryCursors(root);
+  t.after(() => cursors.close());
+  const processed: TurnMemorySource[] = [];
+  const onTerminalSource = async (source: TurnMemorySource) => {
+    processed.push(source);
+  };
+
   const firstUser = message("user-1", null, "user", "First");
   const firstAnswer = message("answer-1", "user-1", "assistant", "Done", "stop");
   const pendingUser = message("user-2", "answer-1", "user", "Pending");
@@ -76,43 +66,41 @@ test("does not advance past an unfinished Turn and resumes after restart", async
     session: session([firstUser, firstAnswer, pendingUser]),
     fileVersion: "v1",
     gitBranch: "feature/memory",
-    repository,
+    cursors,
+    onTerminalSource,
     scannedAt: 1,
-  }), { status: "scanned", ingested: 1, updated: 0, deactivated: 0 });
-  assert.equal(
-    repository.loadScanCursor("session-1")?.lastTerminalEntryId,
-    "answer-1",
-  );
+  }), { status: "scanned", processed: 1, cursorRewound: false });
+  assert.equal(processed.length, 1);
+  assert.equal(cursors.loadTurnScanCursor("session-1")?.lastTerminalEntryId, "answer-1");
 
-  const reopened = new TurnMemoryRepository(database, policy);
   assert.deepEqual(await scanTurnMemorySession({
     session: session([firstUser, firstAnswer, pendingUser]),
     fileVersion: "v1",
     gitBranch: "feature/memory",
-    repository: reopened,
+    cursors,
+    onTerminalSource,
     scannedAt: 2,
   }), { status: "unchanged" });
+  assert.equal(processed.length, 1);
 
   const secondAnswer = message("answer-2", "user-2", "assistant", "Second done", "stop");
   assert.deepEqual(await scanTurnMemorySession({
     session: session([firstUser, firstAnswer, pendingUser, secondAnswer]),
     fileVersion: "v2",
     gitBranch: "feature/memory",
-    repository: reopened,
+    cursors,
+    onTerminalSource,
     scannedAt: 3,
-  }), { status: "scanned", ingested: 1, updated: 0, deactivated: 0 });
-  assert.equal(
-    reopened.loadScanCursor("session-1")?.lastTerminalEntryId,
-    "answer-2",
-  );
+  }), { status: "scanned", processed: 1, cursorRewound: false });
+  assert.equal(processed.length, 2);
+  assert.equal(cursors.loadTurnScanCursor("session-1")?.lastTerminalEntryId, "answer-2");
 });
 
-test("persists projection failures without throwing into the caller", async (t) => {
+test("records a scan failure without a terminal entry when projection itself fails", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "openscreen-session-scanner-"));
   t.after(() => rm(root, { recursive: true, force: true }));
-  const database = openMemoryDatabase(root);
-  t.after(() => database.close());
-  const repository = new TurnMemoryRepository(database, policy);
+  const cursors = openMemoryCursors(root);
+  t.after(() => cursors.close());
   const invalid = {
     getMetadata: async () => ({
       id: "session-1",
@@ -129,8 +117,49 @@ test("persists projection failures without throwing into the caller", async (t) 
     session: invalid,
     fileVersion: "broken-v1",
     gitBranch: "feature/memory",
-    repository,
+    cursors,
+    onTerminalSource: async () => {
+      throw new Error("should not be called");
+    },
     scannedAt: 1,
   }), { status: "failed", error: "invalid session entry" });
-  assert.equal(repository.shouldScan("session-1", "broken-v1"), false);
+  assert.equal(cursors.shouldScanSession("session-1", "broken-v1"), false);
+});
+
+test("leaves the cursor untouched when the write callback fails, so the next tick retries the whole batch", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "openscreen-session-scanner-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const cursors = openMemoryCursors(root);
+  t.after(() => cursors.close());
+  const firstUser = message("user-1", null, "user", "First");
+  const firstAnswer = message("answer-1", "user-1", "assistant", "Done", "stop");
+
+  let attempts = 0;
+  const flaky = async () => {
+    attempts += 1;
+    if (attempts === 1) throw new Error("transient Mastra write failure");
+  };
+
+  const first = await scanTurnMemorySession({
+    session: session([firstUser, firstAnswer]),
+    fileVersion: "v1",
+    gitBranch: "feature/memory",
+    cursors,
+    onTerminalSource: flaky,
+    scannedAt: 1,
+  });
+  assert.equal(first.status, "failed");
+  assert.equal(cursors.loadTurnScanCursor("session-1"), undefined);
+
+  const second = await scanTurnMemorySession({
+    session: session([firstUser, firstAnswer]),
+    fileVersion: "v1",
+    gitBranch: "feature/memory",
+    cursors,
+    onTerminalSource: flaky,
+    scannedAt: 2,
+  });
+  assert.deepEqual(second, { status: "scanned", processed: 1, cursorRewound: false });
+  assert.equal(attempts, 2);
+  assert.equal(cursors.loadTurnScanCursor("session-1")?.lastTerminalEntryId, "answer-1");
 });

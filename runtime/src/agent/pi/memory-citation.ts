@@ -229,7 +229,7 @@ export async function validateMemoryCitation(
     const entry = record(value, `entries[${index}]`);
     exact(entry, ["path", "lineStart", "lineEnd", "note"], `entries[${index}]`);
     const path = requiredText(entry.path, `entries[${index}].path`, 512);
-    if (!/^(?:MEMORY\.md|rollout_summaries\/[^/]+\.md)$/.test(path)) {
+    if (!/^(?:MEMORY\.md|ACTIVITY\.md|rollout_summaries\/[^/]+\.md)$/.test(path)) {
       throw new Error(`Invalid Memory citation path ${path}`);
     }
     const lineStart = positiveInteger(entry.lineStart, `entries[${index}].lineStart`);

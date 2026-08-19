@@ -79,3 +79,16 @@ export function renderChronicleRollout({
     contentHash: sha256(content),
   };
 }
+
+/** Plain-text rendering of a Chronicle window's summary for Mastra — no provenance header, that stays in the rollout file only. */
+export function chronicleObservationText(summary: ChronicleSummary): string {
+  return [
+    summary.sourceSummary,
+    ...summary.activities.map((activity, index) => {
+      const parts = [`Activity ${index + 1}: ${activity.summary}`];
+      if (activity.application !== undefined) parts.push(`(application: ${activity.application})`);
+      if (activity.windowTitle !== undefined) parts.push(`(window: ${activity.windowTitle})`);
+      return parts.join(" ");
+    }),
+  ].join("\n");
+}

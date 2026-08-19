@@ -6,20 +6,55 @@ import test from "node:test";
 
 import type { Context, Model, Models, SimpleStreamOptions } from "@earendil-works/pi-ai";
 
-import { openMemoryDatabase } from "../../../src/memory/database.js";
-import { processNextChronicle } from "../../../src/memory/chronicle/processor.js";
-import { ChronicleRepository } from "../../../src/memory/chronicle/repository.js";
+import { summarizeChronicleWindow } from "../../../src/memory/chronicle/processor.js";
 import { CHRONICLE_SUMMARY_SCHEMA } from "../../../src/memory/chronicle/summary-schema.js";
-import type { ChronicleFrameInput } from "../../../src/memory/chronicle/types.js";
+import type { ChronicleFrameInput, ChronicleFrameProjection } from "../../../src/memory/chronicle/types.js";
+import { createMemoryProjector } from "../../../src/memory/mastra/projector.js";
+import { openMastraMemoryStore, type MastraMemoryStore } from "../../../src/memory/mastra/store.js";
+import type { WritePathDeps } from "../../../src/memory/mastra/write-path.js";
+import type { MemoryConfig } from "../../../src/memory/config.js";
 
-const policy = {
-  maxInputTokens: 8_000,
-  maxOutputTokens: 2_000,
-  windowMilliseconds: 60_000,
-  graceMilliseconds: 0,
-  maxSourcesPerRequest: 1,
-  worker: { leaseMilliseconds: 60_000, retryDelayMilliseconds: 1_000, maxAttempts: 3 },
-};
+// Never actually sent: the fake API key only needs to satisfy construction.
+// Thresholds below are set enormous so observe() always no-ops (confirmed
+// idempotent under threshold in the migration's Stage A spike) — no test
+// here makes a real network call.
+process.env.MINIMAX_CN_API_KEY ??= "test-key";
+
+const HUGE = 100_000_000;
+
+function observationalMemoryConfig(): MemoryConfig["observationalMemory"] {
+  return {
+    interactive: { messageTokens: HUGE, observationTokens: HUGE },
+    screenActivity: { messageTokens: HUGE, observationTokens: HUGE },
+  };
+}
+
+async function withWritePath(
+  root: string,
+  fn: (writePath: WritePathDeps, store: MastraMemoryStore) => Promise<void>,
+): Promise<void> {
+  const store = openMastraMemoryStore(
+    root,
+    {
+      enabled: true,
+      worker: { intervalMilliseconds: 5_000, maxChronicleWindowsPerTick: 2 },
+      chronicle: { windowMilliseconds: 60_000, graceMilliseconds: 0, maxSourcesPerRequest: 10, maxInputTokens: 8_000, maxOutputTokens: 2_000 },
+      observationalMemory: observationalMemoryConfig(),
+      retention: { chronicleRolloutMaxAgeMilliseconds: HUGE },
+    },
+    { provider: "minimax-cn", model: "test-model" },
+  );
+  try {
+    const projector = createMemoryProjector(root, store);
+    await fn({ store, projector }, store);
+  } finally {
+    await store.close();
+  }
+}
+
+const policy = { maxSourcesPerRequest: 1, maxInputTokens: 8_000, maxOutputTokens: 2_000 };
+const model = { id: "memory-model" } as Model<string>;
+const anthropicModel = { ...model, api: "anthropic-messages" } as Model<"anthropic-messages">;
 
 function frame(id: string): ChronicleFrameInput {
   return {
@@ -34,16 +69,11 @@ function frame(id: string): ChronicleFrameInput {
   };
 }
 
-const model = { id: "memory-model" } as Model<string>;
-const anthropicModel = {
-  ...model,
-  api: "anthropic-messages",
-} as Model<"anthropic-messages">;
+function projectFrame(input: ChronicleFrameInput): ChronicleFrameProjection {
+  return { type: "screenpipe_frame", ...input };
+}
 
-function toolResponse(
-  output: Record<string, unknown>,
-  name = "submit_chronicle_summary",
-) {
+function toolResponse(output: Record<string, unknown>, name = "submit_chronicle_summary") {
   return {
     role: "assistant" as const,
     content: [{
@@ -69,32 +99,24 @@ function textResponse(output: unknown) {
   };
 }
 
-test("processes bounded Chronicle requests and immediately projects its rollout", async (t) => {
+test("summarizes a Chronicle window and immediately archives its rollout + observation text", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "openscreen-chronicle-processor-"));
   t.after(() => rm(root, { recursive: true, force: true }));
-  const database = openMemoryDatabase(join(root, "database"));
-  t.after(() => database.close());
-  const repository = new ChronicleRepository(database, policy);
-  const due = Date.parse("2026-08-15T10:01:00.000Z");
-  repository.ingest(frame("1"), due);
-  repository.ingest(frame("2"), due);
+  const frames = [projectFrame(frame("1")), projectFrame(frame("2"))];
   const requests: Context[] = [];
-const models: Models = {
-  complete: async (
-    _model: Model<string>,
-    context: Context,
-    options?: SimpleStreamOptions & { toolChoice?: unknown },
-  ) => {
+  const models: Models = {
+    complete: async (
+      _model: Model<string>,
+      context: Context,
+      options?: SimpleStreamOptions & { toolChoice?: unknown },
+    ) => {
       requests.push(context);
       assert.equal(options?.maxTokens, policy.maxOutputTokens);
-      assert.deepEqual(options?.toolChoice, {
-        type: "tool",
-        name: "submit_chronicle_summary",
-      });
+      assert.deepEqual(options?.toolChoice, { type: "tool", name: "submit_chronicle_summary" });
       const input = JSON.parse(String(context.messages[0]?.content)) as {
         frames: Array<{ sourceId: string }>;
       };
-      const response = toolResponse({
+      return toolResponse({
         activities: [{
           summary: "Viewed a display.",
           source_frame_ids: input.frames.map(({ sourceId }) => sourceId),
@@ -103,33 +125,23 @@ const models: Models = {
         }],
         source_summary: "Observed 屏幕内容.",
       });
-      return {
-        ...response,
-        content: [
-          { type: "thinking" as const, thinking: "Organizing supplied evidence." },
-          { type: "text" as const, text: "Submitting the requested Chronicle summary." },
-          ...response.content,
-        ],
-      };
     },
     completeSimple: async () => assert.fail("Anthropic Chronicle must force its tool choice"),
   } as unknown as Models;
 
-  const memoryRoot = join(root, "memory");
-  const result = await processNextChronicle({
-    repository,
-    models,
-    model: anthropicModel,
-    workerId: "worker-1",
-    memoryRoot,
-    now: () => due,
+  await withWritePath(root, async (writePath) => {
+    const result = await summarizeChronicleWindow({
+      windowId: "chronicle-window:2026-08-15T10:01:00.000Z",
+      frames,
+      policy: { ...policy, maxSourcesPerRequest: 1 },
+      models,
+      model: anthropicModel,
+      writePath,
+      now: () => Date.parse("2026-08-15T10:01:00.000Z"),
+    });
+    assert.deepEqual(result, { status: "summarized", requestCount: 2 });
   });
-  assert.deepEqual(result, {
-    status: "processed",
-    jobKey: result.status === "processed" ? result.jobKey : "",
-    requestCount: 2,
-    projectedArtifacts: 1,
-  });
+
   assert.equal(requests.length, 2);
   assert.match(requests[0]?.systemPrompt ?? "", /submit_chronicle_summary/);
   assert.deepEqual(requests[0]?.tools, [{
@@ -137,8 +149,8 @@ const models: Models = {
     description: "Submit the factual activity summary for this Chronicle window.",
     parameters: CHRONICLE_SUMMARY_SCHEMA,
   }]);
-  const [rolloutName] = await readdir(join(memoryRoot, "rollout_summaries"));
-  const rollout = await readFile(join(memoryRoot, "rollout_summaries", rolloutName!), "utf8");
+  const [rolloutName] = await readdir(join(root, "rollout_summaries"));
+  const rollout = await readFile(join(root, "rollout_summaries", rolloutName!), "utf8");
   assert.match(rollout, /frame:1/);
   assert.match(rollout, /屏幕内容/);
 });
@@ -146,15 +158,7 @@ const models: Models = {
 test("splits a Chronicle chunk when the model reaches its output limit", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "openscreen-chronicle-processor-"));
   t.after(() => rm(root, { recursive: true, force: true }));
-  const database = openMemoryDatabase(join(root, "database"));
-  t.after(() => database.close());
-  const repository = new ChronicleRepository(database, {
-    ...policy,
-    maxSourcesPerRequest: 10,
-  });
-  const due = Date.parse("2026-08-15T10:01:00.000Z");
-  repository.ingest(frame("1"), due);
-  repository.ingest(frame("2"), due);
+  const frames = [projectFrame(frame("1")), projectFrame(frame("2"))];
   const requestSourceIds: string[][] = [];
   const models = {
     completeSimple: async (_model: Model<string>, context: Context) => {
@@ -164,35 +168,27 @@ test("splits a Chronicle chunk when the model reaches its output limit", async (
       const sourceIds = input.frames.map(({ sourceId }) => sourceId);
       requestSourceIds.push(sourceIds);
       if (sourceIds.length > 1) {
-        return {
-          ...toolResponse({}),
-          content: [{ type: "text" as const, text: "partial output" }],
-          stopReason: "length" as const,
-        };
+        return { ...toolResponse({}), content: [{ type: "text" as const, text: "partial output" }], stopReason: "length" as const };
       }
       return toolResponse({
-        activities: [{
-          summary: `Viewed ${sourceIds[0]}.`,
-          source_frame_ids: sourceIds,
-          application: null,
-          window_title: null,
-        }],
+        activities: [{ summary: `Viewed ${sourceIds[0]}.`, source_frame_ids: sourceIds, application: null, window_title: null }],
         source_summary: `Observed ${sourceIds[0]}.`,
       });
     },
   } as unknown as Models;
 
-  const result = await processNextChronicle({
-    repository,
-    models,
-    model,
-    workerId: "worker-1",
-    memoryRoot: join(root, "memory"),
-    now: () => due,
+  await withWritePath(root, async (writePath) => {
+    const result = await summarizeChronicleWindow({
+      windowId: "chronicle-window:2026-08-15T10:01:00.000Z",
+      frames,
+      policy: { ...policy, maxSourcesPerRequest: 10 },
+      models,
+      model,
+      writePath,
+      now: () => Date.parse("2026-08-15T10:01:00.000Z"),
+    });
+    assert.deepEqual(result, { status: "summarized", requestCount: 3 });
   });
-
-  assert.equal(result.status, "processed");
-  assert.equal(result.status === "processed" ? result.requestCount : 0, 3);
   assert.deepEqual(requestSourceIds, [
     ["frame:1", "frame:2"],
     ["frame:1"],
@@ -203,132 +199,182 @@ test("splits a Chronicle chunk when the model reaches its output limit", async (
 test("fails invalid source coverage without publishing a rollout", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "openscreen-chronicle-processor-"));
   t.after(() => rm(root, { recursive: true, force: true }));
-  const database = openMemoryDatabase(join(root, "database"));
-  t.after(() => database.close());
-  const repository = new ChronicleRepository(database, { ...policy, maxSourcesPerRequest: 10 });
-  const due = Date.parse("2026-08-15T10:01:00.000Z");
-  repository.ingest(frame("1"), due);
+  const frames = [projectFrame(frame("1"))];
   const models = {
     completeSimple: async () => toolResponse({
-      activities: [{
-        summary: "Invented.",
-        source_frame_ids: ["invented"],
-        application: null,
-        window_title: null,
-      }],
+      activities: [{ summary: "Invented.", source_frame_ids: ["invented"], application: null, window_title: null }],
       source_summary: "Invalid.",
     }),
   } as unknown as Models;
-  const result = await processNextChronicle({
-    repository,
-    models,
-    model,
-    workerId: "worker-1",
-    memoryRoot: join(root, "memory"),
-    now: () => due,
+
+  await withWritePath(root, async (writePath) => {
+    const result = await summarizeChronicleWindow({
+      windowId: "chronicle-window:2026-08-15T10:01:00.000Z",
+      frames,
+      policy: { ...policy, maxSourcesPerRequest: 10 },
+      models,
+      model,
+      writePath,
+      now: () => Date.parse("2026-08-15T10:01:00.000Z"),
+    });
+    assert.equal(result.status, "failed");
   });
-  assert.equal(result.status, "failed");
-  assert.equal(database.connection.prepare(`
-    SELECT count(*) AS count FROM memory_artifacts WHERE kind = 'chronicle_rollout'
-  `).get()?.count, 0);
+  await assert.rejects(() => readdir(join(root, "rollout_summaries")), { code: "ENOENT" });
 });
 
 test("rejects one source larger than the input token budget before model use", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "openscreen-chronicle-processor-"));
   t.after(() => rm(root, { recursive: true, force: true }));
-  const database = openMemoryDatabase(join(root, "database"));
-  t.after(() => database.close());
-  const repository = new ChronicleRepository(database, {
-    ...policy,
-    maxInputTokens: 10,
-    maxOutputTokens: 2,
-  });
-  const due = Date.parse("2026-08-15T10:01:00.000Z");
-  repository.ingest(frame("1"), due);
+  const frames = [projectFrame(frame("1"))];
   let called = false;
-  const result = await processNextChronicle({
-    repository,
-    models: {
-      completeSimple: async () => {
-        called = true;
-        return toolResponse({});
-      },
-    } as unknown as Models,
-    model,
-    workerId: "worker-1",
-    memoryRoot: join(root, "memory"),
-    now: () => due,
+
+  await withWritePath(root, async (writePath) => {
+    const result = await summarizeChronicleWindow({
+      windowId: "chronicle-window:2026-08-15T10:01:00.000Z",
+      frames,
+      policy: { maxSourcesPerRequest: 10, maxInputTokens: 10, maxOutputTokens: 2 },
+      models: {
+        completeSimple: async () => {
+          called = true;
+          return toolResponse({});
+        },
+      } as unknown as Models,
+      model,
+      writePath,
+      now: () => Date.parse("2026-08-15T10:01:00.000Z"),
+    });
+    assert.equal(result.status, "failed");
+    assert.match(result.status === "failed" ? result.error : "", /single Chronicle source.*budget/i);
   });
-  assert.equal(result.status, "failed");
   assert.equal(called, false);
-  assert.match(result.status === "failed" ? result.error : "", /single Chronicle source.*budget/i);
 });
 
 test("does not publish when an aborting model ignores the signal and returns", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "openscreen-chronicle-processor-"));
   t.after(() => rm(root, { recursive: true, force: true }));
-  const database = openMemoryDatabase(join(root, "database"));
-  t.after(() => database.close());
-  const repository = new ChronicleRepository(database, {
-    ...policy,
-    maxSourcesPerRequest: 10,
-  });
-  const due = Date.parse("2026-08-15T10:01:00.000Z");
-  repository.ingest(frame("1"), due);
+  const frames = [projectFrame(frame("1"))];
   const controller = new AbortController();
-  const result = await processNextChronicle({
-    repository,
-    models: {
-      completeSimple: async () => {
-        controller.abort("stop Chronicle");
-        return toolResponse({
-          activities: [{
-            summary: "Must not publish.",
-            source_frame_ids: ["frame:1"],
-            application: null,
-            window_title: null,
-          }],
-          source_summary: "Must not publish.",
-        });
-      },
-    } as unknown as Models,
-    model,
-    workerId: "worker-1",
-    memoryRoot: join(root, "memory"),
-    now: () => due,
-    signal: controller.signal,
+
+  await withWritePath(root, async (writePath) => {
+    const result = await summarizeChronicleWindow({
+      windowId: "chronicle-window:2026-08-15T10:01:00.000Z",
+      frames,
+      policy: { ...policy, maxSourcesPerRequest: 10 },
+      models: {
+        completeSimple: async () => {
+          controller.abort("stop Chronicle");
+          return toolResponse({
+            activities: [{ summary: "Must not publish.", source_frame_ids: ["frame:1"], application: null, window_title: null }],
+            source_summary: "Must not publish.",
+          });
+        },
+      } as unknown as Models,
+      model,
+      writePath,
+      now: () => Date.parse("2026-08-15T10:01:00.000Z"),
+      signal: controller.signal,
+    });
+    assert.equal(result.status, "failed");
   });
-  assert.equal(result.status, "failed");
-  assert.equal(database.connection.prepare(`
-    SELECT count(*) AS count FROM memory_artifacts WHERE kind = 'chronicle_rollout'
-  `).get()?.count, 0);
+  await assert.rejects(() => readdir(join(root, "rollout_summaries")), { code: "ENOENT" });
+});
+
+test("repairs a rejected tool call by resubmitting with the rejection reason", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "openscreen-chronicle-processor-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const frames = [projectFrame(frame("1"))];
+  let calls = 0;
+  const seenContexts: Context[] = [];
+  const models = {
+    completeSimple: async (_model: Model<string>, context: Context) => {
+      seenContexts.push(context);
+      calls += 1;
+      if (calls === 1) {
+        // Duplicate the source across two activities — a real failure mode
+        // observed in production diagnostics.log.
+        return toolResponse({
+          activities: [
+            { summary: "First.", source_frame_ids: ["frame:1"], application: null, window_title: null },
+            { summary: "Second.", source_frame_ids: ["frame:1"], application: null, window_title: null },
+          ],
+          source_summary: "Duplicated.",
+        });
+      }
+      return toolResponse({
+        activities: [{ summary: "Fixed.", source_frame_ids: ["frame:1"], application: null, window_title: null }],
+        source_summary: "Corrected after rejection.",
+      });
+    },
+  } as unknown as Models;
+
+  await withWritePath(root, async (writePath) => {
+    const result = await summarizeChronicleWindow({
+      windowId: "chronicle-window:2026-08-15T10:01:00.000Z",
+      frames,
+      policy: { ...policy, maxSourcesPerRequest: 10 },
+      models,
+      model,
+      writePath,
+      now: () => Date.parse("2026-08-15T10:01:00.000Z"),
+    });
+    assert.deepEqual(result, { status: "summarized", requestCount: 2 });
+  });
+  assert.equal(calls, 2);
+  const repairMessages = seenContexts[1]?.messages ?? [];
+  const toolResult = repairMessages.find((entry) => entry.role === "toolResult");
+  assert.ok(toolResult, "repair request must include the rejected tool result");
+  assert.equal((toolResult as { isError?: boolean }).isError, true);
+  const [rolloutName] = await readdir(join(root, "rollout_summaries"));
+  const rollout = await readFile(join(root, "rollout_summaries", rolloutName!), "utf8");
+  assert.match(rollout, /Corrected after rejection/);
+});
+
+test("abandons a batch after exhausting repair attempts on a persistently invalid model", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "openscreen-chronicle-processor-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const frames = [projectFrame(frame("1"))];
+  let calls = 0;
+  const models = {
+    completeSimple: async () => {
+      calls += 1;
+      return toolResponse({
+        activities: [{ summary: "Invented.", source_frame_ids: ["invented"], application: null, window_title: null }],
+        source_summary: "Invalid.",
+      });
+    },
+  } as unknown as Models;
+
+  await withWritePath(root, async (writePath) => {
+    const result = await summarizeChronicleWindow({
+      windowId: "chronicle-window:2026-08-15T10:01:00.000Z",
+      frames,
+      policy: { ...policy, maxSourcesPerRequest: 10 },
+      models,
+      model,
+      writePath,
+      now: () => Date.parse("2026-08-15T10:01:00.000Z"),
+    });
+    assert.equal(result.status, "failed");
+    assert.match(result.status === "failed" ? result.error : "", /Chronicle returned source invented/i);
+  });
+  // Initial attempt + MAX_REPAIR_ATTEMPTS (2) resubmissions, all rejected.
+  assert.equal(calls, 3);
+  await assert.rejects(() => readdir(join(root, "rollout_summaries")), { code: "ENOENT" });
 });
 
 test("rejects text, a wrong tool, and multiple Chronicle tool calls", async (t) => {
   const valid = {
-    activities: [{
-      summary: "Viewed a display.",
-      source_frame_ids: ["frame:1"],
-      application: null,
-      window_title: null,
-    }],
+    activities: [{ summary: "Viewed a display.", source_frame_ids: ["frame:1"], application: null, window_title: null }],
     source_summary: "One display frame was observed.",
   };
   const cases = [
     { name: "text", response: textResponse(valid), error: /exactly one Chronicle tool call/i },
-    {
-      name: "wrong tool",
-      response: toolResponse(valid, "other_tool"),
-      error: /unexpected Chronicle tool other_tool/i,
-    },
+    { name: "wrong tool", response: toolResponse(valid, "other_tool"), error: /unexpected Chronicle tool other_tool/i },
     {
       name: "multiple tools",
       response: {
         ...toolResponse(valid),
-        content: [
-          toolResponse(valid).content[0]!,
-          { ...toolResponse(valid).content[0]!, id: "second-call" },
-        ],
+        content: [toolResponse(valid).content[0]!, { ...toolResponse(valid).content[0]!, id: "second-call" }],
       },
       error: /exactly one Chronicle tool call/i,
     },
@@ -338,29 +384,21 @@ test("rejects text, a wrong tool, and multiple Chronicle tool calls", async (t) 
     await t.test(item.name, async (subtest) => {
       const root = await mkdtemp(join(tmpdir(), "openscreen-chronicle-processor-"));
       subtest.after(() => rm(root, { recursive: true, force: true }));
-      const database = openMemoryDatabase(join(root, "database"));
-      subtest.after(() => database.close());
-      const repository = new ChronicleRepository(database, {
-        ...policy,
-        maxSourcesPerRequest: 10,
+      const frames = [projectFrame(frame("1"))];
+      await withWritePath(root, async (writePath) => {
+        const result = await summarizeChronicleWindow({
+          windowId: "chronicle-window:2026-08-15T10:01:00.000Z",
+          frames,
+          policy: { ...policy, maxSourcesPerRequest: 10 },
+          models: { completeSimple: async () => item.response } as unknown as Models,
+          model,
+          writePath,
+          now: () => Date.parse("2026-08-15T10:01:00.000Z"),
+        });
+        assert.equal(result.status, "failed");
+        assert.match(result.status === "failed" ? result.error : "", item.error);
       });
-      const due = Date.parse("2026-08-15T10:01:00.000Z");
-      repository.ingest(frame("1"), due);
-      const result = await processNextChronicle({
-        repository,
-        models: {
-          completeSimple: async () => item.response,
-        } as unknown as Models,
-        model,
-        workerId: "worker-1",
-        memoryRoot: join(root, "memory"),
-        now: () => due,
-      });
-      assert.equal(result.status, "failed");
-      assert.match(result.status === "failed" ? result.error : "", item.error);
-      assert.equal(database.connection.prepare(`
-        SELECT count(*) AS count FROM memory_artifacts WHERE kind = 'chronicle_rollout'
-      `).get()?.count, 0);
+      await assert.rejects(() => readdir(join(root, "rollout_summaries")), { code: "ENOENT" });
     });
   }
 });

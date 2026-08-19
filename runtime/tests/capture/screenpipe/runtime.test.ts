@@ -24,7 +24,7 @@ test("starts one generation before opening its latest-frame database", async (t)
   const environment: NodeJS.ProcessEnv = {};
   const events: string[] = [];
   const frames: ScreenFrameSource[] = [{
-    sourceId: 'screenpipe-frame:["generation-1","12"]',
+    sourceId: 'screenpipe-frame:generation-1:12',
     generationId: "generation-1",
     frameId: "12",
     monitorKey: "2",
@@ -593,7 +593,7 @@ test("rejects an incremental read while inactive", async (t) => {
 
 function runtimeFrame(generationId: string, frameId: string): ScreenFrameSource {
   return {
-    sourceId: `screenpipe-frame:["${generationId}","${frameId}"]`,
+    sourceId: `screenpipe-frame:${generationId}:${frameId}`,
     generationId,
     frameId,
     monitorKey: frameId,

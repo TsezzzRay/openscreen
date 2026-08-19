@@ -34,36 +34,31 @@ runtime/src/
 │       ├── recorder.ts           pinned SDK safety options
 │       └── config.ts             strict Capture configuration
 ├── memory/
-│   ├── config.ts                 strict worker, Turn, consolidation, retention policy
-│   ├── database.ts               private WAL SQLite ownership
-│   ├── schema.ts                 Memory persistence schema
-│   ├── runtime.ts                Chronicle, Turn, consolidation, and retention loop
-│   ├── artifact-projector.ts     atomic searchable-file projection
-│   ├── workspace-coordinator.ts  producer/consolidation writer fencing
-│   ├── read-context.ts           bounded per-Turn summary and search policy
-│   ├── retention.ts              reference-aware rollout collection
+│   ├── config.ts                 strict worker, Chronicle, observation, retention policy
+│   ├── cursors.ts                private SQLite scan, generation, and window cursors
+│   ├── lifecycle.ts              retrying start/stop wrapper
+│   ├── runtime.ts                Chronicle, Turn scan, projection, and retention loop
+│   ├── mastra/
+│   │   ├── store.ts              LibSQL store and the two ObservationalMemory instances
+│   │   ├── thread-ids.ts         fixed resource and thread identifiers
+│   │   ├── write-path.ts         thread creation, message save, and observation trigger
+│   │   ├── projector.ts          observation-log projection and rollout archive
+│   │   ├── read-path.ts          injected Memory block and read policy
+│   │   ├── model-adapter.ts      Anthropic-compatible client for observation/reflection
+│   │   └── telemetry-guard.ts    disables Mastra telemetry before any @mastra import
 │   ├── chronicle/
-│   │   ├── repository.ts         source/window/cursor/job/artifact truth
 │   │   ├── window-scheduler.ts   UTC activity windows and grace boundary
 │   │   ├── model-projection.ts   bounded code-owned frame projection
-│   │   ├── processor.ts          leased extraction and immediate projection
+│   │   ├── summarizer.ts         bounded request context and token estimation
+│   │   ├── processor.ts          window summarization and observation write
 │   │   ├── summary-schema.ts     strict output and exact source coverage
-│   │   └── rollout.ts            searchable Chronicle rendering
-│   ├── consolidate/
-│   │   ├── source-repository.ts  monotonic source registry and removal tombstones
-│   │   ├── repository.ts         snapshots, leases, evidence, publication journal
-│   │   ├── model-projection.ts   Task Group and v1 summary contract
-│   │   ├── processor.ts          frozen publication and crash recovery
-│   │   └── workspace.ts          dedicated one-commit Git baseline
+│   │   ├── types.ts              Chronicle frame, window, and activity shapes
+│   │   └── rollout.ts            searchable Chronicle rendering and observation text
 │   └── turn-memory/
-│       ├── runtime.ts            Session scanning and worker lifecycle
+│       ├── session-scanner.ts    active-branch terminal Turn scanning
 │       ├── session-projection.ts active-branch terminal Turn projection
-│       ├── repository.ts         cursor, source, batch, lease, and artifact truth
-│       ├── processor.ts          pi model extraction and artifact publication
-│       ├── extractor.ts          strict model context and output validation
-│       ├── model-projection.ts   code-owned provenance projection
-│       ├── rollout.ts            Turn rollout and raw-memory rendering
-│       └── scan-cursor.ts        durable per-Session scan cursor
+│       ├── rollout.ts            Turn rollout and observation text rendering
+│       └── types.ts              terminal Turn status and source shapes
 ├── application/
 │   ├── api.ts                    product commands, events, and DTOs
 │   └── runtime.ts                thin Agent/Capture use-case composition
@@ -83,7 +78,7 @@ Transport -> Application API
 Application Runtime -> Agent API + Capture API
 Agent pi adapter -> pi-agent-core + pi-ai
 Capture service -> Screenpipe runtime / SDK recorder / read-only SQLite
-Memory -> Screenpipe-neutral frame feed + pi Session/model APIs + private SQLite/artifacts/Git workspace
+Memory -> Screenpipe-neutral frame feed + pi Session/model APIs + private Mastra store/cursors/artifacts
 main.ts -> all concrete implementations
 ```
 
@@ -121,18 +116,18 @@ Capture.
 4. Application maps ordered frame metadata and aligned in-memory JPEG bytes to
    hidden generic context. It does not expose Capture concepts through the Agent
    API.
-5. Before every Agent start, `PiAgentService` dynamically loads the bounded
-   `memory_summary.md` and Memory search policy into the system prompt. Missing,
-   invalid, or oversized optional Memory context does not fail the prompt and is
+5. Before every Agent start, `PiAgentService` dynamically loads the current
+   `MEMORY.md`, `ACTIVITY.md`, and Memory read policy into the system prompt.
+   Missing or invalid optional Memory context does not fail the prompt and is
    not appended to the Session.
 6. `PiAgentService` loads user and injected images, runs `AgentHarness.prompt`,
    maps pi stream events to the product event stream, strips the model-authored
    hidden Memory citation block, and persists a citation custom entry only when
    its files and line ranges were actually read in that Turn.
 7. After a successful persisted answer, Pi asynchronously notifies the Memory
-   runtime. Turn projection extracts the exact injected `sourceFrameIds` without
-   copying hidden screen text or images. Notification and background-worker
-   failures cannot alter the prompt result.
+   runtime, which scans that Session for newly terminal Turns. Turn projection
+   copies neither hidden screen text nor images. Notification and
+   background-worker failures cannot alter the prompt result.
 8. Application asks pi whether the current context needs automatic compaction.
 9. Each request emits exactly one terminal `completed` or `failed` event. An
    output-stream failure stops the transport even while stdin remains open.
@@ -148,42 +143,60 @@ provider-request hook, pi's run controller propagates cancellation to the active
 provider stream. A UI listener failure cannot change Agent execution or
 persistence.
 
+## Observational Memory
+
+Memory does not run its own extraction, job queue, lease, or consolidation
+model. Compression is owned by Mastra's standalone `ObservationalMemory`
+processor, driven manually from the write path. Two instances share one
+`Memory` and one LibSQL store under a single resource, `openscreen`, with two
+long-lived thread IDs:
+
+| Thread | Fed by | Configured budgets |
+| --- | --- | --- |
+| `interactive` | one completed pi Turn | `observationalMemory.interactive` |
+| `screen-activity` | one summarized Chronicle window | `observationalMemory.screenActivity` |
+
+The threads persist for the life of the installation and are deliberately
+decoupled from pi Session IDs, so cross-Session Memory does not reset when a
+Session is created. They are a separate re-derived copy; the pi Session JSONL
+remains the only authority for what a live Agent Turn actually sees.
+
+Each write saves one message to its thread and then calls `observe()`
+unconditionally, which is cheap when the configured `messageTokens` threshold is
+not reached. Mastra decides on its own when to observe and when to reflect;
+OpenScreen configures only the two token budgets. `messageTokens` may not exceed
+`observationTokens`. No vector store and no embedder are configured, so semantic
+recall stays off. Observation and reflection use a dedicated Anthropic-compatible
+client rather than the pi model handle.
+
 ## Turn Memory
 
-Turn Memory scans the active branch exposed by pi's `JsonlSessionRepo` and
-`Session` API. A source begins at the first user message and closes only at a
-terminal assistant message. `stop`, `error`, `aborted`, and `length` map to
+Turn scanning uses pi's `JsonlSessionRepo` and `Session` API and feeds the
+`interactive` thread. A source begins at the first user message and closes only
+at a terminal assistant message. `stop`, `error`, `aborted`, and `length` map to
 completed, failed, cancelled, and interrupted outcomes. An unfinished Turn does
-not advance the durable per-Session terminal-entry cursor. If the active branch
-rewinds behind that cursor, the scanner rescans the branch and marks abandoned
-sources inactive.
+not advance the durable per-Session terminal-entry cursor.
 
-The model projection contains user text, final assistant text, bounded tool
-names/results, authoritative status, exact `sourceFrameIds`, and a bounded
-relevant compaction summary. It omits reasoning, intermediate assistant text,
-stream deltas, image/Base64 blocks, hidden screen text, and pi bookkeeping.
-Code, not the model, owns Session/thread IDs, working directory, Git branch,
-JSONL rollout path, timestamps, and source IDs.
+A Session is rescanned only when its file size or mtime changes. A deterministic
+projection failure, such as a malformed Session, is recorded against the current
+file version so the same content is not retried until the file changes. A write
+failure records nothing, which leaves the cursor at its last successful position
+and retries the whole unprocessed range on the next tick. That retry may re-send
+an already-written source: the rollout overwrite is idempotent and a duplicate
+observation is simply seen twice.
 
-Terminal Turns from one Session are sealed after 30 minutes idle, a two-hour
-hard cap, or the configured input-token limit. Jobs use durable leases, retries,
-generation fencing, and strict local validation. Each request exposes only
-`submit_turn_memory`; Anthropic-compatible models are forced to choose it. The
-response must contain exactly one call to that tool. Adjacent ordinary text is
-ignored, while text-only, missing, additional, or differently named calls fail
-the job. Structured tasks preserve outcome, preference signals, reusable
-knowledge, failure lessons, references, and English plus original-language
-keywords. A failed-only batch cannot claim a successful outcome.
+Code, not a model, owns the rendered Turn. The rollout carries thread, Session,
+working directory, Git branch, JSONL rollout path, rollout ID, status, user
+text, final assistant text, an optional prior compaction summary, an optional
+terminal error, and bounded tool names/results. The observation text sent to
+Mastra is a plainer form of the same content. Neither contains reasoning,
+intermediate assistant text, stream deltas, image or Base64 blocks, or pi
+bookkeeping. `source_frame_ids` is intentionally omitted from Turn rollouts; it
+is kept only in Chronicle rollouts, where it is load-bearing.
 
-SQLite is committed before files are projected. A successful extraction creates
-one UTF-8 `rollout_summaries/turn-*.md` file and regenerates
-`raw_memories.md`; pending files are replayed after restart. These files are
-immediately searchable with the existing `grep`, `read`, `find`, and `bash`
-tools, including before global consolidation. A branch rewind or deleted pi
-Session deactivates its Turn sources, queues consolidation, and removes inactive
-Turn content from the next `raw_memories.md` projection. An unreferenced inactive
-Turn rollout is eligible for collection; a current consolidated evidence
-reference protects it.
+Each accepted Turn writes one UTF-8 `rollout_summaries/turn-*.md` file
+alongside the Mastra write. These files are immediately searchable with the
+existing `grep`, `read`, `find`, and `bash` tools.
 
 ## Chronicle Memory
 
@@ -199,8 +212,8 @@ valid frame in the batch is idempotently ingested, so a crash can replay sources
 but cannot skip them.
 
 Chronicle groups frames into fixed UTC windows and waits for the configured
-grace boundary before claiming a window. Late sources bump the window generation
-and queue another extraction. Model input is a bounded code-owned projection of
+grace boundary before a window becomes due. Late sources bump the window
+generation and make it due again. Model input is a bounded code-owned projection of
 source ID, generation/frame/monitor identity, capture time, trigger,
 application, window title, URL, and visible text. It never contains JPEG bytes,
 Base64, or image paths. Requests are split at ten sources and the configured
@@ -209,76 +222,59 @@ input-token budget.
 Each request exposes only `submit_chronicle_summary`, whose parameters are the
 strict Chronicle schema. The response must end in tool use with exactly one call
 to that tool. Adjacent ordinary text is ignored; text-only, missing or
-additional calls, and other tool names fail the job. If the provider reaches
+additional calls, and other tool names fail the window. If the provider reaches
 its output limit, OpenScreen recursively splits the current multi-frame request
 and retries; a single-frame request that still reaches the limit fails normally.
 OpenScreen validates the call arguments locally and requires every claimed
-source ID exactly once without omissions, duplicates, or invented IDs. SQLite
-completion and worker ownership are fenced transactionally. A successful
-extraction immediately projects one UTF-8
-`rollout_summaries/chronicle-*.md` containing source metadata, activities, and
-exact `source_frame_ids`; pending projections are replayed at the start of every
-worker cycle.
+source ID exactly once without omissions, duplicates, or invented IDs.
 
-## Global Memory consolidation
+A worker cycle summarizes at most `worker.maxChronicleWindowsPerTick` due
+windows. A successful window writes its observation text to the
+`screen-activity` thread and one UTF-8 `rollout_summaries/chronicle-*.md`
+containing source metadata, activities, and exact `source_frame_ids`, and is
+then marked summarized in the cursor database. A failed window is reported as a
+diagnostic and stays due, so the next cycle retries it.
 
-Each successful Turn or Chronicle extraction registers a monotonic source in
-SQLite and queues one global consolidation job. A claim freezes a source watermark and
-builds a complete `added`, `retained`, and `removed` snapshot. The configured
-`maxChangedSourcesPerRun` limits only changed sources; retained sources and the
-active evidence manifest are not silently converted to removals. New source
-writes during a model request remain pending for the next run.
+## Memory projection and retention
 
-The request exposes only `submit_memory_consolidation`; Anthropic-compatible
-models are forced to choose it. OpenScreen uses the arguments from exactly one
-correct call, ignores adjacent ordinary text, and rejects text-only, missing,
-additional, or differently named calls before local schema and evidence
-validation. Each Task Group carries scope, outcome, original-language and
-English keywords, user preferences, reusable knowledge, failure lessons, and
-one or more real rollout paths. A success claim requires successful Turn
-evidence. Passive Chronicle evidence cannot establish a durable fact without at least two
-independent source IDs. The same response provides a `v1` navigation summary
-whose complete generated size must fit `summaryMaxTokens`; read-time truncation
-is not used.
+Every worker cycle rewrites two whole-log projections of the current
+observations: `MEMORY.md` from the `interactive` thread and `ACTIVITY.md` from
+the `screen-activity` thread. Both are written atomically through a temporary
+file, are never filtered or partially updated, and are empty until the
+corresponding thread has been observed at least once. On a fresh installation
+the underlying tables do not exist yet; that specific condition is treated as
+"no observations", while any other failure is reported as a diagnostic.
 
-The Memory root is a dedicated OpenScreen-owned Git repository with an ownership
-marker, local `openscreen.memoryRoot=true`, and no remote. Only the root marker,
-`.gitignore`, `MEMORY.md`, `memory_summary.md`, `raw_memories.md`, and one-level
-rollout Markdown files may be tracked. SQLite, WAL, evidence, Screenpipe data,
-and publication staging are ignored. Producers leave the workspace dirty;
-consolidation computes the complete diff and publishes both generated files
-under a writer fence and SQLite publication journal. A successful publication
-creates a new parentless baseline by compare-and-swap, resets to it, expires the
-reflog, and prunes the previous commit. Startup either finalizes a complete
-publication or rolls an incomplete one back and reprojects SQLite truth.
-
-Reference-aware retention runs after worker cycles. An unreferenced Chronicle
-source is eligible at the configured age boundary (90 days by default), while
-inactive Turn rollouts follow pi Session lifecycle. Any current
-`memory_evidence` reference protects either kind until a later consolidation
-removes that reference.
+`rollout_summaries/*.md` is the only place pre-compression detail survives,
+because the observation processor discards raw messages once observed. Mastra
+never prunes that directory, so the projector applies its own age-based prune to
+`chronicle-*.md` files using `retention.chronicleRolloutMaxAgeMilliseconds`.
+Turn rollouts follow pi Session lifecycle and are not pruned by this product.
+Retention is age-based only; nothing tracks which rollouts a Memory answer used.
 
 ## Memory read path
 
 For each Turn, `before_agent_start` receives an optional system-context suffix
-containing the absolute Memory root, fixed trust/search rules, and the complete
-bounded `memory_summary.md`. The summary is a query-expansion hint, not an
-allowlist. Prior-context and activity questions must first search `MEMORY.md`
-and may independently search time-bounded rollout files even when the summary
-does not mention the topic. The Agent uses the existing `grep`, `read`, `find`,
-`ls`, and read-only `rg`/`sed` through `bash`; there is no dedicated Memory tool
-or SQLite access. The quick pass is limited to 4–6 lookups and at most one or two
-rollouts, with a single named pi JSONL file used only for exact evidence.
+containing the absolute Memory root, fixed trust and search rules, and the
+complete current `MEMORY.md` and `ACTIVITY.md`. Because both files are injected
+in full, the Agent is told not to re-open them for content, and to grep or read
+a specific line only when it needs a citation range. For detail beyond the
+injected blocks — exact wording, tool output, code, or a time-bounded activity —
+the Agent searches `rollout_summaries/` with the existing `grep`, `read`,
+`find`, `ls`, and read-only `rg`/`sed` through `bash`. There is no dedicated
+Memory tool and no direct access to the Mastra database.
 
-Memory artifacts are untrusted historical data. Current user/system/project
-rules and verifiable current state take precedence, and potentially stale facts
-must be verified or disclosed as historical. When Memory files support an
-answer, the model adds an `<oai-mem-citation>` JSON block. Streaming and final
-user text remove the block. Validation accepts only `MEMORY.md` or one-level
-rollout files, actual `grep`/`read` line ranges from the current Turn, and rollout
-IDs present in cited rollout contents. Valid provenance is appended to the pi
-Session as an `openscreen.memory-citation` custom entry; invalid provenance is
-discarded without changing the answer. Citations do not pin retention.
+Memory artifacts are untrusted historical data. Current user, system, and
+project rules and verifiable current state take precedence; conflicting
+observations are resolved by their own timestamps rather than file order, and
+potentially stale facts must be verified or disclosed as historical. When Memory
+content supports an answer, the model appends one `<oai-mem-citation>` JSON
+block. Streaming and final user text remove the block. Validation accepts only
+`MEMORY.md`, `ACTIVITY.md`, or one-level rollout files, actual `grep`/`read`
+line ranges from the current Turn, and rollout IDs present in cited rollout
+contents. Valid provenance is appended to the pi Session as an
+`openscreen.memory-citation` custom entry; invalid provenance is discarded
+without changing the answer. Citations do not pin retention.
 
 ## pi Agent capabilities
 
@@ -421,35 +417,38 @@ Unknown provider/model pairs fail startup.
 
 `memory` contains:
 
-- `enabled` for Chronicle and Turn extraction, consolidation, retention, and
-  prompt Memory context;
-- `worker.intervalMilliseconds` and `maxJobsPerTick` for scans and extraction;
-- `worker.leaseMilliseconds`, `retryDelayMilliseconds`, and `maxAttempts` for
-  durable extraction and consolidation recovery;
-- `turnMemory.maxInputTokens`, `maxOutputTokens`, `idleMilliseconds`, and
-  `hardCapMilliseconds` for batching and extraction model requests;
-- `chronicle.windowMilliseconds`, `graceMilliseconds`,
-  `maxSourcesPerRequest`, and input/output token limits for activity extraction;
-- `consolidation.maxChangedSourcesPerRun`, input/output and summary token limits,
-  and `cooldownMilliseconds` for global replacement; and
-- `retention.chronicleUnreferencedMilliseconds` for the unreferenced Chronicle
+- `enabled` for Chronicle summarization, Turn scanning, observation, projection,
+  retention, and prompt Memory context;
+- `worker.intervalMilliseconds` and `maxChronicleWindowsPerTick` for the cycle
+  period and the per-cycle Chronicle request budget;
+- `chronicle.windowMilliseconds`, `graceMilliseconds`, `maxSourcesPerRequest`,
+  and input/output token limits for activity summarization;
+- `observationalMemory.interactive` and `observationalMemory.screenActivity`,
+  each with `messageTokens` and `observationTokens`, for the two observation
+  processors; and
+- `retention.chronicleRolloutMaxAgeMilliseconds` for the Chronicle rollout age
   boundary. The checked-in value is 90 days.
 
-Chronicle extraction, Turn extraction, and global consolidation use the same
-configured pi model as the interactive Agent. The checked-in policy scans every
-five seconds, processes at most two jobs of each producer type per tick, uses
-one-minute Chronicle windows with 15 seconds grace and at most ten frames per
-request, closes Turn batches after 30 minutes idle or two hours total, allows up
-to 128 changed sources per consolidation, limits the generated summary to 2,500
-tokens, and applies a six-hour successful-run cooldown. A worker cycle that
-processes either producer defers consolidation to a later cycle.
+`maxSourcesPerRequest` may not exceed ten, `chronicle.maxOutputTokens` must stay
+below `maxInputTokens`, and each observation policy's `messageTokens` may not
+exceed its `observationTokens`. The checked-in policy cycles every five seconds,
+summarizes at most two Chronicle windows per cycle, and uses one-minute Chronicle
+windows with 15 seconds grace and at most ten frames per request.
+
+Chronicle summarization uses the same configured pi model as the interactive
+Agent. Observation and reflection do not: they use a separate Anthropic-compatible
+client built from the same `agent.provider`/`agent.model` pair. Only
+`minimax-cn` is verified for that client; another provider needs its own
+`baseURL` and compatibility check before use.
 
 At startup, `main.ts` first loads an optional `.env` from `process.cwd()` using
 Node's environment-file parser. Values already present in the process environment
 are not overwritten. Secrets belong only in the environment or `.env`, never in
 `config.json`. The default pi `minimax-cn` provider uses
 `MINIMAX_CN_API_KEY` and its built-in `https://api.minimaxi.com/anthropic`
-endpoint.
+endpoint; the observation client reads the same variable and appends the `/v1`
+segment its SDK requires. `main.ts` also sets `MASTRA_TELEMETRY_DISABLED` before
+any `@mastra` module is evaluated, unless the environment already defines it.
 
 Supported OpenScreen process variables:
 
@@ -475,10 +474,9 @@ pi serializes message content inline, so user and hidden injected images
 are stored as Base64 blocks in the Session JSONL. There is no legacy Session
 migration or compatibility reader. Swift removes an unused pending attachment
 copy when the user removes it and cleans up copies already written by a failed
-multi-image import. There is currently no product retention or deletion UI for
-Session files or attachment copies retained for submitted turns. Startup
-validates the configured provider/model, and every new or reopened Session uses
-that default instead of restoring historical model selection.
+multi-image import. Startup validates the configured provider/model, and every
+new or reopened Session uses that default instead of restoring historical model
+selection.
 
 Capture storage is independent of Session storage. Application passes only a
 neutral projected value between the two services; neither service reads the
@@ -487,32 +485,33 @@ other's files.
 Screenpipe stores each recorder generation below
 `screenpipe/generations/<generation-id>/`. Request Capture reads JPEG bytes from
 the active generation and pi persists those injected bytes again as Base64 in
-the Session JSONL. Chronicle stores only the generation-scoped cursor and
-bounded text projection in Memory; it does not copy SDK JPEGs or paths.
+the Session JSONL. Memory stores no image data of its own: it keeps only the
+generation-scoped cursor and the bounded text projection.
 
-Memory stores `memory.sqlite3` and its WAL files below `memory/`, together with
-private `rollout_summaries/turn-*.md`,
-`rollout_summaries/chronicle-*.md`, `raw_memories.md`, `MEMORY.md`, and
-`memory_summary.md` projections. The root and artifact directories use mode
-`0700`; the database and projected files use mode `0600`. SQLite is the source,
-job, evidence, and publication recovery truth. The files are searchable
-projections, while the nested no-remote Git repository keeps only the current
-parentless publication baseline. Producer projections are replayed from SQLite
-after a crash; Git is used for complete diff, rollback, and fenced publication,
-not history.
+Memory stores two SQLite databases below `memory/`. `mastra.db` is owned by
+LibSQL and holds threads, messages, and observations. `cursors.sqlite3` is owned
+by OpenScreen and holds only the per-Session Turn scan cursor, the Chronicle
+generation cursor, pending Chronicle frames, and window state. Alongside them it
+keeps private `MEMORY.md`, `ACTIVITY.md`, `rollout_summaries/turn-*.md`, and
+`rollout_summaries/chronicle-*.md`. The root and artifact directories use mode
+`0700`; projected files use mode `0600`. The Markdown files are projections, not
+truth, so a lost projection is regenerated on the next cycle rather than
+recovered.
 
-Memory starts before Capture and transport so it can migrate SQLite, recover a
-publication, validate or initialize its Git workspace, and project pending
-artifacts without making model requests. Capture then starts its recorder and
-transport begins accepting commands immediately. The initial Chronicle, Turn,
-and consolidation cycle runs in the background, so model latency cannot block
-Session restoration or editor interaction. Startup failure is reported, a
+Memory starts before Capture and transport so it can open both databases and
+project the current observation logs without making model requests. Resolving the
+observation model happens before any file is opened, so a missing API key fails
+without leaving a LibSQL handle behind while the lifecycle retries. Capture then
+starts its recorder and transport begins accepting commands immediately. The
+first Chronicle and Turn cycle runs in the background, so model latency cannot
+block Session restoration or editor interaction. Startup failure is reported, a
 background retry is scheduled at the worker interval, and text-only Agent
 execution continues. Until Memory recovers, generation completion remains false
 so Capture retention cannot delete unread Chronicle data. On shutdown,
 Application aborts active Agent runs, waits for executions, and stops Capture;
-pending Memory retry is cancelled and the Memory queue is drained before the pi
-execution environment is cleaned up.
+pending Memory retry is cancelled and the Memory queue is drained before the
+LibSQL store and cursor database are closed and the pi execution environment is
+cleaned up.
 
 Capture and Memory startup, background, or shutdown failures are diagnostics
 rather than Application-wide Agent failures. A prompt uses text and user images

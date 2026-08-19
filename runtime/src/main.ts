@@ -1,3 +1,7 @@
+// Must stay the first import in this file — see the module comment in
+// telemetry-guard.ts for why ordering matters here.
+import "./memory/mastra/telemetry-guard.js";
+
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -13,7 +17,7 @@ import { ScreenpipeRuntime } from "./capture/screenpipe/runtime.js";
 import { ScreenpipeCaptureService } from "./capture/screenpipe/service.js";
 import { RetryingMemoryLifecycle } from "./memory/lifecycle.js";
 import { MemoryRuntime } from "./memory/runtime.js";
-import { createMemoryReadPath } from "./memory/read-context.js";
+import { createMemoryReadPath } from "./memory/mastra/read-path.js";
 import {
   loadApplicationConfig,
   loadProjectEnvironment,
@@ -61,6 +65,7 @@ export async function run(): Promise<void> {
     env,
     models,
     model,
+    agent: { provider: config.agent.provider, model: config.agent.model },
     config: config.memory,
     ...(screenpipeConfig.enabled
       ? {
@@ -105,8 +110,10 @@ export async function run(): Promise<void> {
         }
       : {}),
     onDiagnostic: (diagnostic) => {
+      // Static hint only — the cause is written to the private
+      // memory/diagnostics.log, keeping stderr free of paths and content.
       process.stderr.write(
-        `OpenScreen memory ${diagnostic.phase} unavailable\n`,
+        `OpenScreen memory ${diagnostic.phase} unavailable (cause in memory/diagnostics.log)\n`,
       );
     },
   });
@@ -118,7 +125,6 @@ export async function run(): Promise<void> {
     !config.memory.enabled || memory.chronicleGenerationComplete(generationId);
   const memoryReadPath = createMemoryReadPath(memoryRoot, {
     enabled: config.memory.enabled,
-    summaryMaxTokens: config.memory.consolidation.summaryMaxTokens,
   });
   const agent = new PiAgentService({
     cwd,

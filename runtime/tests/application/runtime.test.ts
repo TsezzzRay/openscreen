@@ -46,7 +46,7 @@ function framesContext(
 
 function screenFrame(overrides: Partial<ScreenFrameSource> = {}): ScreenFrameSource {
   return {
-    sourceId: "screenpipe-frame:[\"generation-1\",\"101\"]",
+    sourceId: "screenpipe-frame:generation-1:101",
     generationId: "generation-1",
     frameId: "101",
     monitorKey: "1",
@@ -217,7 +217,7 @@ test("projects ordered screen frames with separate images and complete metadata"
   const frames = [
     screenFrame(),
     screenFrame({
-      sourceId: "screenpipe-frame:[\"generation-1\",\"102\"]",
+      sourceId: "screenpipe-frame:generation-1:102",
       frameId: "102",
       monitorKey: "2",
       deviceName: "Display B",
@@ -297,7 +297,7 @@ test("projects ordered screen frames with separate images and complete metadata"
 test("fails closed for mismatched frame image provenance", async () => {
   let receivedPrompt: AgentPrompt | undefined;
   const frames = [screenFrame(), screenFrame({
-    sourceId: "screenpipe-frame:[\"generation-1\",\"102\"]",
+    sourceId: "screenpipe-frame:generation-1:102",
     frameId: "102",
     monitorKey: "2",
   })];

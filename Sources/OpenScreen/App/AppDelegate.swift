@@ -39,4 +39,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
     }
+
+    /// Invoked directly from the SIGINT/SIGTERM handler in main.swift, bypassing
+    /// NSApp's own terminate(_:) protocol — see the comment there for why.
+    func shutdownForSignal() async {
+        guard !terminationPending else { return }
+        terminationPending = true
+        await agentClient.stop()
+    }
 }
