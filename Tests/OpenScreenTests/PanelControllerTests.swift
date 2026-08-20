@@ -55,9 +55,12 @@ final class PanelControllerTests: XCTestCase {
         XCTAssertFalse(panel.hidesOnDeactivate)
         XCTAssertFalse(panel.isOpaque)
         XCTAssertEqual(panel.backgroundColor, .clear)
-        XCTAssertFalse(
+        XCTAssertTrue(
             panel.styleMask.contains(.nonactivatingPanel),
-            "The chat panel must activate OpenScreen for mouse and keyboard input"
+            "The chat panel must not steal foreground-app focus from whatever the user was in — "
+                + "screenpipe's accessibility capture only ever walks the frontmost app, so activating "
+                + "OpenScreen on every panel summon meant the assistant could only ever see its own "
+                + "chat window instead of the app behind it"
         )
         XCTAssertTrue(panel.collectionBehavior.contains(.canJoinAllSpaces))
         XCTAssertTrue(panel.collectionBehavior.contains(.fullScreenAuxiliary))
@@ -68,7 +71,7 @@ final class PanelControllerTests: XCTestCase {
         XCTAssertLessThanOrEqual(panel.frame.height, 720)
     }
 
-    func testPanelWaitsForApplicationActivationBeforeTakingKeyFocus() throws {
+    func testTogglePanelNeverForcesApplicationActivation() throws {
         let repositoryRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -79,8 +82,10 @@ final class PanelControllerTests: XCTestCase {
             encoding: .utf8
         )
 
-        XCTAssertTrue(source.contains("NSApplication.didBecomeActiveNotification"))
-        XCTAssertTrue(source.contains("NSApp.activate()"))
+        // Forcing activation here previously stole focus from whatever app the
+        // user was in every time the panel was summoned — see
+        // testPanelConfiguration's .nonactivatingPanel assertion for why.
+        XCTAssertFalse(source.contains("NSApp.activate()"))
     }
 
     func testPanelHostsOnlySwiftUIContent() {
