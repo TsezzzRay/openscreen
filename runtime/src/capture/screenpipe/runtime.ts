@@ -52,7 +52,11 @@ export type ScreenpipeRuntimeOptions = {
   generationIdFactory?: () => string;
   environment?: NodeJS.ProcessEnv;
   recorderFactory?: (options: RecorderOptions) => ScreenpipeRecorder;
-  databaseFactory?: (path: string, generationId: string) => ScreenpipeDatabase;
+  databaseFactory?: (
+    path: string,
+    generationId: string,
+    ignoredWindows: readonly string[],
+  ) => ScreenpipeDatabase;
   generationPolicy?: GenerationRetentionPolicy;
   canDeleteGeneration?: (generationId: string) => boolean | Promise<boolean>;
   onDiagnostic?: (diagnostic: GenerationStoreDiagnostic | {
@@ -82,7 +86,11 @@ export class ScreenpipeRuntime {
   private readonly makeGenerationId: () => string;
   private readonly environment: NodeJS.ProcessEnv;
   private readonly recorderFactory: (options: RecorderOptions) => ScreenpipeRecorder;
-  private readonly databaseFactory: (path: string, generationId: string) => ScreenpipeDatabase;
+  private readonly databaseFactory: (
+    path: string,
+    generationId: string,
+    ignoredWindows: readonly string[],
+  ) => ScreenpipeDatabase;
   private readonly generationStore: ScreenpipeGenerationStore;
   private readonly onDiagnostic?: ScreenpipeRuntimeOptions["onDiagnostic"];
   private readonly timerFactory: (callback: () => void, delayMilliseconds: number) => RotationTimer;
@@ -251,7 +259,11 @@ export class ScreenpipeRuntime {
       }
       const database = generation.active
         ? current.database
-        : this.databaseFactory(join(generation.generationRoot, "db.sqlite"), id);
+        : this.databaseFactory(
+          join(generation.generationRoot, "db.sqlite"),
+          id,
+          this.options.ignoredWindows,
+        );
       try {
         const batch = database.framesAfter(cursor, limit);
         return {
@@ -291,7 +303,11 @@ export class ScreenpipeRuntime {
     let database: ScreenpipeDatabase | undefined;
     try {
       await recorder.start();
-      database = this.databaseFactory(join(generationRoot, "db.sqlite"), id);
+      database = this.databaseFactory(
+        join(generationRoot, "db.sqlite"),
+        id,
+        this.options.ignoredWindows,
+      );
       this.current = {
         generationId: id,
         generationRoot,

@@ -153,7 +153,7 @@ test("reads the newest valid frame for each monitor with numeric stable ordering
   ]);
   t.after(() => rm(database.root, { recursive: true, force: true }));
 
-  const source = openScreenpipeDatabase(database.path, "generation-7");
+  const source = openScreenpipeDatabase(database.path, "generation-7", []);
   t.after(() => source.close());
 
   assert.deepEqual(source.latestFrames(), [
@@ -278,7 +278,7 @@ test("drops rows with invalid frame fields and preserves nullable fields", async
   ]);
   t.after(() => rm(database.root, { recursive: true, force: true }));
 
-  const source = openScreenpipeDatabase(database.path, "generation-nullable");
+  const source = openScreenpipeDatabase(database.path, "generation-nullable", []);
   t.after(() => source.close());
 
   const frames = source.latestFrames();
@@ -325,7 +325,7 @@ test("refreshes only rows committed after the previous cursor", async (t) => {
   }]);
   t.after(() => rm(database.root, { recursive: true, force: true }));
 
-  const source = openScreenpipeDatabase(database.path, "generation-refresh");
+  const source = openScreenpipeDatabase(database.path, "generation-refresh", []);
   t.after(() => source.close());
 
   assert.deepEqual(source.latestFrames().map((frame) => frame.frameId), ["1"]);
@@ -414,7 +414,7 @@ test("revalidates winners before refreshing and never returns deleted stale rows
   ]);
   t.after(() => rm(database.root, { recursive: true, force: true }));
 
-  const source = openScreenpipeDatabase(database.path, "generation-revalidate");
+  const source = openScreenpipeDatabase(database.path, "generation-revalidate", []);
   t.after(() => source.close());
 
   assert.deepEqual(source.latestFrames().map((frame) => frame.frameId), ["102"]);
@@ -467,7 +467,7 @@ test("reads a bounded id-ordered increment while advancing past invalid rows", a
   ]);
   t.after(() => rm(database.root, { recursive: true, force: true }));
 
-  const source = openScreenpipeDatabase(database.path, "generation-increment");
+  const source = openScreenpipeDatabase(database.path, "generation-increment", []);
   t.after(() => source.close());
 
   const first = source.framesAfter(0, 2);
@@ -506,7 +506,7 @@ test("keeps the incremental cursor independent from latest-frame refresh state",
   ]);
   t.after(() => rm(database.root, { recursive: true, force: true }));
 
-  const source = openScreenpipeDatabase(database.path, "generation-independent-cursor");
+  const source = openScreenpipeDatabase(database.path, "generation-independent-cursor", []);
   t.after(() => source.close());
 
   assert.deepEqual(source.latestFrames().map((frame) => frame.frameId), ["11", "12"]);
@@ -528,12 +528,63 @@ test("keeps the incremental cursor independent from latest-frame refresh state",
   });
 });
 
+test("drops frames matching ignoredWindows, case-insensitively, by app name or window title", async (t) => {
+  const database = await createFramesDatabase([
+    {
+      id: 61,
+      timestamp: "2026-08-15T01:00:00.000Z",
+      deviceName: "Display 1",
+      snapshotPath: "/missing/1770000000061_m1.jpg",
+      captureTrigger: "click",
+      appName: "OpenScreen",
+      accessibilityText: "own chat window, should be dropped",
+    },
+    {
+      id: 62,
+      timestamp: "2026-08-15T01:00:01.000Z",
+      deviceName: "Display 1",
+      snapshotPath: "/missing/1770000000062_m1.jpg",
+      captureTrigger: "click",
+      appName: "openscreen",
+      accessibilityText: "same app, different case, still dropped",
+    },
+    {
+      id: 63,
+      timestamp: "2026-08-15T01:00:02.000Z",
+      deviceName: "Display 1",
+      snapshotPath: "/missing/1770000000063_m1.jpg",
+      captureTrigger: "click",
+      appName: "Finder",
+      windowName: "OpenScreen debug notes",
+      accessibilityText: "matches via window title instead of app name",
+    },
+    {
+      id: 64,
+      timestamp: "2026-08-15T01:00:03.000Z",
+      deviceName: "Display 1",
+      snapshotPath: "/missing/1770000000064_m1.jpg",
+      captureTrigger: "click",
+      appName: "Ghostty",
+      accessibilityText: "unrelated app, kept",
+    },
+  ]);
+  t.after(() => rm(database.root, { recursive: true, force: true }));
+
+  const source = openScreenpipeDatabase(database.path, "generation-ignored", ["OpenScreen"]);
+  t.after(() => source.close());
+
+  assert.deepEqual(
+    source.framesAfter(0, 10).frames.map((frame) => frame.frameId),
+    ["64"],
+  );
+});
+
 test("requires a non-empty generation id", async (t) => {
   const database = await createFramesDatabase([]);
   t.after(() => rm(database.root, { recursive: true, force: true }));
 
   assert.throws(
-    () => openScreenpipeDatabase(database.path, ""),
+    () => openScreenpipeDatabase(database.path, "", []),
     /generationId/,
   );
 });

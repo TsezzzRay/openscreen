@@ -48,9 +48,30 @@ function optionalString(
     : { valid: true, value: mapped };
 }
 
+// screenpipe's native `ignoredWindows` recorder option (see recorder.ts) does
+// not reliably keep this app's own window out of `frames` — confirmed against
+// live capture data (OpenScreen was ~57% of frames in one generation). This
+// re-checks the same config at the read boundary as a backstop, matching
+// screenpipe's own legacy (unscoped) pattern semantics: case-insensitive
+// substring match against either the app name or the window title.
+function matchesIgnoredWindow(
+  ignoredWindows: readonly string[],
+  application: string | undefined,
+  windowTitle: string | undefined,
+): boolean {
+  const app = (application ?? "").toLowerCase();
+  const title = (windowTitle ?? "").toLowerCase();
+  return ignoredWindows.some((raw) => {
+    const pattern = raw.trim().toLowerCase();
+    if (pattern === "") return false;
+    return app.includes(pattern) || title.includes(pattern);
+  });
+}
+
 function projectFrame(
   row: ScreenpipeFrameRow,
   generationId: string,
+  ignoredWindows: readonly string[],
 ): { frame: ScreenFrameSource; timestampMs: number; id: number } | undefined {
   if (typeof row.id !== "number" || !Number.isSafeInteger(row.id) || row.id <= 0) {
     return undefined;
@@ -82,6 +103,9 @@ function projectFrame(
     || !url.valid
     || visibleText === undefined
   ) {
+    return undefined;
+  }
+  if (matchesIgnoredWindow(ignoredWindows, application.value, windowTitle.value)) {
     return undefined;
   }
 
@@ -163,7 +187,11 @@ class OpenScreenpipeDatabase implements ScreenpipeDatabase {
     id: number;
   }>();
 
-  constructor(private readonly connection: DatabaseSync, private readonly generationId: string) {
+  constructor(
+    private readonly connection: DatabaseSync,
+    private readonly generationId: string,
+    private readonly ignoredWindows: readonly string[],
+  ) {
     this.frameScan = connection.prepare(`
       SELECT
         ${FRAME_COLUMNS}
@@ -210,7 +238,7 @@ class OpenScreenpipeDatabase implements ScreenpipeDatabase {
           : rawRow as unknown as ScreenpipeFrameRow;
         const projected = row === undefined
           ? undefined
-          : projectFrame(row, this.generationId);
+          : projectFrame(row, this.generationId, this.ignoredWindows);
         if (
           projected === undefined
           || !sameProjectedFrame(winner.frame, projected.frame)
@@ -233,7 +261,7 @@ class OpenScreenpipeDatabase implements ScreenpipeDatabase {
         ) {
           this.lastScannedFrameId = row.id;
         }
-        const projected = projectFrame(row, this.generationId);
+        const projected = projectFrame(row, this.generationId, this.ignoredWindows);
         if (projected === undefined) continue;
         const prior = this.latestByMonitor.get(projected.frame.monitorKey);
         if (
@@ -286,7 +314,7 @@ class OpenScreenpipeDatabase implements ScreenpipeDatabase {
       ) {
         nextCursor = row.id;
       }
-      const projected = projectFrame(row, this.generationId);
+      const projected = projectFrame(row, this.generationId, this.ignoredWindows);
       if (projected !== undefined) frames.push({ ...projected.frame });
     }
     return {
@@ -300,6 +328,7 @@ class OpenScreenpipeDatabase implements ScreenpipeDatabase {
 export function openScreenpipeDatabase(
   path: string,
   generationId: string,
+  ignoredWindows: readonly string[],
 ): ScreenpipeDatabase {
   if (typeof generationId !== "string" || generationId.trim().length === 0) {
     throw new Error("generationId must be a non-empty string");
@@ -307,7 +336,7 @@ export function openScreenpipeDatabase(
   const connection = new DatabaseSync(path, { readOnly: true });
   try {
     connection.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MILLISECONDS}`);
-    return new OpenScreenpipeDatabase(connection, generationId);
+    return new OpenScreenpipeDatabase(connection, generationId, ignoredWindows);
   } catch (error) {
     connection.close();
     throw error;
