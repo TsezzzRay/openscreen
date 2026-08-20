@@ -42,7 +42,12 @@ async function withWritePath(
       observationalMemory: observationalMemoryConfig(),
       retention: { chronicleRolloutMaxAgeMilliseconds: HUGE },
     },
-    { provider: "minimax-cn", model: "test-model" },
+    {
+      provider: "minimax-cn",
+      id: "test-model",
+      api: "anthropic-messages",
+      baseUrl: "https://api.minimaxi.com/anthropic",
+    },
   );
   try {
     const projector = createMemoryProjector(root, store);

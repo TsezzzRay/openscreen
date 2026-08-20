@@ -42,7 +42,12 @@ const unusedModels = {
   complete: async () => assert.fail("no Chronicle model call expected in this test"),
   completeSimple: async () => assert.fail("no Chronicle model call expected in this test"),
 } as unknown as Models;
-const unusedModel = { id: "unused" } as Model<string>;
+const unusedModel = {
+  id: "unused",
+  provider: "minimax-cn",
+  api: "anthropic-messages",
+  baseUrl: "https://api.minimaxi.com/anthropic",
+} as Model<string>;
 
 test("scans a completed Turn, writes it to Mastra, and archives its rollout — no extraction model call", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "openscreen-turn-memory-runtime-"));
@@ -70,7 +75,6 @@ test("scans a completed Turn, writes it to Mastra, and archives its rollout — 
     env,
     models: unusedModels,
     model: unusedModel,
-    agent: { provider: "minimax-cn", model: "test-model" },
     config: runtimeConfig(),
     gitBranch: async () => "feature/memory",
     now: () => now,
@@ -101,7 +105,6 @@ test("scans a completed Turn, writes it to Mastra, and archives its rollout — 
     env,
     models: unusedModels,
     model: unusedModel,
-    agent: { provider: "minimax-cn", model: "test-model" },
     config: runtime.config,
     gitBranch: async () => "feature/memory",
     now: () => now,
@@ -140,7 +143,6 @@ test("notifySession scans on demand without waiting for the interval tick", asyn
     env,
     models: unusedModels,
     model: unusedModel,
-    agent: { provider: "minimax-cn", model: "test-model" },
     config: runtimeConfig(),
     gitBranch: async () => "feature/memory",
     now: () => Date.now(),

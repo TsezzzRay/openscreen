@@ -21,11 +21,20 @@ import {
 // no-ops (confirmed idempotent under threshold in Stage A) — these tests
 // exercise Chronicle windowing/summarization, not Observer/Reflector, so no
 // real network call happens here.
-process.env.MINIMAX_CN_API_KEY ??= "test-key";
+process.env.DEEPSEEK_API_KEY ??= "test-key";
 const HUGE = 100_000_000;
 
 const now = Date.parse("2026-08-15T10:01:15.000Z");
-const model = { id: "memory-model" } as Model<string>;
+// An openai-completions provider on purpose: these tests drive Chronicle
+// windowing through the models.completeSimple path, and the Memory store
+// resolves this same model into a plain OpenAI-compatible config rather than
+// constructing any client.
+const model = {
+  id: "memory-model",
+  provider: "deepseek",
+  api: "openai-completions",
+  baseUrl: "https://api.deepseek.com",
+} as Model<string>;
 
 function frame(generationId: string, id: number): ChronicleFrameInput {
   return {
@@ -113,7 +122,6 @@ test("starts Memory without eagerly summarizing pending windows", async (t) => {
       },
     } as unknown as Models,
     model,
-    agent: { provider: "minimax-cn", model: "test-model" },
     config,
     now: () => now,
   });
@@ -175,7 +183,6 @@ test("polls generation-scoped frames, resets on rotation, and resumes a durable 
     env,
     models,
     model,
-    agent: { provider: "minimax-cn", model: "test-model" },
     config: runtimeConfig(),
     chronicleFrameFeed: feed,
     gitBranch: async () => "feature/chronicle",
@@ -260,7 +267,6 @@ test("writes the real failure cause to the private diagnostics log", async (t) =
       completeSimple: async () => chronicleToolResponse(["invented-source-id"]),
     } as unknown as Models,
     model,
-    agent: { provider: "minimax-cn", model: "test-model" },
     config,
     now: () => now,
     onDiagnostic: (diagnostic) => phases.push(diagnostic.phase),

@@ -5,7 +5,10 @@ import { Memory } from "@mastra/memory";
 import { ObservationalMemory } from "@mastra/memory/processors";
 
 import type { MemoryConfig } from "../config.js";
-import { buildObservationalMemoryModel } from "./model-adapter.js";
+import {
+  buildObservationalMemoryModel,
+  type ObservationalMemoryModelSource,
+} from "./model-adapter.js";
 
 // Two ObservationalMemory instances, not two Memory instances (confirmed in
 // Stage A): Memory's own `options.observationalMemory` only activates inside
@@ -30,17 +33,18 @@ export function mastraDatabasePath(root: string): string {
 export function openMastraMemoryStore(
   root: string,
   config: MemoryConfig,
-  agent: { provider: string; model: string },
+  agentModel: ObservationalMemoryModelSource,
 ): MastraMemoryStore {
   // Resolve the model BEFORE opening any file. This is the common failure
-  // mode (missing MINIMAX_CN_API_KEY) — checking it first means a
-  // misconfigured environment never opens mastra.db at all, instead of
+  // mode (an unsupported wire API, or no API key in the environment for the
+  // configured provider) — checking it first means a misconfigured
+  // environment never opens mastra.db at all, instead of
   // opening it and then throwing. RetryingMemoryLifecycle retries this every
   // worker.intervalMilliseconds while broken; without this ordering (or the
   // try/catch below), each retry leaked an unclosed LibSQLStore handle —
   // observed as 124 open mastra.db/-wal/-shm file descriptors after ~5
   // minutes of retrying against a missing API key.
-  const model = buildObservationalMemoryModel(agent);
+  const model = buildObservationalMemoryModel(agentModel);
 
   const storage = new LibSQLStore({
     id: "openscreen-memory",

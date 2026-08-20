@@ -57,8 +57,10 @@ cp .env.example .env
 ```
 
 Set `MINIMAX_CN_API_KEY` in `.env`, or export it in the launching environment.
-Existing process environment values take precedence over `.env`. Provider
-credentials are never read from `config.json`.
+To use a different provider, change `agent.provider` and `agent.model` in
+`config.json` and set that provider's credential instead; background Memory
+follows the same selection. Existing process environment values take precedence
+over `.env`. Provider credentials are never read from `config.json`.
 
 Start OpenScreen from the repository root:
 

@@ -94,13 +94,18 @@ test("checked-in configuration is the strict pi, Capture, and Memory configurati
   assert.deepEqual(loaded.memory, memoryFixture);
 });
 
-test("checked-in environment example uses the pi MiniMax credential name", () => {
+test("checked-in environment example sets the credential for the configured provider", () => {
   const examplePath = join(dirname(repositoryConfigPath()), ".env.example");
+  const example = readFileSync(examplePath, "utf8");
 
-  assert.equal(
-    readFileSync(examplePath, "utf8"),
-    "MINIMAX_CN_API_KEY=your-api-key\n",
-  );
+  const active = example
+    .split("\n")
+    .filter((line) => line.trim() && !line.startsWith("#"));
+
+  // The default config selects minimax-cn, so that is the one credential the
+  // example may set outright. Every other provider stays commented out.
+  assert.deepEqual(active, ["MINIMAX_CN_API_KEY=your-api-key"]);
+  assert.equal(loadApplicationConfig().agent.provider, "minimax-cn");
 });
 
 test("loads only clean pi selection, Capture, and Memory configuration", (t) => {

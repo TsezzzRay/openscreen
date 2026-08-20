@@ -44,7 +44,7 @@ runtime/src/
 │   │   ├── write-path.ts         thread creation, message save, and observation trigger
 │   │   ├── projector.ts          observation-log projection and rollout archive
 │   │   ├── read-path.ts          injected Memory block and read policy
-│   │   ├── model-adapter.ts      Anthropic-compatible client for observation/reflection
+│   │   ├── model-adapter.ts      resolves the pi model into a Mastra model
 │   │   └── telemetry-guard.ts    disables Mastra telemetry before any @mastra import
 │   ├── chronicle/
 │   │   ├── window-scheduler.ts   UTC activity windows and grace boundary
@@ -166,8 +166,8 @@ unconditionally, which is cheap when the configured `messageTokens` threshold is
 not reached. Mastra decides on its own when to observe and when to reflect;
 OpenScreen configures only the two token budgets. `messageTokens` may not exceed
 `observationTokens`. No vector store and no embedder are configured, so semantic
-recall stays off. Observation and reflection use a dedicated Anthropic-compatible
-client rather than the pi model handle.
+recall stays off. Observation and reflection do not stream through pi: the
+resolved pi model is translated into a Mastra model by `model-adapter.ts`.
 
 ## Turn Memory
 
@@ -436,18 +436,37 @@ summarizes at most two Chronicle windows per cycle, and uses one-minute Chronicl
 windows with 15 seconds grace and at most ten frames per request.
 
 Chronicle summarization uses the same configured pi model as the interactive
-Agent. Observation and reflection do not: they use a separate Anthropic-compatible
-client built from the same `agent.provider`/`agent.model` pair. Only
-`minimax-cn` is verified for that client; another provider needs its own
-`baseURL` and compatibility check before use.
+Agent. Observation and reflection use the same model too, but not through pi:
+`model-adapter.ts` translates the model pi resolved from `agent.provider` and
+`agent.model` into a form Mastra accepts, selected by that model's pi wire API.
+
+| pi wire API | Mastra model | Notes |
+| --- | --- | --- |
+| `anthropic-messages` | `@ai-sdk/anthropic` client | pi stores these base URLs without the API version segment, so `/v1` is appended. |
+| `openai-completions` | OpenAI-compatible config | No client is constructed; the base URL is passed through unchanged. |
+| anything else | rejected at startup | Needs its own verified client. |
+
+26 of pi's 35 built-in providers expose at least one usable model. The nine
+that expose none are `amazon-bedrock`, `azure-openai-responses`, `google`,
+`google-vertex`, `mistral`, `openai` and `openai-codex`, whose models use
+unsupported wire APIs, plus `cloudflare-ai-gateway` and `cloudflare-workers-ai`,
+whose base URLs are templated. Note that this excludes OpenAI itself, whose
+models use `openai-responses`. `github-copilot` and `opencode` carry a mix and
+are usable only with a model on a supported wire API. Selecting an unusable
+model starts the interactive Agent normally and fails Memory startup.
+
+A templated base URL, which pi substitutes inside its own providers, is also
+rejected. These calls bypass pi and therefore receive none of its per-provider
+compatibility overrides.
 
 At startup, `main.ts` first loads an optional `.env` from `process.cwd()` using
 Node's environment-file parser. Values already present in the process environment
 are not overwritten. Secrets belong only in the environment or `.env`, never in
-`config.json`. The default pi `minimax-cn` provider uses
-`MINIMAX_CN_API_KEY` and its built-in `https://api.minimaxi.com/anthropic`
-endpoint; the observation client reads the same variable and appends the `/v1`
-segment its SDK requires. `main.ts` also sets `MASTRA_TELEMETRY_DISABLED` before
+`config.json`. The credential for the configured provider is read from the
+environment under pi's own credential names, so Memory and the interactive Agent
+always authenticate with the same variable. The default pi `minimax-cn` provider
+uses `MINIMAX_CN_API_KEY` and its built-in `https://api.minimaxi.com/anthropic`
+endpoint. `main.ts` also sets `MASTRA_TELEMETRY_DISABLED` before
 any `@mastra` module is evaluated, unless the environment already defines it.
 
 Supported OpenScreen process variables:

@@ -65,7 +65,6 @@ export async function run(): Promise<void> {
     env,
     models,
     model,
-    agent: { provider: config.agent.provider, model: config.agent.model },
     config: config.memory,
     ...(screenpipeConfig.enabled
       ? {

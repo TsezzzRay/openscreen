@@ -66,7 +66,6 @@ export interface MemoryRuntimeOptions {
   env: NodeExecutionEnv;
   models: Models;
   model: Model<string>;
-  agent: { provider: string; model: string };
   config: MemoryConfig;
   chronicleFrameFeed?: ChronicleFrameFeed;
   gitBranch?: () => string | Promise<string>;
@@ -335,7 +334,7 @@ export class MemoryRuntime {
       this.mastraStore = openMastraMemoryStore(
         this.options.memoryRoot,
         this.config,
-        this.options.agent,
+        this.options.model,
       );
       this.projector = createMemoryProjector(this.options.memoryRoot, this.mastraStore);
       try {

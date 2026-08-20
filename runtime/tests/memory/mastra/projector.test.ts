@@ -24,7 +24,12 @@ async function withStore(root: string, fn: (store: MastraMemoryStore) => Promise
       },
       retention: { chronicleRolloutMaxAgeMilliseconds: HUGE },
     } satisfies MemoryConfig,
-    { provider: "minimax-cn", model: "test-model" },
+    {
+      provider: "minimax-cn",
+      id: "test-model",
+      api: "anthropic-messages",
+      baseUrl: "https://api.minimaxi.com/anthropic",
+    },
   );
   try {
     await fn(store);
