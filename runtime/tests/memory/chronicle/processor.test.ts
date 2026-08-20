@@ -160,6 +160,82 @@ test("summarizes a Chronicle window and immediately archives its rollout + obser
   assert.match(rollout, /屏幕内容/);
 });
 
+test("dedupes frames sharing identical visibleText before calling the model, then restores full coverage", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "openscreen-chronicle-processor-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const dup1: ChronicleFrameInput = {
+    sourceId: "frame:1",
+    generationId: "generation-1",
+    frameId: "1",
+    monitorKey: "1",
+    deviceName: "Display",
+    capturedAt: "2026-08-15T10:00:01.000Z",
+    trigger: "periodic",
+    visibleText: "same terminal, unchanged",
+  };
+  const distinct: ChronicleFrameInput = {
+    sourceId: "frame:2",
+    generationId: "generation-1",
+    frameId: "2",
+    monitorKey: "2",
+    deviceName: "Display",
+    capturedAt: "2026-08-15T10:00:02.000Z",
+    trigger: "periodic",
+    visibleText: "a different screen",
+  };
+  const dup2: ChronicleFrameInput = {
+    ...dup1,
+    sourceId: "frame:3",
+    frameId: "3",
+    capturedAt: "2026-08-15T10:00:03.000Z",
+  };
+  const frames = [dup1, distinct, dup2].map(projectFrame);
+  const requestedSourceIds: string[][] = [];
+  const models = {
+    completeSimple: async (_model: Model<string>, context: Context) => {
+      const input = JSON.parse(String(context.messages[0]?.content)) as {
+        frames: Array<{ sourceId: string }>;
+      };
+      requestedSourceIds.push(input.frames.map(({ sourceId }) => sourceId));
+      return toolResponse({
+        activities: [
+          { summary: "Unchanged terminal.", source_frame_ids: ["frame:1"], application: null, window_title: null },
+          { summary: "A different screen.", source_frame_ids: ["frame:2"], application: null, window_title: null },
+        ],
+        source_summary: "Two activities, one deduped.",
+      });
+    },
+  } as unknown as Models;
+
+  await withWritePath(root, async (writePath) => {
+    const result = await summarizeChronicleWindow({
+      windowId: "chronicle-window:2026-08-15T10:01:00.000Z",
+      frames,
+      policy: { ...policy, maxSourcesPerRequest: 10 },
+      models,
+      model,
+      writePath,
+      now: () => Date.parse("2026-08-15T10:01:00.000Z"),
+    });
+    assert.deepEqual(result, { status: "summarized", requestCount: 1 });
+  });
+
+  // The model only ever saw the two distinct texts — frame:3 (a duplicate of
+  // frame:1) never went into a request.
+  assert.deepEqual(requestedSourceIds, [["frame:1", "frame:2"]]);
+
+  const [rolloutName] = await readdir(join(root, "rollout_summaries"));
+  const rollout = await readFile(join(root, "rollout_summaries", rolloutName!), "utf8");
+  // The archive still lists every real frame, and frame:1's activity gets
+  // frame:3 folded back in even though the model never mentioned it.
+  assert.match(rollout, /source_frame_id: frame:1/);
+  assert.match(rollout, /source_frame_id: frame:2/);
+  assert.match(rollout, /source_frame_id: frame:3/);
+  const activity1 = rollout.slice(rollout.indexOf("Unchanged terminal"));
+  assert.match(activity1, /- frame:1/);
+  assert.match(activity1, /- frame:3/);
+});
+
 test("splits a Chronicle chunk when the model reaches its output limit", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "openscreen-chronicle-processor-"));
   t.after(() => rm(root, { recursive: true, force: true }));

@@ -37,6 +37,57 @@ function combine(outputs: readonly ChronicleSummary[]): ChronicleSummary {
   };
 }
 
+interface FrameGroup {
+  representative: ChronicleFrameProjection;
+  memberSourceIds: string[];
+}
+
+// Real capture data showed windows with dozens of frames sharing byte-identical
+// visibleText (a static terminal, an unchanged chat window) — up to ~83% of a
+// window's input tokens in the worst case. Only dedupe on non-empty exact
+// matches: an undefined/empty visibleText says nothing about whether two
+// frames are really the same moment, so those always stay distinct. The model
+// only ever sees one representative per group; every group's real sourceIds
+// are restored onto that activity's source_frame_ids after the model answers
+// (see expandSources below), so rollout/coverage stays complete.
+function dedupeFrames(
+  frames: readonly ChronicleFrameProjection[],
+): FrameGroup[] {
+  const groups: FrameGroup[] = [];
+  const byText = new Map<string, FrameGroup>();
+  for (const frame of frames) {
+    const text = frame.visibleText;
+    if (text === undefined || text === "") {
+      groups.push({ representative: frame, memberSourceIds: [frame.sourceId] });
+      continue;
+    }
+    const existing = byText.get(text);
+    if (existing === undefined) {
+      const group: FrameGroup = { representative: frame, memberSourceIds: [frame.sourceId] };
+      byText.set(text, group);
+      groups.push(group);
+    } else {
+      existing.memberSourceIds.push(frame.sourceId);
+    }
+  }
+  return groups;
+}
+
+function expandSources(
+  summary: ChronicleSummary,
+  membersBySourceId: ReadonlyMap<string, readonly string[]>,
+): ChronicleSummary {
+  return {
+    ...summary,
+    activities: summary.activities.map((activity) => ({
+      ...activity,
+      sourceFrameIds: activity.sourceFrameIds.flatMap(
+        (sourceId) => membersBySourceId.get(sourceId) ?? [sourceId],
+      ),
+    })),
+  };
+}
+
 function nextChunk(
   pending: readonly ChronicleFrameProjection[],
   offset: number,
@@ -174,13 +225,23 @@ export async function summarizeChronicleWindow({
       batch: readonly ChronicleFrameProjection[],
     ): Promise<ChronicleSummary[]> =>
       request(buildChronicleContext(batch), batch, MAX_REPAIR_ATTEMPTS);
+    const groups = dedupeFrames(frames);
+    const representativeFrames = groups.map((group) => group.representative);
+    const membersBySourceId = new Map<string, readonly string[]>(
+      groups.map((group) => [group.representative.sourceId, group.memberSourceIds]),
+    );
     let offset = 0;
-    while (offset < frames.length) {
-      const batch = nextChunk(frames, offset, policy.maxSourcesPerRequest, policy.maxInputTokens);
+    while (offset < representativeFrames.length) {
+      const batch = nextChunk(
+        representativeFrames,
+        offset,
+        policy.maxSourcesPerRequest,
+        policy.maxInputTokens,
+      );
       outputs.push(...await summarize(batch));
       offset += batch.length;
     }
-    const summary = combine(outputs);
+    const summary = expandSources(combine(outputs), membersBySourceId);
     const rollout = renderChronicleRollout({
       jobKey: windowId,
       sources: frames,
