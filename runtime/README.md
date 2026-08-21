@@ -82,10 +82,11 @@ Memory -> Screenpipe-neutral frame feed + pi Session/model APIs + private Mastra
 main.ts -> all concrete implementations
 ```
 
-- `agent/` has no dependency on Capture, Application, Transport, or Swift. A
+- `agent/` has no dependency on Capture, Application, Transport, or the desktop
+  frontend. A
   prompt accepts only text, user images, and optional generic injected context.
-- `capture/` has no dependency on Agent, pi, Application, Transport, or Swift.
-  It owns the Screenpipe recorder, generations, frame projection, request JPEG
+- `capture/` has no dependency on Agent, pi, Application, Transport, or the
+  desktop frontend. It owns the Screenpipe recorder, generations, frame projection, request JPEG
   reads, and retention.
 - `memory/` has no dependency on Capture, Application, or Transport modules. It
   receives a neutral incremental frame feed at the composition root and uses
@@ -105,7 +106,8 @@ Capture.
 
 ## Request flow
 
-1. Swift sends one strict product command with a non-empty `requestId`.
+1. The desktop application sends one strict product command with a non-empty
+   `requestId`.
 2. Transport validates the complete JSON shape and dispatches commands without
    imposing global serialization.
 3. For a prompt, Application first asks Screenpipe Capture for one atomic
@@ -287,7 +289,8 @@ without changing the answer. Citations do not pin retention.
 - current-branch context and thinking-state restoration; and
 - context accounting and compaction summaries.
 
-OpenScreen projects pi state into product DTOs for Swift. The transcript contains
+OpenScreen projects pi state into product DTOs for the desktop frontend. The
+transcript contains
 user, assistant, and tool messages; a custom message is included as context only
 when pi marks it for display. Only the current pi branch is projected; raw leaf
 bookkeeping and other internal Session entries are not exposed through the
@@ -369,11 +372,15 @@ upgrading.
 
 ## Product protocol
 
-Swift starts `node runtime/dist/main.js` and exchanges newline-delimited JSON on
-stdin/stdout. Every line carries `requestId` for correlation.
-Swift rejects requests when the child is not running, drains its final stdout
-before reporting process exit, and closes stdin for a bounded graceful shutdown
-before terminating a child that does not exit.
+The Electron main process starts this runtime as a child and exchanges
+newline-delimited JSON on stdin/stdout. Every line carries `requestId` for
+correlation. The frontend rejects requests when the child is not running, drains
+its final stdout before reporting process exit, and closes stdin for a bounded
+graceful shutdown before terminating a child that does not exit.
+
+`application/api.ts` is the only definition of this protocol. The frontend
+re-exports those types instead of restating them, so the two ends cannot drift;
+see [Development rules](../AGENTS.md#testing).
 
 Commands:
 
@@ -480,10 +487,9 @@ Supported OpenScreen process variables:
 
 The default data root is
 `~/Library/Application Support/OpenScreen/`. `OPENSCREEN_DATA_DIR` replaces that
-entire Node data root. Swift independently keeps managed PNG copies of uploaded
-or pasted images under the default
-`~/Library/Application Support/OpenScreen/user-attachments/` directory;
-`OPENSCREEN_DATA_DIR` does not relocate that Swift-owned directory.
+entire Node data root. The Electron main process keeps managed PNG copies of
+uploaded or pasted images under `user-attachments/` inside that same data root,
+so `OPENSCREEN_DATA_DIR` relocates them along with everything else.
 
 pi stores Sessions below `sessions/`, grouped by an encoded launch working
 directory. Each Session is one append-only JSONL file containing its header,
@@ -491,9 +497,9 @@ messages, tool results, thinking changes, compaction summaries, labels, and pi
 bookkeeping.
 pi serializes message content inline, so user and hidden injected images
 are stored as Base64 blocks in the Session JSONL. There is no legacy Session
-migration or compatibility reader. Swift removes an unused pending attachment
-copy when the user removes it and cleans up copies already written by a failed
-multi-image import. Startup validates the configured provider/model, and every
+migration or compatibility reader. The frontend removes an unused pending
+attachment copy when the user removes it and cleans up copies already written by
+a failed multi-image import. Startup validates the configured provider/model, and every
 new or reopened Session uses that default instead of restoring historical model
 selection.
 
@@ -550,8 +556,10 @@ npm run test:runtime
 ```
 
 The command builds the production Agent, builds the test target, and runs all
-Node tests recursively. Changes to the Swift product protocol also require:
+Node tests recursively. Changes to the product protocol also require the
+frontend suites:
 
 ```bash
-swift test
+npm run typecheck:app
+npm run test:app
 ```

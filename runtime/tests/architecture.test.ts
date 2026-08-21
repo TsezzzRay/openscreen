@@ -217,14 +217,17 @@ test("main is the sole concrete composition root", () => {
   assert.deepEqual(composers, ["main.ts"]);
 });
 
-test("does not ship the retired ObservationHelper capture backend", () => {
-  const packageManifest = readFileSync(resolve("Package.swift"), "utf8");
-
-  assert.equal(existsSync(resolve("Sources/ObservationHelper")), false);
-  assert.equal(
-    existsSync(resolve("Tests/OpenScreenTests/ObservationHelperTests.swift")),
-    false,
-  );
-  assert.equal(existsSync(resolve("Sources/CaptureCore")), false);
-  assert.doesNotMatch(packageManifest, /ObservationHelper|CaptureCore/);
+test("ships no Swift target, including the retired capture backends", () => {
+  // The frontend is Electron. This subsumes the earlier guard against
+  // resurrecting the ObservationHelper and CaptureCore capture backends, which
+  // only ever existed as Swift targets.
+  for (const path of [
+    "Package.swift",
+    "Sources",
+    "Tests",
+    "Sources/ObservationHelper",
+    "Sources/CaptureCore",
+  ]) {
+    assert.equal(existsSync(resolve(path)), false, `${path} should not exist`);
+  }
 });

@@ -3,9 +3,13 @@
 OpenScreen is an early-stage, open-source macOS assistant that can answer
 questions about the window you are using and work with local files and commands.
 
-Press `Option + Space` to open the floating panel. Each prompt is answered with
-the current screen attached, and a capture failure still leaves a working
-text-only Agent run.
+OpenScreen has two surfaces. Press `Option + Space` anywhere for the overlay: a
+command bar that answers one question about the screen in front of you without
+taking focus from the application you are in. The main window holds the full
+interface — chats, history, transcripts, and Agent settings.
+
+Each prompt is answered with the current screen attached, and a capture failure
+still leaves a working text-only Agent run.
 
 The Agent runtime is built on `@earendil-works/pi-agent-core` and
 `@earendil-works/pi-ai`. OpenScreen does not maintain a second Agent Loop,
@@ -16,7 +20,11 @@ Session implementation, model adapter, or compaction engine.
 
 ## Current capabilities
 
-- Global `Option + Space` shortcut and a movable floating panel.
+- Global `Option + Space` overlay: a movable, always-on-top command bar that
+  takes keyboard input without activating OpenScreen, so the application being
+  asked about stays in the foreground. The overlay is excluded from screen
+  capture, including OpenScreen's own recorder.
+- A full application window for chats, history, transcripts, and Agent settings.
 - Continuous event-driven Screenpipe capture across all displays, with one
   latest frame per display attached when a prompt is submitted.
 - Streaming answers, reasoning, and tool lifecycle updates from the pi Agent
@@ -25,7 +33,7 @@ Session implementation, model adapter, or compaction engine.
 - Persistent JSONL Sessions with create, switch, rename, and cancellation.
 - Per-Session thinking-level controls; all seven local tools are always enabled.
 - Automatic pi context compaction near the configured model's context limit, plus
-  manual compaction from the Swift UI.
+  manual compaction from the main window.
 - Background Turn recording from completed pi Session branches into locally
   searchable rollout summaries.
 - Background Chronicle extraction from Screenpipe frame streams into locally
@@ -42,8 +50,9 @@ Session implementation, model adapter, or compaction engine.
 - macOS 15 or later.
 - Screen Recording and Accessibility permission. Input Monitoring is also
   needed for click and keyboard-activity signals.
-- Swift 6.2 toolchain.
 - Node.js 22.19 or later and npm.
+- An Apple code-signing identity for stable development Screen Recording
+  permission.
 - Credentials for the configured pi provider. The checked-in default is
   `minimax-cn/MiniMax-M3` and uses `MINIMAX_CN_API_KEY`.
 
@@ -62,6 +71,13 @@ To use a different provider, change `agent.provider` and `agent.model` in
 follows the same selection. Existing process environment values take precedence
 over `.env`. Provider credentials are never read from `config.json`.
 
+Set `OPENSCREEN_SIGNING_IDENTITY` to the exact name of a code-signing
+certificate, or put that name in the git-ignored `.signing-identity` file. The
+`predev` script signs the development Electron bundle once and leaves the stable
+signature intact on later launches. Without an identity, the interface and
+text-only Agent still run, but Screen Recording cannot be granted reliably to
+the development Electron bundle.
+
 Start OpenScreen from the repository root:
 
 ```bash
@@ -69,8 +85,17 @@ npm run dev
 ```
 
 Grant the requested macOS permissions, press `Option + Space`, enter a question,
-and press `Enter`. Use `Shift + Enter` for a newline and `Control + C` in the
-launching terminal to stop the development process.
+and press `Enter`.
+
+Use `Shift + Enter` for a newline and `Control + C` in the launching terminal to
+stop the development process.
+
+macOS attributes Screen Recording to the running application bundle. A
+development launch runs from `node_modules/electron/dist/Electron.app` under
+Electron's bundle identifier. Grant Screen Recording, Accessibility, and Input
+Monitoring when macOS requests them. Reinstalling or upgrading Electron replaces
+that bundle, so `predev` signs the replacement before the next launch and macOS
+may request permission again.
 
 Startup behavior is configured in `config.json`, which is strict: unknown or
 missing fields stop startup. Every field is documented in the
@@ -99,7 +124,7 @@ By default, local application data is stored under
 sessions/              pi JSONL Sessions, grouped by working directory
 memory/                Mastra observation store, cursors, rollouts, and projected Memory files
 screenpipe/generations/ private SDK SQLite/JPEG generations
-user-attachments/      Swift-managed PNG copies of uploaded or pasted images
+user-attachments/      PNG copies of uploaded or pasted images
 ```
 
 Sessions embed every screenshot and user image as inline Base64, and Screenpipe
@@ -120,7 +145,10 @@ content.
 
 ## Current limitations
 
-- Development launch only; there is no signed app bundle or installer.
+- Development launch only; there is no packaged application, installer,
+  application icon, notarisation, or distribution workflow.
+- The overlay shows one exchange at a time; earlier questions in the session are
+  recalled with the up arrow, and full scrollback lives in the main window.
 - No click, type, scroll, or other application-control tools.
 - No dedicated Memory retrieval tool, Memory UI, or automatic access to
   historical screenshots. Memory lookup uses the existing file tools.
@@ -135,8 +163,9 @@ content.
 ## Architecture
 
 ```text
-SwiftUI / AppKit
-    -> product JSONL commands and events
+Electron main process (TypeScript)
+    -> overlay + main window renderers
+    -> product JSONL commands and events over the runtime child's stdio
 Transport
     -> Application API
 Application Runtime

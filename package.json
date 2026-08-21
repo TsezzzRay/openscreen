@@ -1,6 +1,8 @@
 {
   "name": "openscreen",
   "private": true,
+  "version": "0.0.0",
+  "description": "macOS assistant that answers questions about the window you are using.",
   "type": "module",
   "engines": {
     "node": ">=22.19.0"
@@ -9,7 +11,10 @@
     "build:runtime": "node -e \"require('node:fs').rmSync('runtime/dist', { recursive: true, force: true })\" && tsc -p runtime/tsconfig.json",
     "build:runtime-tests": "node -e \"require('node:fs').rmSync('runtime/dist-test', { recursive: true, force: true })\" && tsc -p runtime/tsconfig.test.json",
     "test:runtime": "npm run build:runtime && npm run build:runtime-tests && node --test \"runtime/dist-test/tests/**/*.test.js\"",
-    "dev": "npm run build:runtime && swift run OpenScreen"
+    "test:app": "vitest run --root app",
+    "typecheck:app": "tsc -p app/tsconfig.json",
+    "predev": "node app/sign-dev-electron.mjs",
+    "dev": "npm run build:runtime && electron-vite dev"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "4.0.39",
@@ -23,7 +28,22 @@
     "typebox": "1.1.38"
   },
   "devDependencies": {
+    "@tailwindcss/vite": "^4.3.3",
     "@types/node": "latest",
-    "typescript": "latest"
-  }
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "@vitejs/plugin-react": "^5.2.0",
+    "electron": "^43.4.1",
+    "electron-vite": "^5.0.0",
+    "jsdom": "^29.1.1",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
+    "tailwindcss": "^4.3.3",
+    "typescript": "latest",
+    "vite": "^7.3.6",
+    "vitest": "^4.1.11"
+  },
+  "main": "app/out/main/index.js"
 }

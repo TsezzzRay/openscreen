@@ -32,8 +32,8 @@ assistance while minimizing interruptions to the user's existing workflow.
 
 - Read files in full before broad changes and before editing a file you have not
   fully inspected.
-- Follow the existing Swift and TypeScript structure instead of introducing a
-  parallel abstraction for the same responsibility.
+- Follow the existing TypeScript structure instead of introducing a parallel
+  abstraction for the same responsibility.
 - Inspect installed dependency types and source when using an external API; do
   not guess its interface.
 - Keep helpers local when they have one call site and no independent contract.
@@ -50,7 +50,7 @@ Run commands from the repository or current worktree root.
 npm ci                    # Install Node.js dependencies
 npm run build:runtime     # Build the production Node Agent
 npm run build:runtime-tests # Build the Node Agent test target
-swift build               # Build all Swift targets
+npm run typecheck:app     # Type-check the Electron application
 npm run dev               # Build and launch the development application
 ```
 
@@ -63,9 +63,13 @@ version; see [Capture integration](runtime/README.md#capture-integration).
 
 ## Testing
 
-- After TypeScript Agent changes, run `npm run test:runtime`.
-- After Swift application changes, run `swift test`.
-- After a Swift/Node protocol change, run both full suites.
+- After Node Agent changes, run `npm run test:runtime`.
+- After Electron application changes, run `npm run typecheck:app` and
+  `npm run test:app`.
+- After a product protocol change, run both full suites. The protocol has one
+  definition, `runtime/src/application/api.ts`; the frontend re-exports those
+  types rather than restating them, so a protocol change is a compile error on
+  both sides rather than a silent drift.
 - If a test file changes, run the affected test while iterating and then its
   full relevant suite before completion.
 - Documentation-only changes do not require code tests, but all documented
@@ -109,6 +113,7 @@ Documentation ownership:
 | Change | Documentation owner |
 | --- | --- |
 | Product capability, requirements, startup, privacy summary, or top-level process relationship | `README.md` |
+| Electron main process, windows, overlay behavior, renderer state, or frontend tests | `app/README.md` |
 | Development commands, testing, Git/worktree practice, or documentation policy | `AGENTS.md` |
 | Node Agent, Agent Loop, tools, Session, Memory, configuration, or persistence behavior | `runtime/README.md` |
 

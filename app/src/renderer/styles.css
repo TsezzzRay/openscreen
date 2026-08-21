@@ -1,0 +1,247 @@
+@import "tailwindcss";
+
+/*
+ * OpenScreen is an instrument that reads a screen continuously and keeps a
+ * dated record of it. The interface takes its cues from that, not from chat:
+ *
+ *   - Cold neutral glass with a single warm accent. Amber is the colour of a
+ *     recording indicator, which is what this application actually is.
+ *   - Two type roles carrying one rule: sans is what was *said* (the user's
+ *     question, the model's prose) and mono is what was *recorded* (timestamps,
+ *     tool names, token counts, key caps, frame provenance). Every piece of
+ *     metadata in both windows is mono; no prose ever is.
+ */
+@theme {
+  --color-glass: rgba(16, 18, 22, 0.72);
+  --color-glass-raised: rgba(255, 255, 255, 0.05);
+  --color-edge: rgba(255, 255, 255, 0.1);
+  --color-edge-soft: rgba(255, 255, 255, 0.06);
+
+  --color-ink: rgba(255, 255, 255, 0.92);
+  --color-ink-dim: rgba(255, 255, 255, 0.48);
+  --color-ink-faint: rgba(255, 255, 255, 0.28);
+
+  --color-amber: #ffb454;
+  --color-amber-wash: rgba(255, 180, 84, 0.16);
+  --color-alert: #ff6b5e;
+
+  --color-surface: #101216;
+  --color-surface-raised: #171a20;
+  --color-surface-sunken: #0b0d10;
+
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace;
+
+  --radius-pane: 16px;
+}
+
+@layer base {
+  * {
+    -webkit-font-smoothing: antialiased;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+    margin: 0;
+  }
+
+  body {
+    font-family: var(--font-sans);
+    color: var(--color-ink);
+    /* The overlay document is transparent so the vibrancy layer shows through;
+       the main window paints its own opaque surface. */
+    background: transparent;
+    overflow: hidden;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-amber);
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.14);
+    border-radius: 4px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+}
+
+@layer components {
+  /* The eyebrow is the main window's display role: there is no display face,
+     the record register does the work instead. */
+  .eyebrow {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--color-ink-faint);
+  }
+
+  /* A key cap is a recorded fact about the keyboard, so it is mono too. */
+  .keycap {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    line-height: 1;
+    padding: 3px 5px;
+    color: var(--color-ink-faint);
+    border: 1px solid var(--color-edge);
+    border-radius: 4px;
+    background: var(--color-glass-raised);
+  }
+
+  .drag-region {
+    -webkit-app-region: drag;
+  }
+
+  .no-drag {
+    -webkit-app-region: no-drag;
+  }
+}
+
+/*
+ * The one piece of ambient motion in the product: the capture indicator
+ * breathes while the recorder is live. It reflects real runtime state, so it is
+ * information rather than decoration.
+ */
+@keyframes capture-breath {
+  0%,
+  100% {
+    opacity: 0.45;
+    transform: scale(0.86);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.capture-live {
+  animation: capture-breath 2.8s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .capture-live {
+    animation: none;
+    opacity: 1;
+  }
+
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Markdown prose. Deliberately narrow in scope: the answer is the only place
+   rich text appears, and it stays in the sans register. */
+.prose-answer {
+  /* 68ch keeps the answer inside the readable measure at both densities; the
+     overlay is 720px wide and would otherwise run to ~95 characters a line. */
+  max-width: 68ch;
+  font-size: 13.5px;
+  line-height: 1.62;
+  color: var(--color-ink);
+}
+
+.compact .prose-answer {
+  font-size: 12.5px;
+  line-height: 1.58;
+}
+
+.prose-answer > * + * {
+  margin-top: 0.7em;
+}
+
+.prose-answer h1,
+.prose-answer h2,
+.prose-answer h3 {
+  font-weight: 600;
+  font-size: 1em;
+  letter-spacing: -0.01em;
+}
+
+.prose-answer ul,
+.prose-answer ol {
+  padding-left: 1.15em;
+}
+
+.prose-answer ul {
+  list-style: disc;
+}
+
+.prose-answer ol {
+  list-style: decimal;
+}
+
+.prose-answer li + li {
+  margin-top: 0.25em;
+}
+
+.prose-answer a {
+  color: var(--color-amber);
+  text-underline-offset: 2px;
+  text-decoration: underline;
+}
+
+.prose-answer code {
+  font-family: var(--font-mono);
+  font-size: 0.86em;
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--color-glass-raised);
+  border: 1px solid var(--color-edge-soft);
+}
+
+.prose-answer pre {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.32);
+  border: 1px solid var(--color-edge-soft);
+  overflow-x: auto;
+}
+
+.prose-answer pre code {
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.prose-answer blockquote {
+  border-left: 2px solid var(--color-edge);
+  padding-left: 0.8em;
+  color: var(--color-ink-dim);
+}
+
+.prose-answer table {
+  display: block;
+  overflow-x: auto;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+
+.prose-answer th,
+.prose-answer td {
+  border: 1px solid var(--color-edge-soft);
+  padding: 4px 8px;
+  text-align: left;
+}
+
+.prose-answer th {
+  font-family: var(--font-mono);
+  font-weight: 500;
+  color: var(--color-ink-dim);
+}
