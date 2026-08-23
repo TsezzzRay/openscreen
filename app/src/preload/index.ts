@@ -1,6 +1,11 @@
 import { contextBridge, ipcRenderer } from "electron";
 
-import type { AgentEventEnvelope, AgentStatus, ImportedAttachment } from "@shared/ipc.ts";
+import type {
+  ActiveRun,
+  AgentEventEnvelope,
+  AgentStatus,
+  ImportedAttachment,
+} from "@shared/ipc.ts";
 import { IPC } from "@shared/ipc.ts";
 import type { ApplicationCommand } from "@shared/protocol.ts";
 
@@ -27,11 +32,20 @@ const bridge = {
       ipcRenderer.invoke(IPC.attachmentsImport, buffers),
     remove: (path: string): Promise<void> => ipcRenderer.invoke(IPC.attachmentsRemove, path),
   },
+  session: {
+    getRuns: (): Promise<ActiveRun[]> => ipcRenderer.invoke(IPC.sessionRunsGet),
+    onRuns: (listener: (runs: ActiveRun[]) => void): Unsubscribe =>
+      subscribe(IPC.sessionRuns, listener),
+    onInvalidated: (listener: () => void): Unsubscribe =>
+      subscribe(IPC.sessionsInvalidated, listener),
+  },
   overlay: {
     resize: (contentHeight: number): void => ipcRenderer.send(IPC.overlayResize, contentHeight),
     hide: (): void => ipcRenderer.send(IPC.overlayHide),
-    onFocusRequested: (listener: () => void): Unsubscribe =>
-      subscribe(IPC.overlayFocusRequested, listener),
+  },
+  window: {
+    onFocusComposer: (listener: () => void): Unsubscribe =>
+      subscribe(IPC.focusComposer, listener),
   },
   shell: {
     openMainWindow: (): void => ipcRenderer.send(IPC.windowOpenMain),

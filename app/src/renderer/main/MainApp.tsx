@@ -39,6 +39,12 @@ export function MainApp(): React.ReactNode {
     element.scrollTop = element.scrollHeight;
   }, [state.turns]);
 
+  // Option+Space with this window in front means "let me type here" rather than
+  // summoning a second composer over it.
+  useEffect(() => {
+    return window.openscreen.window.onFocusComposer(() => store.requestInputFocus());
+  }, [store]);
+
   useEffect(() => {
     if (preview === null) return;
     const onKeyDown = (event: KeyboardEvent) => {

@@ -4,6 +4,8 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, test, vi } from "vitest";
 
+import type { ActiveRun } from "@shared/ipc.ts";
+
 vi.mock("electron", () => ({
   nativeImage: { createFromBuffer: vi.fn() },
   protocol: { registerSchemesAsPrivileged: vi.fn(), handle: vi.fn() },
@@ -17,6 +19,7 @@ const { AgentClient } = await import("@/../main/agent-client.ts");
 const { overlayHeight, OVERLAY_COLLAPSED_HEIGHT, OVERLAY_MAX_HEIGHT } = await import(
   "@/../main/windows/overlay.ts"
 );
+const { SessionHub } = await import("@/../main/session-hub.ts");
 
 describe("AttachmentStore path guard", () => {
   const store = new AttachmentStore("/data/OpenScreen/user-attachments");
@@ -64,6 +67,147 @@ describe("overlay height", () => {
 
   test("falls back to the collapsed height for a non-finite measurement", () => {
     expect(overlayHeight(Number.NaN)).toBe(OVERLAY_COLLAPSED_HEIGHT);
+  });
+});
+
+describe("SessionHub", () => {
+  const prompt = {
+    requestId: "r1",
+    type: "prompt" as const,
+    sessionId: "s1",
+    input: { text: "what is this" },
+  };
+
+  function hub() {
+    const changes: ActiveRun[][] = [];
+    let invalidations = 0;
+    const instance = new SessionHub({
+      onRuns: (runs) => changes.push(runs),
+      onSessionsChanged: () => {
+        invalidations += 1;
+      },
+      now: () => new Date("2026-08-22T00:00:00.000Z"),
+    });
+    return { changes, hub: instance, invalidated: () => invalidations };
+  }
+
+  test("opens a run from a prompt command and carries its question", () => {
+    const { changes, hub: instance } = hub();
+    instance.observeCommand(prompt);
+
+    // The event stream never repeats the question, so the other window has no
+    // other way to label the turn it is adopting.
+    expect(instance.activeRuns).toEqual([{
+      sessionId: "s1",
+      requestId: "r1",
+      text: "what is this",
+      startedAt: "2026-08-22T00:00:00.000Z",
+    }]);
+    expect(changes).toHaveLength(1);
+  });
+
+  test("ignores commands that are not prompts", () => {
+    const { changes, hub: instance } = hub();
+    instance.observeCommand({ requestId: "r2", type: "list_sessions" });
+
+    expect(instance.activeRuns).toEqual([]);
+    expect(changes).toHaveLength(0);
+  });
+
+  test("closes the run on its terminal event and only then", () => {
+    const { hub: instance } = hub();
+    instance.observeCommand(prompt);
+
+    instance.observeEvent({
+      requestId: "r1",
+      event: { type: "answer_delta", sessionId: "s1", delta: "hm" },
+    });
+    expect(instance.activeRuns).toHaveLength(1);
+
+    instance.observeEvent({ requestId: "r1", event: { type: "completed" } });
+    expect(instance.activeRuns).toEqual([]);
+  });
+
+  test("closes a failed run and stays quiet for unknown requests", () => {
+    const { changes, hub: instance } = hub();
+    instance.observeCommand(prompt);
+    instance.observeEvent({
+      requestId: "other",
+      event: { type: "completed" },
+    });
+    expect(changes).toHaveLength(1);
+
+    instance.observeEvent({
+      requestId: "r1",
+      event: { type: "failed", error: { code: "provider", message: "no" } },
+    });
+    expect(instance.activeRuns).toEqual([]);
+    expect(changes).toHaveLength(2);
+  });
+
+  test("invalidates the chat list once a prompt settles", () => {
+    const { hub: instance, invalidated } = hub();
+    instance.observeCommand(prompt);
+    // A chat with no explicit name takes it from the first question, so the
+    // turn that starts a chat also renames it.
+    expect(invalidated()).toBe(0);
+
+    instance.observeEvent({ requestId: "r1", event: { type: "completed" } });
+    expect(invalidated()).toBe(1);
+  });
+
+  test("invalidates for creates and renames, but not for other commands", () => {
+    const { hub: instance, invalidated } = hub();
+    instance.observeCommand({ requestId: "c1", type: "create_session" });
+    instance.observeCommand({
+      requestId: "n1",
+      type: "rename_session",
+      sessionId: "s1",
+      name: "the capture rule",
+    });
+    instance.observeCommand({
+      requestId: "t1",
+      type: "set_thinking",
+      sessionId: "s1",
+      thinking: "high",
+    });
+
+    for (const requestId of ["c1", "n1", "t1"]) {
+      instance.observeEvent({ requestId, event: { type: "completed" } });
+    }
+    expect(invalidated()).toBe(2);
+  });
+
+  test("invalidates on a failed request too", () => {
+    const { hub: instance, invalidated } = hub();
+    instance.observeCommand(prompt);
+
+    // The question can reach the session before whatever failed the run.
+    instance.observeEvent({
+      requestId: "r1",
+      event: { type: "failed", error: { code: "provider", message: "no" } },
+    });
+    expect(invalidated()).toBe(1);
+  });
+
+  test("settles each request only once", () => {
+    const { hub: instance, invalidated } = hub();
+    instance.observeCommand(prompt);
+    instance.observeEvent({ requestId: "r1", event: { type: "completed" } });
+    instance.observeEvent({ requestId: "r1", event: { type: "completed" } });
+
+    expect(invalidated()).toBe(1);
+  });
+
+  test("drops every run when the runtime stops", () => {
+    const { hub: instance } = hub();
+    instance.observeCommand(prompt);
+    instance.observeCommand({ ...prompt, requestId: "r2", sessionId: "s2" });
+
+    instance.clear();
+    expect(instance.activeRuns).toEqual([]);
+    // Nothing is left to clear, so no second broadcast.
+    instance.clear();
   });
 });
 

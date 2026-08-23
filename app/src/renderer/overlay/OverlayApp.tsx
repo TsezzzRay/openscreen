@@ -7,29 +7,39 @@ import { ShortcutHint } from "../components/ShortcutHint.tsx";
 import { TurnView } from "../components/TurnView.tsx";
 import { useAgent, useIsSending, useStore } from "../store/context.tsx";
 import { isTurnInFlight } from "../store/types.ts";
+import { SessionList } from "./SessionList.tsx";
 
 /**
- * The overlay is a command bar, not a second chat window.
+ * The overlay is a command bar with the conversation kept underneath it.
  *
- * It shows one exchange at a time — the one you just asked for — because its
- * job is a three-second answer about the screen in front of you. Earlier
- * questions are reachable the way they are in a shell, with the up arrow, and
- * the full scrollback lives in the main window.
+ * The bar stays where it is and everything else grows downward from it, so the
+ * three-second question never has to wait for a window to settle. The chat
+ * itself scrolls in place: recent exchanges are right there to scroll back
+ * through, while renaming, compaction, and Agent settings stay in the main
+ * window where there is room to show what they did.
  */
 export function OverlayApp(): React.ReactNode {
   const store = useStore();
   const state = useAgent();
   const isSending = useIsSending();
   const root = useRef<HTMLDivElement>(null);
+  const scroller = useRef<HTMLDivElement>(null);
+  const atBottom = useRef(true);
   const [historyIndex, setHistoryIndex] = useState(-1);
+  const [showSessions, setShowSessions] = useState(false);
 
   const latest = state.turns[state.turns.length - 1];
-  const showPanel =
-    latest !== undefined && (isSending || latest.answer.length > 0 ||
-      latest.toolActivities.length > 0 || latest.status === "failed");
+  const hasTranscript = state.turns.some(
+    (turn) =>
+      turn.question.length > 0 || turn.answer.length > 0 ||
+      turn.toolActivities.length > 0,
+  );
+  // The chat and the chat picker share the space below the bar, so the panel
+  // never stacks itself past the window ceiling.
+  const showTranscript = !showSessions && (isSending || hasTranscript);
 
   // Drive the window height from the rendered content so the bar keeps its
-  // position and the answer grows downward from it.
+  // position and everything else grows downward from it.
   useLayoutEffect(() => {
     const element = root.current;
     if (element === null) return;
@@ -40,17 +50,28 @@ export function OverlayApp(): React.ReactNode {
     return () => observer.disconnect();
   });
 
+  // Follow the newest content while the reader is already at the bottom, and
+  // leave them alone when they have scrolled up to read something.
   useEffect(() => {
-    return window.openscreen.overlay.onFocusRequested(() => store.requestInputFocus());
+    const element = scroller.current;
+    if (element === null || !atBottom.current) return;
+    element.scrollTop = element.scrollHeight;
+  }, [state.turns, showTranscript]);
+
+  useEffect(() => {
+    return window.openscreen.window.onFocusComposer(() =>
+      store.requestInputFocus(),
+    );
   }, [store]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         event.preventDefault();
-        // Escape stops a run in progress before it dismisses the overlay, so
-        // there is never a run you can no longer reach.
-        if (isSending) store.cancelCurrentRequest();
+        // Escape unwinds one layer at a time, so nothing on screen becomes
+        // unreachable: the picker first, then a run in progress, then the panel.
+        if (showSessions) setShowSessions(false);
+        else if (isSending) store.cancelCurrentRequest();
         else window.openscreen.overlay.hide();
         return;
       }
@@ -61,7 +82,7 @@ export function OverlayApp(): React.ReactNode {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [isSending, store]);
+  }, [isSending, showSessions, store]);
 
   const recall = useCallback(
     (direction: -1 | 1) => {
@@ -81,7 +102,17 @@ export function OverlayApp(): React.ReactNode {
 
   const submit = useCallback(() => {
     setHistoryIndex(-1);
+    setShowSessions(false);
     store.submit();
+  }, [store]);
+
+  const openSessions = useCallback(() => {
+    setShowSessions((open) => {
+      // The list is kept current by the main process; this is the user-reachable
+      // way to force a re-read if that ever falls behind.
+      if (!open) void store.refreshSessions();
+      return !open;
+    });
   }, [store]);
 
   const stopped = state.status.state === "stopped";
@@ -137,24 +168,78 @@ export function OverlayApp(): React.ReactNode {
         </div>
       )}
 
-      {showPanel && latest !== undefined ? (
-        <div className="compact max-h-[420px] overflow-y-auto border-t border-edge px-4 py-3">
-          <TurnView turn={latest} compact onRetry={(id) => store.retry(id)} />
+      {showSessions ? (
+        <SessionList
+          sessions={state.sessions}
+          currentSessionId={state.currentSessionId}
+          activeSessionIds={state.activeSessionIds}
+          onSelect={(id) => {
+            setShowSessions(false);
+            setHistoryIndex(-1);
+            store.selectSession(id);
+            store.requestInputFocus();
+          }}
+        />
+      ) : null}
+
+      {showTranscript ? (
+        <div
+          ref={scroller}
+          onScroll={(event) => {
+            const element = event.currentTarget;
+            atBottom.current =
+              element.scrollHeight - element.scrollTop - element.clientHeight < 40;
+          }}
+          className="compact max-h-[480px] overflow-y-auto border-t border-edge px-4 py-3"
+        >
+          <div className="flex flex-col gap-5">
+            {state.turns.map((turn) => (
+              <TurnView
+                key={turn.id}
+                turn={turn}
+                compact
+                onRetry={(id) => store.retry(id)}
+              />
+            ))}
+          </div>
         </div>
       ) : null}
 
-      <div className="flex items-center justify-between border-t border-edge-soft px-4 py-2">
-        <span className="font-mono text-[10px] text-ink-faint">
-          {state.status.state === "stopped"
-            ? state.status.message
-            : latest !== undefined && isTurnInFlight(latest.status)
-              ? "the current screen is attached to this question"
-              : state.currentTitle}
-        </span>
+      <div className="flex items-center justify-between gap-3 border-t border-edge-soft px-4 py-2">
+        <div className="no-drag flex min-w-0 items-center gap-2">
+          <button
+            type="button"
+            onClick={openSessions}
+            aria-expanded={showSessions}
+            className="flex min-w-0 items-center gap-1 font-mono text-[10px] text-ink-faint hover:text-ink-dim"
+          >
+            <span aria-hidden>{showSessions ? "⌃" : "⌄"}</span>
+            <span className="truncate">
+              {state.status.state === "stopped"
+                ? state.status.message
+                : latest !== undefined && isTurnInFlight(latest.status)
+                  ? "the current screen is attached to this question"
+                  : state.currentTitle}
+            </span>
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setShowSessions(false);
+              setHistoryIndex(-1);
+              store.createNewSession();
+              store.requestInputFocus();
+            }}
+            disabled={state.isManagingSession}
+            className="shrink-0 font-mono text-[10px] text-ink-faint hover:text-ink-dim disabled:opacity-40"
+          >
+            new
+          </button>
+        </div>
         <button
           type="button"
           onClick={() => window.openscreen.shell.openMainWindow()}
-          className="font-mono text-[10px] text-ink-faint hover:text-ink-dim"
+          className="no-drag shrink-0 font-mono text-[10px] text-ink-faint hover:text-ink-dim"
         >
           open the full app
         </button>

@@ -1,4 +1,4 @@
-import type { AgentStatus } from "@shared/ipc.ts";
+import type { ActiveRun, AgentStatus } from "@shared/ipc.ts";
 import type {
   ApplicationCommand,
   ApplicationEvent,
@@ -30,6 +30,18 @@ export interface AgentGateway {
     command: ApplicationCommand,
     type: T,
   ): Promise<Extract<ApplicationEvent, { type: T }>>;
+  /**
+   * Events for requests this window did not issue — a run started in the other
+   * surface. They carry the session they belong to, which is all a listener
+   * needs to decide whether it is showing that transcript.
+   */
+  onUnclaimedEvent(
+    listener: (requestId: string, event: ApplicationEvent) => void,
+  ): () => void;
+  /** The runs currently in flight anywhere, replayed once on subscribe. */
+  onActiveRuns(listener: (runs: ActiveRun[]) => void): () => void;
+  /** The chat list changed somewhere and should be re-read. */
+  onSessionsInvalidated(listener: () => void): () => void;
 }
 
 interface PendingRequest {
@@ -46,6 +58,9 @@ interface PendingRequest {
  */
 export class AgentTransport implements AgentGateway {
   private readonly pending = new Map<string, PendingRequest>();
+  private readonly observers = new Set<
+    (requestId: string, event: ApplicationEvent) => void
+  >();
   private status: AgentStatus = { state: "starting" };
 
   constructor(private readonly bridge = window.openscreen) {
@@ -59,6 +74,25 @@ export class AgentTransport implements AgentGateway {
 
   onStatus(listener: (status: AgentStatus) => void): () => void {
     return this.bridge.agent.onStatus(listener);
+  }
+
+  onUnclaimedEvent(
+    listener: (requestId: string, event: ApplicationEvent) => void,
+  ): () => void {
+    this.observers.add(listener);
+    return () => this.observers.delete(listener);
+  }
+
+  onActiveRuns(listener: (runs: ActiveRun[]) => void): () => void {
+    const unsubscribe = this.bridge.session.onRuns(listener);
+    // A window can be created while a run is already going, and the broadcast
+    // that opened it is long gone.
+    void this.bridge.session.getRuns().then(listener, () => {});
+    return unsubscribe;
+  }
+
+  onSessionsInvalidated(listener: () => void): () => void {
+    return this.bridge.session.onInvalidated(listener);
   }
 
   /**
@@ -105,7 +139,10 @@ export class AgentTransport implements AgentGateway {
 
   private dispatch(requestId: string, event: ApplicationEvent): void {
     const request = this.pending.get(requestId);
-    if (request === undefined) return;
+    if (request === undefined) {
+      for (const observer of this.observers) observer(requestId, event);
+      return;
+    }
     if (event.type === "completed") {
       this.pending.delete(requestId);
       request.resolve();

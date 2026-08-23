@@ -1,4 +1,4 @@
-import type { AgentStatus, ImportedAttachment } from "@shared/ipc.ts";
+import type { ActiveRun, AgentStatus, ImportedAttachment } from "@shared/ipc.ts";
 import type {
   ApplicationEvent,
   ProductCompactionResult,
@@ -16,6 +16,15 @@ import {
 } from "./transcript.ts";
 import { AgentFailureError, type AgentGateway, AgentTransport } from "./transport.ts";
 import { type ChatTurn, newTurn, toProductAttachment } from "./types.ts";
+
+/**
+ * Which window this store belongs to. The two renderers share an origin, so
+ * they would otherwise share one selection and each drag the other to whatever
+ * chat it opened last. They keep independent selections instead: the overlay is
+ * for asking about the screen in front of you, the main window for reading and
+ * organising, and those are rarely the same chat at the same moment.
+ */
+export type Surface = "overlay" | "main";
 
 const SELECTED_SESSION_KEY = "OpenScreenSelectedSessionID";
 
@@ -78,9 +87,29 @@ export class AgentStore {
   private readonly turnCache = new Map<string, ChatTurn[]>();
   private readonly activeTurnIds = new Map<string, string>();
   private readonly composers = new Map<string, ComposerSnapshot>();
+  private localActiveSessionIds: string[] = [];
+  /**
+   * Requests this window issued itself. `runPrompt` owns their whole lifecycle,
+   * so the shared run set must not touch their bookkeeping: the main process
+   * broadcasts the closed run before forwarding the terminal event, which would
+   * otherwise clear a local run's state out from under the code still finishing
+   * it and leave the session marked busy forever.
+   */
+  private readonly localRequestIds = new Set<string>();
+  private observedRuns: ActiveRun[] = [];
+  private readonly selectionKey: string;
 
-  constructor(private readonly transport: AgentGateway = new AgentTransport()) {
+  constructor(
+    private readonly transport: AgentGateway = new AgentTransport(),
+    surface: Surface = "main",
+  ) {
+    this.selectionKey = `${SELECTED_SESSION_KEY}:${surface}`;
     this.transport.onStatus((status) => this.patch({ status }));
+    this.transport.onActiveRuns((runs) => this.observeRuns(runs));
+    this.transport.onUnclaimedEvent((requestId, event) =>
+      this.observeEvent(requestId, event),
+    );
+    this.transport.onSessionsInvalidated(() => void this.refreshSessions());
   }
 
   subscribe = (listener: () => void): (() => void) => {
@@ -103,7 +132,7 @@ export class AgentStore {
     try {
       const sessions = await this.listSessions();
       this.patch({ sessions });
-      const preferred = localStorage.getItem(SELECTED_SESSION_KEY) ?? undefined;
+      const preferred = localStorage.getItem(this.selectionKey) ?? undefined;
       const id = sessionToRestore(sessions, preferred);
       if (id !== undefined) {
         this.applyView(await this.getSession(id));
@@ -120,7 +149,9 @@ export class AgentStore {
   }
 
   selectSession(id: string): void {
-    if (this.state.isManagingSession || id === this.state.currentSessionId) return;
+    // Re-selecting the open session is allowed on purpose: it is the way to
+    // pull in a turn the other window appended while this one was showing it.
+    if (this.state.isManagingSession) return;
     const cached = this.sessionViews.get(id);
     // A session with a run in flight must not be re-read from disk: its
     // transcript is still being written to and the cache holds the live turns.
@@ -170,7 +201,9 @@ export class AgentStore {
     ]);
     this.updateComposer(sessionId, () => EMPTY_COMPOSER);
     this.activeTurnIds.set(sessionId, turnId);
-    this.patch({ activeSessionIds: [...this.state.activeSessionIds, sessionId] });
+    this.localRequestIds.add(turnId);
+    this.localActiveSessionIds = [...this.localActiveSessionIds, sessionId];
+    this.syncActiveSessions();
 
     void this.runPrompt(sessionId, turnId, text, attachments);
   }
@@ -224,12 +257,14 @@ export class AgentStore {
         }));
       }
     } finally {
+      this.localRequestIds.delete(turnId);
       if (this.activeTurnIds.get(sessionId) === turnId) {
         this.activeTurnIds.delete(sessionId);
-        this.patch({
-          activeSessionIds: this.state.activeSessionIds.filter((id) => id !== sessionId),
-        });
       }
+      this.localActiveSessionIds = this.localActiveSessionIds.filter(
+        (id) => id !== sessionId,
+      );
+      this.syncActiveSessions();
     }
   }
 
@@ -324,6 +359,103 @@ export class AgentStore {
           return turn;
       }
     });
+  }
+
+  // ----------------------------------------------------------- observed runs
+
+  /**
+   * Runs in flight anywhere, this window's own included.
+   *
+   * A run belonging to the other surface is adopted into this window's
+   * transcript, so the same question, tool activity, and answer appear in both
+   * places, and so the composer here offers to stop it instead of starting a
+   * second run on a session the runtime would reject as busy.
+   */
+  private observeRuns(runs: ActiveRun[]): void {
+    const previous = this.observedRuns;
+    this.observedRuns = runs;
+    const live = new Set(runs.map((run) => run.requestId));
+    for (const run of runs) {
+      if (this.localRequestIds.has(run.requestId)) continue;
+      this.activeTurnIds.set(run.sessionId, run.requestId);
+      this.ensureObservedTurn(run.sessionId, run.requestId, run.text);
+    }
+    for (const run of previous) {
+      if (live.has(run.requestId)) continue;
+      // `runPrompt` refreshes its own session and clears its own state.
+      if (this.localRequestIds.has(run.requestId)) continue;
+      if (this.activeTurnIds.get(run.sessionId) === run.requestId) {
+        this.activeTurnIds.delete(run.sessionId);
+      }
+      void this.reconcile(run.sessionId);
+    }
+    this.syncActiveSessions();
+  }
+
+  private observeEvent(requestId: string, event: ApplicationEvent): void {
+    if (!("sessionId" in event)) return;
+    if (!this.turnCache.has(event.sessionId)) return;
+    const run = this.observedRuns.find((item) => item.requestId === requestId);
+    this.ensureObservedTurn(event.sessionId, requestId, run?.text ?? "");
+    this.applyRunEvent(event, event.sessionId, requestId);
+  }
+
+  private ensureObservedTurn(
+    sessionId: string,
+    requestId: string,
+    question: string,
+  ): void {
+    const turns = this.turnCache.get(sessionId);
+    // Nothing to append to until this window has opened the session itself.
+    if (turns === undefined) return;
+    if (turns.some((turn) => turn.id === requestId)) return;
+    this.setTurns(sessionId, [
+      ...turns,
+      newTurn({ id: requestId, question, status: "requesting" }),
+    ]);
+  }
+
+  /**
+   * The streamed increments this window observed cannot reproduce the stored
+   * projection — hidden context messages and image counts among them — so a
+   * finished remote turn is re-read rather than left as an approximation.
+   */
+  private async reconcile(sessionId: string): Promise<void> {
+    try {
+      this.cacheView(await this.getSession(sessionId));
+    } catch {
+      // The streamed turns stay on screen; reopening the session re-reads it.
+    }
+  }
+
+  private syncActiveSessions(): void {
+    const ids = new Set(this.localActiveSessionIds);
+    for (const run of this.observedRuns) ids.add(run.sessionId);
+    this.patch({ activeSessionIds: [...ids] });
+  }
+
+  /**
+   * Re-reads the chat list, so a chat created or renamed in the other window
+   * shows up here. A chat with no explicit name takes its name from its first
+   * question, so the open chat's title is re-read along with the list.
+   */
+  async refreshSessions(): Promise<void> {
+    if (this.state.isManagingSession) return;
+    try {
+      const sessions = await this.listSessions();
+      this.patch({ sessions });
+      const current = sessions.find(
+        (session) => session.id === this.state.currentSessionId,
+      );
+      if (current === undefined) return;
+      const view = this.sessionViews.get(current.id);
+      if (view !== undefined) {
+        this.sessionViews.set(current.id, { ...view, session: current });
+      }
+      this.patch({ currentTitle: sessionDisplayName(current) });
+    } catch {
+      // The list already on screen stays usable and the next refresh retries.
+    }
   }
 
   // ------------------------------------------------------------ agent state
@@ -509,7 +641,7 @@ export class AgentStore {
   }
 
   private adoptSession(view: ProductSessionView): void {
-    localStorage.setItem(SELECTED_SESSION_KEY, view.session.id);
+    localStorage.setItem(this.selectionKey, view.session.id);
     if (this.state.currentSessionId !== view.session.id) this.clearTransientState();
     this.patch({
       currentSessionId: view.session.id,

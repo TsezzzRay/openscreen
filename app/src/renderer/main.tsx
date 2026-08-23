@@ -7,7 +7,7 @@ import "./styles.css";
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <AgentProvider>
+    <AgentProvider surface="main">
       <MainApp />
     </AgentProvider>
   </StrictMode>,

@@ -14,6 +14,7 @@ app/
       agent-client.ts    the runtime child and its newline-delimited JSON stdio
       attachments.ts     PNG normalisation and the osfile:// scheme
       hotkey.ts          the Option+Space accelerator
+      session-hub.ts     prompts in flight and chat-list staleness, by observation
       permissions.ts     Screen Recording and Accessibility preflight
       renderer-entry.ts  development-server document resolution
       windows/           overlay panel and main window factories
@@ -24,7 +25,7 @@ app/
     renderer/
       store/             transport correlation and the interface state machine
       components/        pieces shared by both windows
-      overlay/           the command bar
+      overlay/           the command bar and its chat picker
       main/              the full interface
   tests/                 Vitest suites for the store, transport, and main process
 ```
@@ -43,10 +44,35 @@ broadcast to all windows with its `requestId` intact, and each renderer's
 therefore hold independent projections of the same event stream; the
 authoritative state is the runtime's Session JSONL, not either renderer.
 
+Events for a request a window did not issue are not discarded. They carry the
+session they belong to, so a window showing that session folds them into its own
+transcript and a run started in the overlay streams into the main window as it
+happens.
+
+`SessionHub` completes that picture. The main process sits between every window
+and the child, so it derives the set of prompts in flight by observation alone: a
+`prompt` command opens a run and that request's terminal event closes it. The set
+is broadcast to both windows, carrying each run's question because the event
+stream never repeats it. That is what lets either surface label an adopted turn,
+show a run as in progress, and abort it. The runtime needs no new protocol, and
+neither window has to report what it is doing.
+
+Because the streamed increments cannot reproduce the stored projection — hidden
+context messages and image counts among them — a window that only observed a run
+re-reads the session once the run ends.
+
+The chat list is kept level the same way. `create_session`, `rename_session`,
+and `prompt` are the commands that change what the list shows — a chat with no
+explicit name takes its name from its first question — so when one of them
+settles, both windows are told to re-read the list. Chat *selection* is
+deliberately not shared: the two surfaces are used for different things at the
+same moment, so each remembers its own.
+
 ```text
 renderer -> preload contextBridge -> ipcRenderer.invoke("agent:send")
          -> main AgentClient -> child stdin
          <- broadcast "agent:event" <- child stdout
+         <- broadcast "session:runs" <- SessionHub
 ```
 
 ## Windows
@@ -66,6 +92,12 @@ content-protected, so the user can screenshot it. It stays out of the recorder
 through the `capture.screenpipe.ignoredWindows` title filter in `config.json`
 instead.
 
+`Option + Space` means "let me ask something", and where that lands depends on
+what is in front. With the main window focused there is already a composer on
+screen, so the shortcut focuses it rather than summoning a second input inside
+the same application; otherwise it toggles the overlay. Opening the main window
+hides the overlay, which would otherwise float above it.
+
 The application starts with a hidden Dock icon. Opening the main window is the
 one action that activates OpenScreen and shows the icon.
 
@@ -76,6 +108,14 @@ transcripts, drafts, and pending attachments are cached per session id, so
 switching chats is instant and a run continues accumulating into its own
 transcript while another chat is on screen. A session with a run in flight is
 never re-read from disk.
+
+Each store is constructed for one surface, `overlay` or `main`, which scopes the
+remembered chat selection. The two renderers share an origin, so a single key
+would make each window drag the other to whatever chat it opened last; they keep
+independent selections instead, while the chat list itself stays shared. `activeSessionIds` is the union of this window's
+own runs and the runs `SessionHub` reports, so the composer offers to stop a run
+started in the other surface rather than starting a second one on a session the
+runtime would reject as busy.
 
 `projectTranscript` folds the runtime's flat transcript into turns: assistant and
 tool messages attach to the preceding question, and `context` messages stay
@@ -122,5 +162,7 @@ npm run test:app
 
 The suites cover the development-only architecture, transcript projection,
 per-request correlation and failure mapping in the transport, the store's
-session and prompt lifecycles, the attachment path guard, overlay height
-clamping, and the stdio framing in `AgentClient` against a real child process.
+session and prompt lifecycles, adoption of runs started in the other window,
+per-surface chat selection, `SessionHub` run bookkeeping, the attachment path
+guard, overlay height clamping, and the stdio framing in `AgentClient` against a
+real child process.

@@ -3,7 +3,7 @@ import { join } from "node:path";
 
 import { BrowserWindow, app, dialog, ipcMain } from "electron";
 
-import type { AgentStatus, ImportedAttachment } from "@shared/ipc.ts";
+import type { ActiveRun, AgentStatus, ImportedAttachment } from "@shared/ipc.ts";
 import { IPC } from "@shared/ipc.ts";
 import type { ApplicationCommand } from "@shared/protocol.ts";
 
@@ -14,6 +14,7 @@ import {
   registerAttachmentSchemePrivileges,
 } from "./attachments.ts";
 import { registerToggleHotkey, unregisterHotkeys } from "./hotkey.ts";
+import { SessionHub } from "./session-hub.ts";
 import {
   ensureAccessibilityAccess,
   ensureScreenRecordingAccess,
@@ -35,6 +36,10 @@ let agent: AgentClient | undefined;
 let overlay: BrowserWindow | undefined;
 let mainWindow: BrowserWindow | undefined;
 let lastStatus: AgentStatus = { state: "starting" };
+const sessions = new SessionHub({
+  onRuns: (runs) => broadcast(IPC.sessionRuns, runs),
+  onSessionsChanged: () => broadcast(IPC.sessionsInvalidated, undefined),
+});
 
 registerAttachmentSchemePrivileges();
 
@@ -66,9 +71,13 @@ function startAgent(): void {
     },
     onStderr: (line) => process.stderr.write(`[runtime] ${line}\n`),
   });
-  client.on("event", (envelope) => broadcast(IPC.agentEvent, envelope));
+  client.on("event", (envelope) => {
+    sessions.observeEvent(envelope);
+    broadcast(IPC.agentEvent, envelope);
+  });
   client.on("status", (status) => {
     lastStatus = status;
+    if (status.state === "stopped") sessions.clear();
     broadcast(IPC.agentStatus, status);
   });
   client.start();
@@ -84,10 +93,21 @@ function showOverlay(): void {
   window.showInactive();
   window.focus();
   window.webContents.focus();
-  window.webContents.send(IPC.overlayFocusRequested);
+  window.webContents.send(IPC.focusComposer);
 }
 
+/**
+ * The shortcut means "let me ask something", and where that lands depends on
+ * what the user is looking at. With the full window in front there is already a
+ * composer on screen, so summoning a second one over it would put two inputs in
+ * the same application fighting for the keyboard.
+ */
 function toggleOverlay(): void {
+  const main = mainWindow;
+  if (main !== undefined && !main.isDestroyed() && main.isFocused()) {
+    main.webContents.send(IPC.focusComposer);
+    return;
+  }
   const window = overlay;
   if (window === undefined || window.isDestroyed()) return;
   if (window.isVisible()) window.hide();
@@ -95,6 +115,9 @@ function toggleOverlay(): void {
 }
 
 function openMainWindow(): void {
+  // The panel floats above every window and follows the user across spaces, so
+  // it would otherwise sit on top of the window just asked for.
+  overlay?.hide();
   if (mainWindow !== undefined && !mainWindow.isDestroyed()) {
     mainWindow.show();
     mainWindow.focus();
@@ -121,7 +144,12 @@ function registerIpc(): void {
       );
     }
     agent.send(command);
+    // Only after the command is accepted, so a rejected send never leaves a run
+    // that has no terminal event coming.
+    sessions.observeCommand(command);
   });
+
+  ipcMain.handle(IPC.sessionRunsGet, (): ActiveRun[] => sessions.activeRuns);
 
   ipcMain.handle(IPC.attachmentsPick, async (): Promise<ImportedAttachment[]> => {
     const result = await dialog.showOpenDialog({

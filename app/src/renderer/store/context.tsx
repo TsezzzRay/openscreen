@@ -7,12 +7,15 @@ import {
   type ReactNode,
 } from "react";
 
-import { AgentStore, type AgentSnapshot } from "./agent-store.ts";
+import { AgentStore, type AgentSnapshot, type Surface } from "./agent-store.ts";
+import { AgentTransport } from "./transport.ts";
 
 const StoreContext = createContext<AgentStore | undefined>(undefined);
 
-export function AgentProvider({ children }: { children: ReactNode }): ReactNode {
-  const store = useMemo(() => new AgentStore(), []);
+export function AgentProvider(
+  { surface, children }: { surface: Surface; children: ReactNode },
+): ReactNode {
+  const store = useMemo(() => new AgentStore(new AgentTransport(), surface), [surface]);
   useEffect(() => {
     void store.restoreSessions();
   }, [store]);

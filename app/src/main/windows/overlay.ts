@@ -6,7 +6,9 @@ import { rendererEntry } from "../renderer-entry.ts";
 
 export const OVERLAY_WIDTH = 720;
 export const OVERLAY_COLLAPSED_HEIGHT = 60;
-export const OVERLAY_MAX_HEIGHT = 640;
+// Tall enough for the chat picker or a scrolled-back conversation under the
+// bar, while still reading as a panel rather than a second window.
+export const OVERLAY_MAX_HEIGHT = 720;
 const OVERLAY_TOP_MARGIN = 14;
 
 /**

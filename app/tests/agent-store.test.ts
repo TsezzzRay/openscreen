@@ -1,6 +1,6 @@
 import { describe, expect, test, vi } from "vitest";
 
-import type { AgentStatus } from "@shared/ipc.ts";
+import type { ActiveRun, AgentStatus } from "@shared/ipc.ts";
 import type {
   ApplicationCommand,
   ApplicationEvent,
@@ -36,8 +36,46 @@ class StubGateway implements AgentGateway {
       }
     | undefined;
 
+  private readonly runListeners = new Set<(runs: ActiveRun[]) => void>();
+  private readonly invalidationListeners = new Set<() => void>();
+  private readonly unclaimedListeners = new Set<
+    (requestId: string, event: ApplicationEvent) => void
+  >();
+
   onStatus(_listener: (status: AgentStatus) => void): () => void {
     return () => {};
+  }
+
+  onActiveRuns(listener: (runs: ActiveRun[]) => void): () => void {
+    this.runListeners.add(listener);
+    return () => this.runListeners.delete(listener);
+  }
+
+  onSessionsInvalidated(listener: () => void): () => void {
+    this.invalidationListeners.add(listener);
+    return () => this.invalidationListeners.delete(listener);
+  }
+
+  /** Stands in for the main process reporting a changed chat list. */
+  emitSessionsInvalidated(): void {
+    for (const listener of this.invalidationListeners) listener();
+  }
+
+  onUnclaimedEvent(
+    listener: (requestId: string, event: ApplicationEvent) => void,
+  ): () => void {
+    this.unclaimedListeners.add(listener);
+    return () => this.unclaimedListeners.delete(listener);
+  }
+
+  /** Stands in for the main process broadcasting the set of runs in flight. */
+  emitRuns(runs: ActiveRun[]): void {
+    for (const listener of this.runListeners) listener(runs);
+  }
+
+  /** Stands in for an event whose request this window never issued. */
+  emitUnclaimed(requestId: string, event: ApplicationEvent): void {
+    for (const listener of this.unclaimedListeners) listener(requestId, event);
   }
 
   async send(
@@ -102,11 +140,28 @@ describe("session restore", () => {
   });
 
   test("reopens the session that was selected last time", async () => {
-    localStorage.setItem("OpenScreenSelectedSessionID", "b");
+    localStorage.setItem("OpenScreenSelectedSessionID:main", "b");
     const { store } = setup();
     await store.restoreSessions();
 
     expect(store.getSnapshot().currentSessionId).toBe("b");
+  });
+
+  test("keeps the overlay and main window selections apart", async () => {
+    localStorage.setItem("OpenScreenSelectedSessionID:main", "b");
+    const gateway = new StubGateway();
+    gateway.sessions = [view("a").session, view("b").session];
+    gateway.views.set("a", view("a"));
+    gateway.views.set("b", view("b"));
+
+    const overlay = new AgentStore(gateway, "overlay");
+    await overlay.restoreSessions();
+
+    // The two renderers share an origin, so an unscoped key would have dragged
+    // the overlay to whatever the main window opened last.
+    expect(overlay.getSnapshot().currentSessionId).toBe("a");
+    expect(localStorage.getItem("OpenScreenSelectedSessionID:main")).toBe("b");
+    expect(localStorage.getItem("OpenScreenSelectedSessionID:overlay")).toBe("a");
   });
 
   test("creates the first chat when none exist", async () => {
@@ -166,6 +221,45 @@ describe("prompt lifecycle", () => {
       reasoning: "hm",
       answer: "because",
     });
+  });
+
+  test("accepts another prompt after the shared run set closes first", async () => {
+    const { gateway, store } = await started();
+    const turnId = store.getSnapshot().turns[0]!.id;
+
+    // The main process settles the shared run set inside its event handler and
+    // forwards the terminal event afterwards, so the window is told the run
+    // closed before the send it is still awaiting resolves. That ordering must
+    // not strand the session as busy.
+    gateway.emitRuns([
+      { sessionId: "a", requestId: turnId, text: "why is this failing", startedAt: at },
+    ]);
+    gateway.emitRuns([]);
+    gateway.run!.finish();
+
+    await vi.waitFor(() =>
+      expect(store.getSnapshot().activeSessionIds).not.toContain("a"),
+    );
+    expect(store.isSending).toBe(false);
+
+    store.updateDraft("and now this one");
+    store.submit();
+
+    expect(
+      gateway.commands.filter((command) => command.type === "prompt"),
+    ).toHaveLength(2);
+  });
+
+  test("does not duplicate its own turn when the run set names it", async () => {
+    const { gateway, store } = await started();
+    const turnId = store.getSnapshot().turns[0]!.id;
+
+    gateway.emitRuns([
+      { sessionId: "a", requestId: turnId, text: "why is this failing", startedAt: at },
+    ]);
+
+    expect(store.getSnapshot().turns).toHaveLength(1);
+    expect(store.getSnapshot().turns[0]?.id).toBe(turnId);
   });
 
   test("tracks a tool from start to finish under one call id", async () => {
@@ -324,8 +418,143 @@ describe("switching sessions", () => {
     await store.restoreSessions();
     store.selectSession("b");
     await vi.waitFor(() =>
-      expect(localStorage.getItem("OpenScreenSelectedSessionID")).toBe("b"),
+      expect(localStorage.getItem("OpenScreenSelectedSessionID:main")).toBe("b"),
     );
+  });
+});
+
+describe("runs started in the other window", () => {
+  const remote: ActiveRun = {
+    sessionId: "a",
+    requestId: "remote-1",
+    text: "what changed here",
+    startedAt: at,
+  };
+
+  async function observing() {
+    const { gateway, store } = setup();
+    await store.restoreSessions();
+    return { gateway, store };
+  }
+
+  test("adopts the run into the transcript it is already showing", async () => {
+    const { gateway, store } = await observing();
+
+    gateway.emitRuns([remote]);
+
+    expect(store.getSnapshot().turns).toHaveLength(1);
+    expect(store.getSnapshot().turns[0]).toMatchObject({
+      id: "remote-1",
+      question: "what changed here",
+      status: "requesting",
+    });
+  });
+
+  test("streams events it never asked for into that turn", async () => {
+    const { gateway, store } = await observing();
+    gateway.emitRuns([remote]);
+
+    gateway.emitUnclaimed("remote-1", {
+      type: "answer_delta",
+      sessionId: "a",
+      delta: "the capture rule",
+    });
+
+    expect(store.getSnapshot().turns[0]).toMatchObject({
+      status: "generating",
+      answer: "the capture rule",
+    });
+  });
+
+  test("offers to stop the remote run instead of starting a second one", async () => {
+    const { gateway, store } = await observing();
+    gateway.emitRuns([remote]);
+
+    expect(store.getSnapshot().activeSessionIds).toContain("a");
+    expect(store.isSending).toBe(true);
+
+    // The runtime rejects a second prompt on a busy session, so the composer
+    // must not send one.
+    store.updateDraft("meanwhile");
+    store.submit();
+    expect(gateway.commands.some((command) => command.type === "prompt")).toBe(false);
+
+    store.cancelCurrentRequest();
+    expect(gateway.commands).toContainEqual(
+      expect.objectContaining({
+        type: "abort",
+        sessionId: "a",
+        targetRequestId: "remote-1",
+      }),
+    );
+  });
+
+  test("re-reads the session from disk once the remote run ends", async () => {
+    const { gateway, store } = await observing();
+    gateway.emitRuns([remote]);
+    gateway.views.set(
+      "a",
+      view("a", [
+        { id: "m1", role: "user", timestamp: at, text: "what changed here" },
+        { id: "m2", role: "assistant", timestamp: at, text: "the capture rule" },
+      ]),
+    );
+
+    gateway.emitRuns([]);
+
+    // The streamed increments cannot reproduce the stored projection, so the
+    // finished turn comes back from the session file rather than the guesses.
+    await vi.waitFor(() => {
+      expect(store.getSnapshot().activeSessionIds).not.toContain("a");
+      expect(store.getSnapshot().turns[0]).toMatchObject({
+        question: "what changed here",
+        answer: "the capture rule",
+        status: "completed",
+      });
+    });
+  });
+
+  test("re-reads the chat list when the other window changes it", async () => {
+    const { gateway, store } = await observing();
+    expect(store.getSnapshot().sessions).toHaveLength(2);
+
+    gateway.sessions = [...gateway.sessions, view("c").session];
+    gateway.emitSessionsInvalidated();
+
+    await vi.waitFor(() =>
+      expect(store.getSnapshot().sessions.map((session) => session.id)).toEqual([
+        "a",
+        "b",
+        "c",
+      ]),
+    );
+  });
+
+  test("picks up a rename of the chat it is showing", async () => {
+    const { gateway, store } = await observing();
+    expect(store.getSnapshot().currentTitle).toBe("chat a");
+
+    gateway.sessions = [
+      { id: "a", createdAt: at, name: "the capture rule" },
+      view("b").session,
+    ];
+    gateway.emitSessionsInvalidated();
+
+    // A chat with no explicit name takes it from its first question, so the
+    // open chat's title goes stale the same way the list does.
+    await vi.waitFor(() =>
+      expect(store.getSnapshot().currentTitle).toBe("the capture rule"),
+    );
+  });
+
+  test("ignores a run in a session this window has not opened", async () => {
+    const { gateway, store } = await observing();
+
+    gateway.emitRuns([{ ...remote, sessionId: "b", requestId: "remote-2" }]);
+
+    expect(store.getSnapshot().turns).toHaveLength(0);
+    // The chat list still marks it, so the other window's work is visible.
+    expect(store.getSnapshot().activeSessionIds).toContain("b");
   });
 });
 
