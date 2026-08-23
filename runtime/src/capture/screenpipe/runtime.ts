@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 
 import { Recorder, type RecorderOptions } from "@screenpipe/sdk";
@@ -231,13 +232,31 @@ export class ScreenpipeRuntime {
       if (generation === undefined) {
         throw new Error("Screenpipe generation is not available");
       }
-      const database = generation.active
-        ? current.database
-        : this.databaseFactory(
-          join(generation.generationRoot, "db.sqlite"),
-          id,
-          this.options.ignoredWindows,
-        );
+      const databasePath = join(generation.generationRoot, "db.sqlite");
+      let database;
+      try {
+        database = generation.active
+          ? current.database
+          : this.databaseFactory(databasePath, id, this.options.ignoredWindows);
+      } catch (error) {
+        // A generation whose recorder failed before the SDK created its database
+        // leaves an empty directory behind. It holds no frames, so reporting it
+        // as drained is the truth — and the alternative is worse: the Chronicle
+        // drains generations oldest first, one per tick, so a directory that
+        // always throws blocks every newer generation behind it forever.
+        if (!generation.active && !existsSync(databasePath)) {
+          return {
+            generation: {
+              generationId: id,
+              generationRoot: generation.generationRoot,
+            },
+            frames: [],
+            cursor,
+            hasMore: false,
+          };
+        }
+        throw error;
+      }
       try {
         const batch = database.framesAfter(cursor, limit);
         return {

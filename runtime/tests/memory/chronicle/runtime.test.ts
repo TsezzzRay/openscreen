@@ -242,6 +242,67 @@ test("polls generation-scoped frames, resets on rotation, and resumes a durable 
   assert.equal(activity, "");
 });
 
+test("keeps draining newer generations when an older one cannot be read", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "openscreen-chronicle-runtime-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const env = new NodeExecutionEnv({ cwd: root });
+  t.after(() => env.cleanup());
+
+  const reads: string[] = [];
+  const feed: ChronicleFrameFeed = {
+    listGenerations: async () => [
+      { generationId: "generation-broken", active: false },
+      { generationId: "generation-2", active: true },
+    ],
+    readFramesAfter: async (generationId, cursor) => {
+      reads.push(generationId);
+      if (generationId === "generation-broken") {
+        throw new Error("unable to open database file");
+      }
+      const frames = [frame("generation-2", 1)].filter(
+        (candidate) => Number(candidate.frameId) > cursor,
+      );
+      return {
+        generationId,
+        frames,
+        cursor: frames.length === 0 ? cursor : 1,
+        hasMore: false,
+      };
+    },
+  };
+  const models = {
+    completeSimple: async (_model: Model<string>, context: { messages: Array<{ content: unknown }> }) => {
+      const input = JSON.parse(String(context.messages[0]?.content)) as {
+        frames: ChronicleFrameInput[];
+      };
+      return chronicleToolResponse(input.frames.map(({ sourceId }) => sourceId));
+    },
+  } as unknown as Models;
+
+  const runtime = new MemoryRuntime({
+    cwd: root,
+    sessionsRoot: join(root, "sessions"),
+    memoryRoot: join(root, "memory"),
+    env,
+    models,
+    model,
+    config: runtimeConfig(),
+    chronicleFrameFeed: feed,
+    gitBranch: async () => "feature/chronicle",
+    now: () => now,
+  });
+  t.after(() => runtime.stop());
+
+  await runtime.start();
+  await runtime.runOnce();
+
+  // Generations drain oldest first, one per tick. Without the skip, the broken
+  // one would take the tick down with it and every newer generation would sit
+  // behind it for as long as the failure lasts.
+  assert.deepEqual(reads, ["generation-broken", "generation-2"]);
+  assert.equal(runtime.chronicleGenerationComplete("generation-broken"), false);
+});
+
 test("writes the real failure cause to the private diagnostics log", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "openscreen-diagnostics-runtime-"));
   t.after(() => rm(root, { recursive: true, force: true }));

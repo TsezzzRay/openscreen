@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { writeFileSync } from "node:fs";
 import { mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -502,6 +503,87 @@ test("emits content-free generation rotation diagnostics", async (t) => {
     phase: "generation-rotation",
     message: "Generation rotation failed",
   }]);
+});
+
+test("reports a generation with no database as drained", async (t) => {
+  const dataRoot = await mkdtemp(join(tmpdir(), "openscreen-screenpipe-runtime-"));
+  t.after(() => rm(dataRoot, { recursive: true, force: true }));
+
+  const ids = ["generation-a", "generation-b"];
+  let now = Date.parse("2026-08-15T00:00:00.000Z");
+  let retired = false;
+  const runtime = new ScreenpipeRuntime({
+    dataRoot,
+    ignoredWindows: [],
+    ignoredUrls: [],
+    now: () => new Date(now),
+    generationIdFactory: () => ids.shift() ?? "unexpected",
+    recorderFactory: () => ({ start: async () => {}, stop: async () => {} }),
+    databaseFactory: (path) => {
+      // The real reader opens read-only, which is what an empty directory left
+      // by a recorder that never started fails on. The generation still has to
+      // start, so only the later reopen fails.
+      if (retired && path.includes("generation-a")) {
+        throw new Error("unable to open database file");
+      }
+      return {
+        close: () => {},
+        framesAfter: (cursor) => ({ frames: [], cursor, hasMore: false }),
+      };
+    },
+  });
+
+  await runtime.start();
+  now = Date.parse("2026-08-16T00:00:00.000Z");
+  await runtime.rotate();
+  retired = true;
+
+  const read = await runtime.readGenerationFramesAfter("generation-a", 0, 10);
+
+  // Drained rather than throwing, so the Chronicle can complete it and move on
+  // instead of retrying the same directory forever.
+  assert.deepEqual(read.frames, []);
+  assert.equal(read.hasMore, false);
+  assert.equal(read.generation.generationId, "generation-a");
+});
+
+test("still surfaces a read failure when the database exists", async (t) => {
+  const dataRoot = await mkdtemp(join(tmpdir(), "openscreen-screenpipe-runtime-"));
+  t.after(() => rm(dataRoot, { recursive: true, force: true }));
+
+  const ids = ["generation-a", "generation-b"];
+  let now = Date.parse("2026-08-15T00:00:00.000Z");
+  let retired = false;
+  const runtime = new ScreenpipeRuntime({
+    dataRoot,
+    ignoredWindows: [],
+    ignoredUrls: [],
+    now: () => new Date(now),
+    generationIdFactory: () => ids.shift() ?? "unexpected",
+    recorderFactory: () => ({ start: async () => {}, stop: async () => {} }),
+    databaseFactory: (path) => {
+      if (retired && path.includes("generation-a")) {
+        writeFileSync(path, "not a database");
+        throw new Error("file is not a database");
+      }
+      return {
+        close: () => {},
+        framesAfter: (cursor) => ({ frames: [], cursor, hasMore: false }),
+      };
+    },
+  });
+
+  await runtime.start();
+  now = Date.parse("2026-08-16T00:00:00.000Z");
+  await runtime.rotate();
+  retired = true;
+
+  // A corrupt database is not an empty one; silently reporting it drained would
+  // discard frames that are really there.
+  await assert.rejects(
+    runtime.readGenerationFramesAfter("generation-a", 0, 10),
+    /not a database/,
+  );
 });
 
 test("rejects an incremental read while inactive", async (t) => {

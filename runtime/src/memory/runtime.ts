@@ -245,7 +245,17 @@ export class MemoryRuntime {
     for (const generation of generations) {
       if (cursors.chronicleGenerationComplete(generation.generationId)) continue;
       const requestedCursor = cursors.chronicleGenerationCursor(generation.generationId);
-      const read = await feed.readFramesAfter(generation.generationId, requestedCursor, 1_000);
+      let read;
+      try {
+        read = await feed.readFramesAfter(generation.generationId, requestedCursor, 1_000);
+      } catch (error) {
+        // Generations are drained oldest first, one per tick, so a single
+        // unreadable one must not take the tick down with it: everything newer
+        // would sit behind it for as long as the failure lasts. Report it and
+        // let the next generation through; this one is retried next tick.
+        this.diagnostic("chronicle", error);
+        continue;
+      }
       if (read.generationId !== generation.generationId) {
         throw new Error("Chronicle frame feed changed generation");
       }
