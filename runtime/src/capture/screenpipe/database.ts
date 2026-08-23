@@ -28,7 +28,6 @@ const FRAME_COLUMNS = `
 
 export type ScreenpipeDatabase = {
   close(): void;
-  latestFrames(): ScreenFrameSource[];
   framesAfter(cursor: number, limit: number): ScreenpipeFrameBatch;
 };
 
@@ -68,11 +67,17 @@ function matchesIgnoredWindow(
   });
 }
 
+type ProjectedFrame = {
+  frame: ScreenFrameSource;
+  timestampMs: number;
+  id: number;
+};
+
 function projectFrame(
   row: ScreenpipeFrameRow,
   generationId: string,
   ignoredWindows: readonly string[],
-): { frame: ScreenFrameSource; timestampMs: number; id: number } | undefined {
+): ProjectedFrame | undefined {
   if (typeof row.id !== "number" || !Number.isSafeInteger(row.id) || row.id <= 0) {
     return undefined;
   }
@@ -137,25 +142,6 @@ function projectFrame(
   };
 }
 
-function sameProjectedFrame(
-  left: ScreenFrameSource,
-  right: ScreenFrameSource,
-): boolean {
-  return left.sourceId === right.sourceId
-    && left.generationId === right.generationId
-    && left.frameId === right.frameId
-    && left.monitorKey === right.monitorKey
-    && left.deviceName === right.deviceName
-    && left.capturedAt === right.capturedAt
-    && left.trigger === right.trigger
-    && left.imagePath === right.imagePath
-    && left.application === right.application
-    && left.windowTitle === right.windowTitle
-    && left.url === right.url
-    && left.focused === right.focused
-    && left.visibleText === right.visibleText;
-}
-
 function incrementalCursor(value: number): number {
   if (!Number.isSafeInteger(value) || value < 0 || value > MAX_SAFE_SQLITE_ID) {
     throw new Error("Screenpipe frame cursor must be a non-negative safe SQLite id");
@@ -177,38 +163,13 @@ function incrementalLimit(value: number): number {
 }
 
 class OpenScreenpipeDatabase implements ScreenpipeDatabase {
-  private readonly frameScan;
-  private readonly frameById;
   private readonly framesAfterScan;
-  private lastScannedFrameId = 0;
-  private readonly latestByMonitor = new Map<string, {
-    frame: ScreenFrameSource;
-    timestampMs: number;
-    id: number;
-  }>();
 
   constructor(
     private readonly connection: DatabaseSync,
     private readonly generationId: string,
     private readonly ignoredWindows: readonly string[],
   ) {
-    this.frameScan = connection.prepare(`
-      SELECT
-        ${FRAME_COLUMNS}
-      FROM frames
-      WHERE typeof(id) = 'integer'
-        AND id > ?
-        AND id <= ${MAX_SAFE_SQLITE_ID}
-      ORDER BY id ASC
-    `);
-    this.frameById = connection.prepare(`
-      SELECT
-        ${FRAME_COLUMNS}
-      FROM frames
-      WHERE typeof(id) = 'integer'
-        AND id = ?
-        AND id <= ${MAX_SAFE_SQLITE_ID}
-    `);
     this.framesAfterScan = connection.prepare(`
       SELECT
         ${FRAME_COLUMNS}
@@ -223,77 +184,6 @@ class OpenScreenpipeDatabase implements ScreenpipeDatabase {
 
   close(): void {
     if (this.connection.isOpen) this.connection.close();
-  }
-
-  latestFrames(): ScreenFrameSource[] {
-    const priorCursor = this.lastScannedFrameId;
-    const priorLatest = new Map(this.latestByMonitor);
-    this.connection.exec("BEGIN");
-    try {
-      let rebuild = false;
-      for (const winner of this.latestByMonitor.values()) {
-        const rawRow = this.frameById.get(winner.id);
-        const row = rawRow === undefined
-          ? undefined
-          : rawRow as unknown as ScreenpipeFrameRow;
-        const projected = row === undefined
-          ? undefined
-          : projectFrame(row, this.generationId, this.ignoredWindows);
-        if (
-          projected === undefined
-          || !sameProjectedFrame(winner.frame, projected.frame)
-        ) {
-          rebuild = true;
-          break;
-        }
-      }
-
-      if (rebuild) {
-        this.latestByMonitor.clear();
-        this.lastScannedFrameId = 0;
-      }
-      for (const rawRow of this.frameScan.iterate(this.lastScannedFrameId)) {
-        const row = rawRow as unknown as ScreenpipeFrameRow;
-        if (
-          typeof row.id === "number"
-          && Number.isSafeInteger(row.id)
-          && row.id > this.lastScannedFrameId
-        ) {
-          this.lastScannedFrameId = row.id;
-        }
-        const projected = projectFrame(row, this.generationId, this.ignoredWindows);
-        if (projected === undefined) continue;
-        const prior = this.latestByMonitor.get(projected.frame.monitorKey);
-        if (
-          prior === undefined
-          || projected.timestampMs > prior.timestampMs
-          || (
-            projected.timestampMs === prior.timestampMs
-            && projected.id > prior.id
-          )
-        ) {
-          this.latestByMonitor.set(projected.frame.monitorKey, projected);
-        }
-      }
-      this.connection.exec("COMMIT");
-    } catch (error) {
-      try {
-        this.connection.exec("ROLLBACK");
-      } catch {
-        // Preserve the original query error.
-      }
-      this.lastScannedFrameId = priorCursor;
-      this.latestByMonitor.clear();
-      for (const [monitorKey, winner] of priorLatest) {
-        this.latestByMonitor.set(monitorKey, winner);
-      }
-      throw error;
-    }
-    return [...this.latestByMonitor.values()]
-      .sort((left, right) => (
-        Number(left.frame.monitorKey) - Number(right.frame.monitorKey)
-      ))
-      .map((item) => ({ ...item.frame }));
   }
 
   framesAfter(cursor: number, limit: number): ScreenpipeFrameBatch {

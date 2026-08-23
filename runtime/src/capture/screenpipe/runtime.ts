@@ -30,11 +30,6 @@ export type ScreenpipeGeneration = {
   generationRoot: string;
 };
 
-export type ScreenpipeCaptureSnapshot = {
-  generation: ScreenpipeGeneration;
-  frames: ScreenFrameSource[];
-};
-
 export type ScreenpipeFrameRead = ScreenpipeFrameBatch & {
   generation: ScreenpipeGeneration;
 };
@@ -188,27 +183,6 @@ export class ScreenpipeRuntime {
       generationId: current.generationId,
       generationRoot: current.generationRoot,
     };
-  }
-
-  latestFrames(): ScreenFrameSource[] {
-    const current = this.current;
-    if (current === undefined) {
-      throw new Error("Screenpipe runtime has not started");
-    }
-    return current.database.latestFrames();
-  }
-
-  captureSnapshot(): Promise<ScreenpipeCaptureSnapshot> {
-    return this.enqueue(async () => {
-      const current = await this.requireReadableGeneration();
-      return {
-        generation: {
-          generationId: current.generationId,
-          generationRoot: current.generationRoot,
-        },
-        frames: current.database.latestFrames().map((frame) => ({ ...frame })),
-      };
-    });
   }
 
   readFramesAfter(cursor: number, limit: number): Promise<ScreenpipeFrameRead> {

@@ -17,7 +17,7 @@ import type {
   ScreenpipeDatabase,
 } from "../../../src/capture/screenpipe/database.js";
 
-test("starts one generation before opening its latest-frame database", async (t) => {
+test("starts one generation before opening its frame database", async (t) => {
   const dataRoot = await mkdtemp(join(tmpdir(), "openscreen-screenpipe-runtime-"));
   t.after(() => rm(dataRoot, { recursive: true, force: true }));
 
@@ -38,7 +38,6 @@ test("starts one generation before opening its latest-frame database", async (t)
   let databaseGenerationId: string | undefined;
   const database: ScreenpipeDatabase = {
     close: () => events.push("database.close"),
-    latestFrames: () => frames,
     framesAfter: (cursor) => ({ frames, cursor, hasMore: false }),
   };
   const recorder: ScreenpipeRecorder = {
@@ -87,7 +86,6 @@ test("starts one generation before opening its latest-frame database", async (t)
   assert.deepEqual(recorderOptions?.pairedMonitors, undefined);
   assert.equal(databasePath, join(generationRoot, "db.sqlite"));
   assert.equal(databaseGenerationId, "generation-1");
-  assert.strictEqual(runtime.latestFrames(), frames);
 });
 
 test("does not create a second generation and stops its writer before its reader", async (t) => {
@@ -116,7 +114,6 @@ test("does not create a second generation and stops its writer before its reader
     databaseFactory: () => {
       databaseCount += 1;
       return {
-        latestFrames: () => [],
         framesAfter: (cursor) => ({ frames: [], cursor, hasMore: false }),
         close: () => {
           events.push("database.close");
@@ -138,7 +135,7 @@ test("does not create a second generation and stops its writer before its reader
     "database.close",
   ]);
   assert.throws(() => runtime.generation(), /has not started/);
-  assert.throws(() => runtime.latestFrames(), /has not started/);
+  assert.throws(() => runtime.generation(), /has not started/);
 });
 
 test("keeps failed-start generation artifacts after stopping the started recorder", async (t) => {
@@ -174,7 +171,7 @@ test("keeps failed-start generation artifacts after stopping the started recorde
     "generations",
     "failed-generation",
   ));
-  assert.throws(() => runtime.latestFrames(), /has not started/);
+  assert.throws(() => runtime.generation(), /has not started/);
 });
 
 test("stops the recorder when its start rejects after native startup", async (t) => {
@@ -205,79 +202,6 @@ test("stops the recorder when its start rejects after native startup", async (t)
   assert.deepEqual(events, ["recorder.start", "recorder.stop"]);
 });
 
-test("serializes stop, restart, and snapshot without mixing generation metadata and frames", async (t) => {
-  const dataRoot = await mkdtemp(join(tmpdir(), "openscreen-screenpipe-runtime-"));
-  t.after(() => rm(dataRoot, { recursive: true, force: true }));
-
-  const events: string[] = [];
-  const ids = ["generation-a", "generation-b"];
-  const sourceFrames = new Map<string, ScreenFrameSource[]>([
-    ["generation-a", [runtimeFrame("generation-a", "1")]],
-    ["generation-b", [runtimeFrame("generation-b", "2")]],
-  ]);
-  const runtime = new ScreenpipeRuntime({
-    dataRoot,
-    ignoredWindows: [],
-    ignoredUrls: [],
-    generationIdFactory: () => ids.shift() ?? "unexpected-generation",
-    recorderFactory: (options) => {
-      if (options.dataDir === undefined) throw new Error("missing generation dataDir");
-      const generationId = options.dataDir.split("/").at(-1)!;
-      return {
-        start: async () => {
-          events.push(`recorder.start:${generationId}`);
-        },
-        stop: async () => {
-          events.push(`recorder.stop:${generationId}`);
-        },
-      };
-    },
-    databaseFactory: (_path, generationId) => ({
-      close: () => {
-        events.push(`database.close:${generationId}`);
-      },
-      latestFrames: () => {
-        events.push(`database.latest:${generationId}`);
-        return sourceFrames.get(generationId) ?? [];
-      },
-      framesAfter: (cursor) => ({ frames: [], cursor, hasMore: false }),
-    }),
-  });
-
-  await runtime.start();
-  const stopping = runtime.stop();
-  const restarting = runtime.start();
-  const snapshot = runtime.captureSnapshot();
-  const [, , captured] = await Promise.all([stopping, restarting, snapshot]);
-
-  assert.equal(captured.generation.generationId, "generation-b");
-  assert.match(captured.generation.generationRoot, /generations\/generation-b$/);
-  assert.deepEqual(captured.frames.map((item) => item.generationId), ["generation-b"]);
-  assert.notStrictEqual(captured.frames[0], sourceFrames.get("generation-b")?.[0]);
-  assert.deepEqual(events, [
-    "recorder.start:generation-a",
-    "recorder.stop:generation-a",
-    "database.close:generation-a",
-    "recorder.start:generation-b",
-    "database.latest:generation-b",
-  ]);
-});
-
-test("rejects an atomic snapshot while inactive", async (t) => {
-  const dataRoot = await mkdtemp(join(tmpdir(), "openscreen-screenpipe-runtime-"));
-  t.after(() => rm(dataRoot, { recursive: true, force: true }));
-  const runtime = new ScreenpipeRuntime({
-    dataRoot,
-    ignoredWindows: [],
-    ignoredUrls: [],
-    recorderFactory: () => {
-      throw new Error("must not create a recorder");
-    },
-  });
-
-  await assert.rejects(runtime.captureSnapshot(), /has not started/);
-});
-
 test("serializes an incremental read after stop and restart without mixing generations", async (t) => {
   const dataRoot = await mkdtemp(join(tmpdir(), "openscreen-screenpipe-runtime-"));
   t.after(() => rm(dataRoot, { recursive: true, force: true }));
@@ -305,7 +229,6 @@ test("serializes an incremental read after stop and restart without mixing gener
       close: () => {
         events.push(`database.close:${generationId}`);
       },
-      latestFrames: () => [],
       framesAfter: (cursor, limit) => {
         events.push(`database.framesAfter:${generationId}:${cursor}:${limit}`);
         return {
@@ -354,7 +277,6 @@ test("keeps retired generations readable until Chronicle drains them", async (t)
     recorderFactory: () => ({ start: async () => {}, stop: async () => {} }),
     databaseFactory: (_path, generationId) => ({
       close: () => events.push(`close:${generationId}`),
-      latestFrames: () => [],
       framesAfter: (cursor) => ({
         frames: cursor === 0 ? [runtimeFrame(generationId, "1")] : [],
         cursor: cursor === 0 ? 1 : cursor,
@@ -384,7 +306,7 @@ test("keeps retired generations readable until Chronicle drains them", async (t)
   );
 });
 
-test("rotates at the UTC boundary before snapshot reads", async (t) => {
+test("rotates at the UTC boundary before reads", async (t) => {
   const dataRoot = await mkdtemp(join(tmpdir(), "openscreen-screenpipe-runtime-"));
   t.after(() => rm(dataRoot, { recursive: true, force: true }));
   let now = Date.parse("2026-08-15T23:59:59.000Z");
@@ -402,25 +324,28 @@ test("rotates at the UTC boundary before snapshot reads", async (t) => {
     }),
     databaseFactory: (_path, generationId) => ({
       close: () => events.push(`close:${generationId}`),
-      latestFrames: () => {
-        events.push(`latest:${generationId}`);
-        return [runtimeFrame(generationId, generationId === "generation-a" ? "1" : "2")];
+      framesAfter: (cursor) => {
+        events.push(`read:${generationId}`);
+        return {
+          frames: [runtimeFrame(generationId, generationId === "generation-a" ? "1" : "2")],
+          cursor,
+          hasMore: false,
+        };
       },
-      framesAfter: (cursor) => ({ frames: [], cursor, hasMore: false }),
     }),
   });
 
   await runtime.start();
-  const before = await runtime.captureSnapshot();
+  const before = await runtime.readFramesAfter(0, 10);
   now = Date.parse("2026-08-16T00:00:00.000Z");
-  const after = await runtime.captureSnapshot();
+  const after = await runtime.readFramesAfter(0, 10);
 
   assert.equal(before.generation.generationId, "generation-a");
   assert.equal(after.generation.generationId, "generation-b");
   assert.deepEqual(events, [
-    "latest:generation-a",
+    "read:generation-a",
     "close:generation-a",
-    "latest:generation-b",
+    "read:generation-b",
   ]);
 });
 
@@ -445,17 +370,23 @@ test("retries a failed rotation without mixing generations", async (t) => {
     }),
     databaseFactory: (_path, generationId) => ({
       close: () => {},
-      latestFrames: () => [runtimeFrame(generationId, generationId === "generation-a" ? "1" : "2")],
-      framesAfter: (cursor) => ({ frames: [], cursor, hasMore: false }),
+      framesAfter: (cursor) => ({
+        frames: [runtimeFrame(generationId, generationId === "generation-a" ? "1" : "2")],
+        cursor,
+        hasMore: false,
+      }),
     }),
   });
 
   await runtime.start();
   now = Date.parse("2026-08-16T00:00:00.000Z");
-  await assert.rejects(runtime.captureSnapshot(), /rotation stop failed/);
-  await assert.rejects(runtime.captureSnapshot(), /has not started|rotation stop failed/);
+  await assert.rejects(runtime.readFramesAfter(0, 10), /rotation stop failed/);
+  await assert.rejects(
+    runtime.readFramesAfter(0, 10),
+    /has not started|rotation stop failed/,
+  );
   await runtime.start();
-  const recovered = await runtime.captureSnapshot();
+  const recovered = await runtime.readFramesAfter(0, 10);
   assert.equal(recovered.generation.generationId, "generation-b");
   assert.deepEqual(recovered.frames.map((frame) => frame.generationId), ["generation-b"]);
 });
@@ -480,7 +411,6 @@ test("uses an unref rotation timer and clears it on stop", async (t) => {
     recorderFactory: () => ({ start: async () => {}, stop: async () => {} }),
     databaseFactory: () => ({
       close: () => {},
-      latestFrames: () => [],
       framesAfter: (cursor) => ({ frames: [], cursor, hasMore: false }),
     }),
   });
@@ -523,14 +453,13 @@ test("clears a failed generation when rotation timer setup throws", async (t) =>
       close: () => {
         events.push(`close:${generationId}`);
       },
-      latestFrames: () => [],
       framesAfter: (cursor) => ({ frames: [], cursor, hasMore: false }),
     }),
   });
 
   await assert.rejects(runtime.start(), /timer unavailable/);
   assert.throws(() => runtime.generation(), /has not started/);
-  assert.throws(() => runtime.latestFrames(), /has not started/);
+  assert.throws(() => runtime.generation(), /has not started/);
 
   await runtime.start();
   assert.equal(runtime.generation().generationId, "generation-b");
@@ -563,7 +492,6 @@ test("emits content-free generation rotation diagnostics", async (t) => {
     }),
     databaseFactory: () => ({
       close: () => {},
-      latestFrames: () => [],
       framesAfter: (cursor) => ({ frames: [], cursor, hasMore: false }),
     }),
   });
