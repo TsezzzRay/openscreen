@@ -8,3 +8,4 @@ runtime/dist-test/
 .worktrees/
 app/out/
 .signing-identity
+native/bin/

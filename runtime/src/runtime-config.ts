@@ -25,6 +25,8 @@ export type ApplicationConfig = {
       | "max";
   };
   capture: {
+    /** Reads the screen when a prompt is submitted. */
+    native: { enabled: boolean };
     screenpipe: ScreenpipeCaptureConfig;
   };
   memory: MemoryConfig;
@@ -58,6 +60,11 @@ function exact(value: Record<string, unknown>, keys: string[]): void {
   }
 }
 
+function boolean(value: unknown): boolean {
+  if (typeof value !== "boolean") invalid();
+  return value;
+}
+
 function text(value: unknown): string {
   if (typeof value !== "string" || value.trim().length === 0) return invalid();
   return value.trim();
@@ -87,8 +94,11 @@ export function loadApplicationConfig(
       },
       capture: (() => {
         const capture = record(root.capture);
-        exact(capture, ["screenpipe"]);
+        exact(capture, ["native", "screenpipe"]);
+        const native = record(capture.native);
+        exact(native, ["enabled"]);
         return {
+          native: { enabled: boolean(native.enabled) },
           screenpipe: parseScreenpipeCaptureConfig(capture.screenpipe),
         };
       })(),

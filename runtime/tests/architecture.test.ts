@@ -206,7 +206,7 @@ test("main is the sole concrete composition root", () => {
     const imports = specifiers.get(fileName) ?? [];
     if (
       imports.some((item) => item.includes("agent/pi/")) &&
-      imports.some((item) => item.endsWith("capture/screenpipe/service.js")) &&
+      imports.some((item) => item.endsWith("capture/native/service.js")) &&
       imports.some((item) => item.endsWith("application/runtime.js")) &&
       imports.some((item) => item.endsWith("transport/jsonl-server.js"))
     ) {

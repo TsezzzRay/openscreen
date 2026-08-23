@@ -24,12 +24,14 @@ runtime/src/
 │       ├── memory-citation.ts    hidden citation filtering and access validation
 │       └── tools/                seven focused tools plus shared support
 ├── capture/
-│   ├── api.ts                    Agent-neutral Capture contract
+│   ├── api.ts                    Agent-neutral Capture contract and frame shape
+│   ├── native/
+│   │   ├── service.ts            prompt-time screen read and guarded JPEG loading
+│   │   └── helper.ts             helper invocation and strict report parsing
 │   └── screenpipe/
 │       ├── runtime.ts            recorder generation lifecycle and atomic reads
 │       ├── generation-store.ts   private rotation and retention ownership
-│       ├── database.ts           read-only latest/incremental frame queries
-│       ├── service.ts            request capture and guarded JPEG loading
+│       ├── database.ts           read-only incremental frame queries
 │       ├── frame-source.ts       strict neutral frame projection
 │       ├── recorder.ts           pinned SDK safety options
 │       └── config.ts             strict Capture configuration
@@ -110,11 +112,11 @@ Capture.
    `requestId`.
 2. Transport validates the complete JSON shape and dispatches commands without
    imposing global serialization.
-3. For a prompt, Application first asks Screenpipe Capture for one atomic
-   generation snapshot. Capture selects the latest valid row independently for
-   every monitor and reads each guarded JPEG from that generation. It does not
-   wait for a new frame or fabricate a cross-display group. Capture failure is
-   reported to stderr and the prompt continues without screen context.
+3. For a prompt, Application asks Capture to read the screen. The native
+   backend spawns the macOS helper, which photographs every display through
+   ScreenCaptureKit and reads the focused window's accessibility text, both at
+   that instant. Capture failure is reported to stderr and the prompt continues
+   without screen context.
 4. Application maps ordered frame metadata and aligned in-memory JPEG bytes to
    hidden generic context. It does not expose Capture concepts through the Agent
    API.
@@ -337,6 +339,36 @@ output, it may return a temporary full-output path in tool details.
 
 ## Capture integration
 
+Capture has two backends with two jobs. The native backend answers prompts by
+reading the screen live; the Screenpipe recorder keeps the background activity
+history the Chronicle feeds on. They share the neutral `CapturedFrame` shape in
+`capture/api.ts` and know nothing of each other.
+
+### Native capture
+
+`native/capture/main.swift` builds to `native/bin/openscreen-capture` through
+`npm run build:native`, which `npm run dev` runs first. It is a plain executable
+rather than a Node addon, so it needs no toolchain beyond the Swift compiler in
+the Xcode command line tools and no rebuild when Electron's ABI moves.
+
+One run photographs every display through ScreenCaptureKit at the display's
+logical size and JPEG quality 0.6 -- about 200 KB and 120 ms for a 1470x956
+display, legible enough to read interface text -- and walks the focused window's
+accessibility tree, bounded at 400 nodes and 8,000 characters. The window's
+identity and text are attached to the display that window sits on and to no
+other, because a frame that carried one window's text while showing a different
+screen is exactly the failure this backend removes. OpenScreen's own windows are
+cut out of the capture by bundle identifier, so the assistant can never be asked
+about a screen that is mostly its own interface.
+
+It needs Screen Recording and Accessibility permission. Without Accessibility
+the screenshots still arrive and the text is omitted; a display that cannot be
+photographed is dropped rather than sent empty. `capture.native.enabled`
+disables the whole prompt-time read, and `OPENSCREEN_CAPTURE_HELPER` overrides
+where the helper is found.
+
+### Screenpipe recorder
+
 Capture owns one `ScreenpipeRuntime` using pinned `@screenpipe/sdk@0.4.3`.
 Recorder options disable telemetry, microphone, system audio, MP4 output,
 keystrokes, clipboard capture, scroll capture, and mouse-move capture. The
@@ -351,9 +383,13 @@ deletes the active generation, ignores symlink candidates, removes expired
 inactive generations, and then evicts the oldest inactive generations until the
 configured byte cap is met. Cleanup diagnostics contain no paths or content.
 
-At prompt submission, `captureSnapshot()` selects the latest valid row for each
-monitor by that monitor's timestamp and frame ID. There is no request watermark,
-freshness threshold, cross-monitor skew rule, or synthetic group. Capture
+The recorder no longer answers prompts. Its frames are written on its own
+triggers -- a click, a typing pause, an idle heartbeat -- so the newest stored
+row trails the moment the user asked by a median of about 2.5 seconds and can
+name a window they have already left, and the only on-demand frame the SDK
+offers is a 480x312 thumbnail with no text in it. The recorder now serves the
+background activity history alone, through the incremental frame feed, which
+still carries every row. Capture
 validates the private canonical generation root, confines each JPEG path to that
 root, opens the leaf with `O_NOFOLLOW`, validates its JPEG signature, and passes
 aligned in-memory bytes to Application. Invalid or missing images are omitted.

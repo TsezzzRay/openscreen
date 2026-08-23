@@ -35,22 +35,25 @@ test("Capture source does not import Agent, pi, application, transport, or root 
   assert.deepEqual(violations, []);
 });
 
-test("Capture API contains neutral DTOs and only imports frame source types", () => {
+test("Capture API owns its DTOs and imports nothing", () => {
   const source = readFileSync(join(captureRoot, "api.ts"), "utf8");
 
-  assert.match(source, /^import type .*ScreenFrameSource.*frame-source\.js/m);
-  assert.doesNotMatch(source, /^import (?!type).*$/m);
+  // The API defines the frame shape rather than borrowing a backend's, so a
+  // second backend cannot be forced through the first one's vocabulary.
+  assert.match(source, /export type CapturedFrame = \{/);
+  assert.doesNotMatch(source, /^import .*$/m);
   assert.doesNotMatch(source, /AgentPrompt|pi-agent-core|pi-ai|provider/i);
   assert.match(source, /export type CapturedFrameImage/);
   assert.match(source, /export type CapturedContext/);
   assert.match(source, /export interface CaptureService/);
 });
 
-test("Capture source contains only its neutral API and Screenpipe implementation", () => {
+test("Capture source contains only its neutral API and the two backends", () => {
   assert.deepEqual(
     readdirSync(captureRoot).sort(),
     [
       "api.ts",
+      "native",
       "screenpipe",
     ],
   );

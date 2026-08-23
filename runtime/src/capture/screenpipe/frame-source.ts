@@ -1,20 +1,9 @@
 import { basename } from "node:path";
 
-export type ScreenFrameSource = {
-  sourceId: string;
-  generationId: string;
-  frameId: string;
-  monitorKey: string;
-  deviceName: string;
-  capturedAt: string;
-  trigger: string;
-  imagePath: string;
-  application?: string;
-  windowTitle?: string;
-  url?: string;
-  focused?: boolean;
-  visibleText?: string;
-};
+import type { CapturedFrame } from "../api.js";
+
+/** What this backend projects a stored recorder row into. */
+export type ScreenFrameSource = CapturedFrame;
 
 export type ScreenpipeFrameRow = {
   id: unknown;

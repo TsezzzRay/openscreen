@@ -4,7 +4,7 @@ import "./memory/mastra/telemetry-guard.js";
 
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
@@ -13,8 +13,8 @@ import { PiAgentService } from "./agent/pi/service.js";
 import { createAgentTools } from "./agent/pi/tools/create-agent-tools.js";
 import { ApplicationRuntime } from "./application/runtime.js";
 import type { CaptureService } from "./capture/api.js";
+import { NativeCaptureService } from "./capture/native/service.js";
 import { ScreenpipeRuntime } from "./capture/screenpipe/runtime.js";
-import { ScreenpipeCaptureService } from "./capture/screenpipe/service.js";
 import { RetryingMemoryLifecycle } from "./memory/lifecycle.js";
 import { MemoryRuntime } from "./memory/runtime.js";
 import { createMemoryReadPath } from "./memory/mastra/read-path.js";
@@ -23,6 +23,28 @@ import {
   loadProjectEnvironment,
 } from "./runtime-config.js";
 import { serveJsonl } from "./transport/jsonl-server.js";
+
+/**
+ * The assistant's own windows are cut out of every capture, so it can never be
+ * asked about a screen that is mostly its own interface — and never reads its
+ * own last answer back as if it were the user's work.
+ */
+const OWN_BUNDLE_IDS = ["com.openscreen.app", "com.github.Electron"] as const;
+
+/**
+ * The capture helper lives beside the runtime it is built with. A development
+ * launch runs from the checkout; a packaged launch keeps the same relative
+ * layout under the unpacked resources.
+ */
+function nativeHelperPath(): string {
+  const configured = process.env.OPENSCREEN_CAPTURE_HELPER;
+  if (configured !== undefined && configured.length > 0) return configured;
+  // Resolved against this module, not the working directory, which a packaged
+  // launch moves to the user's home.
+  return fileURLToPath(
+    new URL("../../native/bin/openscreen-capture", import.meta.url),
+  );
+}
 
 export async function run(): Promise<void> {
   loadProjectEnvironment();
@@ -136,8 +158,15 @@ export async function run(): Promise<void> {
     loadPromptSystemContext: memoryReadPath?.loadPromptContext,
     memoryCitationRoot: memoryReadPath?.root,
   });
-  const capture: CaptureService = screenpipeConfig.enabled
-    ? new ScreenpipeCaptureService({ runtime: screenpipeRuntime })
+  // The prompt path reads the screen live. The recorder keeps running for the
+  // background activity history, but its stored frames trail the question by
+  // seconds and can name a window the user has already left, so they are no
+  // longer what a prompt is answered against.
+  const capture: CaptureService = config.capture.native.enabled
+    ? new NativeCaptureService({
+        helperPath: nativeHelperPath(),
+        excludeBundleIds: OWN_BUNDLE_IDS,
+      })
     : {
         start: async () => {},
         stop: async () => {},
@@ -152,6 +181,20 @@ export async function run(): Promise<void> {
       );
     },
   });
+
+  // The recorder no longer sits behind the Capture service, because prompts are
+  // answered from a live read now. It belongs to the background activity
+  // history, so it is started here and its failure is not fatal: the Chronicle
+  // stalls, the Agent still answers.
+  let recorderStarted = false;
+  if (screenpipeConfig.enabled) {
+    try {
+      await screenpipeRuntime.start();
+      recorderStarted = true;
+    } catch {
+      process.stderr.write("OpenScreen capture start unavailable\n");
+    }
+  }
 
   let runtimeStartAttempted = false;
   try {
@@ -174,7 +217,11 @@ export async function run(): Promise<void> {
       try {
         await memoryLifecycle.stop();
       } finally {
-        await env.cleanup();
+        try {
+          if (recorderStarted) await screenpipeRuntime.stop();
+        } finally {
+          await env.cleanup();
+        }
       }
     }
   }

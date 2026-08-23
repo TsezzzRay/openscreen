@@ -4,9 +4,10 @@ OpenScreen is an early-stage, open-source macOS assistant that can answer
 questions about the window you are using and work with local files and commands.
 
 OpenScreen has two surfaces. Press `Option + Space` anywhere for the overlay: a
-command bar that answers one question about the screen in front of you without
+command bar that answers questions about the screen in front of you without
 taking focus from the application you are in. The main window holds the full
-interface — chats, history, transcripts, and Agent settings.
+interface — chats, history, transcripts, and Agent settings. Both show the same
+chats, and a run started in one is visible and stoppable from the other.
 
 Each prompt is answered with the current screen attached, and a capture failure
 still leaves a working text-only Agent run.
@@ -23,10 +24,17 @@ Session implementation, model adapter, or compaction engine.
 - Global `Option + Space` overlay: a movable, always-on-top command bar that
   takes keyboard input without activating OpenScreen, so the application being
   asked about stays in the foreground. The overlay is excluded from screen
-  capture, including OpenScreen's own recorder.
+  capture, including OpenScreen's own recorder. It scrolls back through the open
+  chat and can switch chats or start one; with the main window already in front
+  the shortcut focuses that window's composer instead of opening a second one.
 - A full application window for chats, history, transcripts, and Agent settings.
-- Continuous event-driven Screenpipe capture across all displays, with one
-  latest frame per display attached when a prompt is submitted.
+- Prompts in flight are shared between the two surfaces, so either one shows a
+  running answer and can stop it. The two keep independent chat selections.
+- Every display photographed at full readable resolution when a prompt is
+  submitted, with the focused window's accessibility text attached to the
+  display it sits on. OpenScreen's own windows are excluded from the capture.
+- Continuous event-driven Screenpipe recording across all displays, which feeds
+  the background activity history rather than the prompt.
 - Streaming answers, reasoning, and tool lifecycle updates from the pi Agent
   harness.
 - Local `read`, `ls`, `grep`, `find`, `write`, `edit`, and `bash` tools.
@@ -51,6 +59,8 @@ Session implementation, model adapter, or compaction engine.
 - Screen Recording and Accessibility permission. Input Monitoring is also
   needed for click and keyboard-activity signals.
 - Node.js 22.19 or later and npm.
+- Xcode command line tools, for the Swift compiler that builds the capture
+  helper (`xcode-select --install`).
 - An Apple code-signing identity for stable development Screen Recording
   permission.
 - Credentials for the configured pi provider. The checked-in default is
@@ -147,8 +157,8 @@ content.
 
 - Development launch only; there is no packaged application, installer,
   application icon, notarisation, or distribution workflow.
-- The overlay shows one exchange at a time; earlier questions in the session are
-  recalled with the up arrow, and full scrollback lives in the main window.
+- The overlay carries no renaming, compaction, attachment, or thinking-level
+  controls; those stay in the main window.
 - No click, type, scroll, or other application-control tools.
 - No dedicated Memory retrieval tool, Memory UI, or automatic access to
   historical screenshots. Memory lookup uses the existing file tools.
@@ -170,9 +180,9 @@ Transport
     -> Application API
 Application Runtime
     -> Agent API   -> pi AgentHarness / JsonlSessionRepo / system tools
-    -> Capture API -> Screenpipe Capture Service
-                         -> SDK Recorder / generation store / read-only SQLite
+    -> Capture API -> Native capture helper (screen and window text at submit)
 Composition Root
+    -> Screenpipe recorder -> SDK Recorder / generation store / read-only SQLite
     -> Memory Runtime -> Chronicle frame cursor / activity rollouts
                       -> pi Session branch scan / Turn rollouts
                       -> Mastra observation threads / LibSQL store

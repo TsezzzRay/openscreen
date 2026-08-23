@@ -5,6 +5,9 @@
     "thinking": "medium"
   },
   "capture": {
+    "native": {
+      "enabled": true
+    },
     "screenpipe": {
       "enabled": true,
       "ignoredWindows": [

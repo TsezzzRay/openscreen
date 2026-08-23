@@ -16,6 +16,9 @@ import * as runtimeConfig from "../src/runtime-config.js";
 const { loadApplicationConfig } = runtimeConfig;
 
 const captureFixture = {
+  native: {
+    enabled: true,
+  },
   screenpipe: {
     enabled: true,
     ignoredWindows: ["OpenScreen"],

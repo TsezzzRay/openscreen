@@ -21,7 +21,7 @@ test("main is the only source composing concrete Agent, Capture, Application, an
     const imports = specifiers.get(fileName) ?? [];
     const concreteAgent = imports.some((item) => item.includes("agent/pi/"));
     const concreteCapture = imports.some((item) =>
-      item.endsWith("capture/screenpipe/service.js")
+      item.endsWith("capture/native/service.js")
     );
     const application = imports.some((item) => item.includes("application/runtime"));
     const transport = imports.some((item) => item.includes("transport/jsonl"));

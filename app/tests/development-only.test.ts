@@ -14,8 +14,10 @@ describe("development-only desktop application", () => {
       devDependencies?: Record<string, string>;
     };
 
+    // The native capture helper is a build step, not packaging: it produces a
+    // local executable the runtime spawns, and ships nothing.
     expect(manifest.scripts?.["dev"]).toBe(
-      "npm run build:runtime && electron-vite dev",
+      "npm run build:native && npm run build:runtime && electron-vite dev",
     );
     expect(manifest.scripts?.["predev"]).toBe(
       "node app/sign-dev-electron.mjs",
