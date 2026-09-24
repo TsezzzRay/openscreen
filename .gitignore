@@ -3,6 +3,9 @@
 node_modules/
 runtime/dist/
 runtime/dist-test/
+runtime/dist-evals/
+eval-results/
+eval-submission-*.json
 .env
 .vscode/
 .worktrees/
