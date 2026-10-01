@@ -116,6 +116,7 @@ Documentation ownership:
 | Electron main process, windows, overlay behavior, renderer state, or frontend tests | `app/README.md` |
 | Development commands, testing, Git/worktree practice, or documentation policy | `AGENTS.md` |
 | Node Agent, Agent Loop, tools, Session, Memory, configuration, or persistence behavior | `runtime/README.md` |
+| Eval datasets, execution, evidence, scoring, or desktop integration harnesses | `runtime/evals/README.md` |
 
 Documentation consistency is enforced through review and these Agent rules, not
 through a documentation CI job.

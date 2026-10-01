@@ -38,8 +38,25 @@ Session implementation, model adapter, or compaction engine.
 - Streaming answers, reasoning, and tool lifecycle updates from the pi Agent
   harness.
 - Local `read`, `ls`, `grep`, `find`, `write`, `edit`, and `bash` tools.
+- Read-only visible-window discovery and per-window accessibility and screenshot
+  inspection through the Cua Driver SDK, with window IDs preserved as strings.
+- Single-click and bounded-scroll desktop actions through the Cua Driver SDK.
+  The first action in an application asks for approval covering that app for
+  the current chat; denial blocks further requests for that app. OpenScreen's
+  own windows are excluded. Actions still require fresh window observation.
+- Text input into an observed accessibility text field of an approved app. The
+  approval shows the app identity and captured window, not the text; an audit
+  entry records only the text length and SHA-256 digest. A native guard
+  verifies the focused field and each entered text segment. A focus or value
+  mismatch stops further input, but earlier input cannot be rolled back.
+- Tool sandbox with broad local reads, Bash writes confined to a per-prompt
+  output directory, and no sandboxed network access. File changes outside that
+  directory and explicitly requested host Bash runs require one-time approval.
+- Pending approvals appear in both windows. Host commands and file changes
+  display their exact content; desktop cards show the application and window.
+  Either window can decide without ending the run.
 - Persistent JSONL Sessions with create, switch, rename, and cancellation.
-- Per-Session thinking-level controls; all seven local tools are always enabled.
+- Per-Session thinking-level controls; all registered tools are always enabled.
 - Automatic pi context compaction near the configured model's context limit, plus
   manual compaction from the main window.
 - Background Turn recording from completed pi Session branches into locally
@@ -52,6 +69,9 @@ Session implementation, model adapter, or compaction engine.
 - Markdown responses, screenshot previews, and PNG/JPEG user attachments.
 - Concurrent work in different Sessions; each Session accepts one prompt at a
   time.
+- Local developer diagnostics by prompt execution: ordered events, model/tool
+  timing, failure codes, and approval history through a command-line query.
+  See [Developer diagnostics](runtime/README.md#developer-diagnostics).
 
 ## Requirements
 
@@ -113,7 +133,8 @@ missing fields stop startup. Every field is documented in the
 
 ## Privacy and security
 
-Everything except model requests stays on the local machine. OpenScreen excludes
+By default, Agent data can leave the machine in model requests. An explicitly
+approved host Bash command may also access the network. OpenScreen excludes
 its own window title and does not configure Screenpipe to record keystrokes or
 clipboard content.
 
@@ -135,19 +156,35 @@ sessions/              pi JSONL Sessions, grouped by working directory
 memory/                Mastra observation store, cursors, rollouts, and projected Memory files
 screenpipe/generations/ private SDK SQLite/JPEG generations
 user-attachments/      PNG copies of uploaded or pasted images
+task-outputs/          per-prompt directories writable without approval
+diagnostics/traces/    metadata-only thread bundles with per-prompt Turn timelines
 ```
 
 Sessions embed every screenshot and user image as inline Base64, and Screenpipe
 keeps writing frame rows and JPEGs even when no prompt is sent. Because the
 observation processors discard raw messages once compressed, `rollout_summaries/`
 holds the only local copy of the pre-compression text. Files and directories are
-created with private permissions and are never uploaded anywhere by OpenScreen.
+created with private permissions. OpenScreen does not upload these storage
+files as files, but screenshots, attachments, and retrieved file contents can
+be included in model requests.
+
+The desktop approval audit stores only the length and SHA-256 digest of typed
+text, but the pi Session also retains tool-call arguments, including the text
+passed to `desktop_type`. Screen captures may show that text as well. Do not
+send secrets through desktop typing unless you accept this local retention.
+
 Rotation, retention, and crash behavior for each of these directories are
 documented in
 [Persistence and failure behavior](runtime/README.md#persistence-and-failure-behavior).
 
-The local tools run with the Agent process's own permissions and environment,
-with no approval gate and no filesystem sandbox; see
+The default Bash sandbox can read broadly under the current user's file
+permissions. It has no secret-path blacklist: files such as local `.env` files
+may be read by the Agent and their contents may enter a model request. It cannot
+use the network or write outside its per-prompt output directory. Explicitly
+approved host Bash runs with the user's filesystem and network permissions;
+it may change the desktop multiple times and start background tasks that keep
+running after the command returns. Each later Agent host command needs a new
+approval. Review the exact command before approving. See
 [System tools](runtime/README.md#system-tools). Memory is treated as untrusted,
 possibly stale evidence and cannot override current instructions or verified
 state. Review the selected provider's data policy before sending sensitive
@@ -159,16 +196,25 @@ content.
   application icon, notarisation, or distribution workflow.
 - The overlay carries no renaming, compaction, attachment, or thinking-level
   controls; those stay in the main window.
-- No click, type, scroll, or other application-control tools.
+- No dragging or application-control tools beyond approved click, scroll, and
+  text input. The Cua Driver and native focus helper have been exercised in an
+  isolated macOS test window from both Node and Electron's Node mode. A
+  background Electron test host has also exercised the production AgentClient
+  to runtime-child path with a real model, app approval, and guarded typing.
+  This does not verify the full `npm run dev` desktop UI flow or arbitrary apps.
 - No dedicated Memory retrieval tool, Memory UI, or automatic access to
   historical screenshots. Memory lookup uses the existing file tools.
-- `@screenpipe/sdk@0.4.3` is pinned as the production Capture backend, and each
-  display is an independent frame stream rather than a synchronized group.
+- `@screenpipe/sdk@0.4.3` is pinned for background recording; each display is an
+  independent historical frame stream rather than a synchronized group. Live
+  prompt capture uses the separate native helper.
 - No Session deletion, search, or cloud sync.
 - No built-in provider or model selection UI. The single default is configured
   in `config.json`; an unknown provider/model pair fails at startup.
 - Session files and user-attachment copies retained for submitted turns do not
   currently have a product retention or deletion UI.
+- Per-prompt output directories have no automatic retention or deletion UI.
+  Approved actions have no rollback; cancelling a later step does not undo an
+  earlier completed write or host command.
 
 ## Architecture
 
@@ -179,7 +225,7 @@ Electron main process (TypeScript)
 Transport
     -> Application API
 Application Runtime
-    -> Agent API   -> pi AgentHarness / JsonlSessionRepo / system tools
+    -> Agent API   -> pi AgentHarness / JsonlSessionRepo / secured system tools
     -> Capture API -> Native capture helper (screen and window text at submit)
 Composition Root
     -> Screenpipe recorder -> SDK Recorder / generation store / read-only SQLite
@@ -200,6 +246,19 @@ Component references:
   configuration, Capture integration, and product protocol.
 - [Development rules](AGENTS.md) — repository commands, testing, Git/worktree,
   and documentation policy.
+
+## Evaluation
+
+The repository has a general Agent Eval, a separate five-scenario
+file/Bash Security Eval, and an eight-scenario desktop Security Eval. The latter
+covers desktop observation, click, and guarded text input under approval and
+focus-change conditions, including application-grant reuse across Turns.
+All use the configured model and production runtime
+paths; they do not launch the desktop UI. Reports separate deterministic checks of artifacts
+and authorization from offline, evidence-linked semantic judgments. Results
+are written to private, git-ignored `eval-results/` directories rather than
+presented as general safety claims. See [Model evaluations](runtime/evals/README.md)
+for commands, frozen evidence, scoring, and limitations.
 
 ## Development
 
