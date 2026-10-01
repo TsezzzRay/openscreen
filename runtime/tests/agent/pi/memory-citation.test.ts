@@ -7,9 +7,10 @@ import test from "node:test";
 import {
   MemoryCitationStreamFilter,
   MemoryFileAccessTracker,
+  validateProseMemoryCitation,
   stripMemoryCitationBlock,
   validateMemoryCitation,
-} from "../../src/agent/pi/memory-citation.js";
+} from "../../../src/agent/pi/memory-citation.js";
 
 test("strips a split citation block from streaming and final assistant text", () => {
   const filter = new MemoryCitationStreamFilter();
@@ -37,6 +38,40 @@ test("strips a split citation block from streaming and final assistant text", ()
   const partialMarker = new MemoryCitationStreamFilter();
   assert.equal(partialMarker.push("Answer<oai-mem-cit"), "Answer");
   assert.equal(partialMarker.finish(), "");
+});
+
+test("validates an explicit prose Memory line citation only when read this Turn", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "openscreen-memory-citation-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await writeFile(join(root, "MEMORY.md"), "2026-09-01: User chose pnpm for Project Cedar.\n");
+  const tracker = new MemoryFileAccessTracker(root, "/workspace");
+  tracker.recordFileRange(join(root, "MEMORY.md"), 1, 1);
+
+  assert.deepEqual(await validateProseMemoryCitation(
+    "You chose pnpm. Source: `memory/MEMORY.md:1` — User chose pnpm for Project Cedar.",
+    root,
+    tracker,
+  ), {
+    entries: [{ path: "MEMORY.md", lineStart: 1, lineEnd: 1, note: "Explicit source cited in the answer" }],
+    rolloutIds: [],
+  });
+  assert.equal(await validateProseMemoryCitation("You chose pnpm from memory.", root, tracker), undefined);
+  assert.equal(await validateProseMemoryCitation("Source: `MEMORY.md:2`", root, tracker), undefined);
+});
+
+test("validates a backticked Memory filename followed by an explicit line number", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "openscreen-memory-citation-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await writeFile(join(root, "MEMORY.md"), "2026-09-01: User chose pnpm for Project Cedar.\n");
+  const tracker = new MemoryFileAccessTracker(root, "/workspace");
+  const answer = "You chose pnpm. The remembered source is `MEMORY.md` line 1: User chose pnpm for Project Cedar.";
+
+  assert.equal(await validateProseMemoryCitation(answer, root, tracker), undefined);
+  tracker.recordFileRange(join(root, "MEMORY.md"), 1, 1);
+  assert.deepEqual(await validateProseMemoryCitation(answer, root, tracker), {
+    entries: [{ path: "MEMORY.md", lineStart: 1, lineEnd: 1, note: "Explicit source cited in the answer" }],
+    rolloutIds: [],
+  });
 });
 
 test("accepts only actual Memory file ranges read during the current Turn", async (t) => {

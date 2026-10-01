@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { createMemoryProjector } from "../../../src/memory/mastra/projector.js";
+import { memoryDiagnosticsLogPath } from "../../../src/memory/diagnostics-log.js";
 import { openMastraMemoryStore, type MastraMemoryStore } from "../../../src/memory/mastra/store.js";
 import type { MemoryConfig } from "../../../src/memory/config.js";
 
@@ -70,6 +71,23 @@ test("projectObservationLogs writes both files, empty when there are no observat
     assert.equal(await readFile(join(root, "MEMORY.md"), "utf8"), "");
     assert.equal(await readFile(join(root, "ACTIVITY.md"), "utf8"), "");
   });
+});
+
+test("projectObservationLogs diagnoses explicit user attribution without changing ACTIVITY.md", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "openscreen-projector-attribution-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const screen = "* 🟡 Screen showed a message.\n* 🔴 User stated a choice.\n";
+  const fake = {
+    interactive: { getObservations: async () => "" },
+    screenActivity: { getObservations: async () => screen },
+  } as unknown as Parameters<typeof createMemoryProjector>[1];
+  const projector = createMemoryProjector(root, fake);
+  await projector.projectObservationLogs();
+  await projector.projectObservationLogs();
+  assert.equal(await readFile(join(root, "ACTIVITY.md"), "utf8"), screen);
+  const diagnostic = await readFile(memoryDiagnosticsLogPath(root), "utf8");
+  assert.match(diagnostic, /activity-provenance Screen attribution phrase matches: 1\/2/);
+  assert.equal(diagnostic.trim().split("\n").length, 1, "unchanged projections must not flood diagnostics");
 });
 
 test("pruneChronicleRollouts removes only chronicle files older than the cutoff", async (t) => {

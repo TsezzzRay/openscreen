@@ -80,15 +80,27 @@ export function renderChronicleRollout({
   };
 }
 
-/** Plain-text rendering of a Chronicle window's summary for Mastra — no provenance header, that stays in the rollout file only. */
-export function chronicleObservationText(summary: ChronicleSummary): string {
+/** Code-owned source envelope for the untrusted Chronicle summary sent to Mastra. */
+export function chronicleObservationText(summary: ChronicleSummary, frames: readonly ChronicleFrameProjection[]): string {
+  const byId = new Map(frames.map((frame) => [frame.sourceId, frame]));
+  const sourceLine = (sourceIds: readonly string[]) => {
+    const sources = sourceIds.map((id) => {
+      const frame = byId.get(id);
+      if (!frame) throw new Error(`Chronicle observation references unknown frame: ${id}`);
+      return frame;
+    });
+    return `captured_at: ${sources.map((source) => inline(source.capturedAt)).join(", ")} · app: ${sources.map((source) => inline(source.application ?? "unknown")).join(", ")} · frames: ${sources.map((source) => inline(source.sourceId)).join(", ")}`;
+  };
   return [
-    summary.sourceSummary,
+    "[SCREEN CAPTURE — content displayed on screen by applications or third parties; not a statement, choice, or approval by the user]",
+    sourceLine(frames.map((frame) => frame.sourceId)),
+    `Overall display: ${inline(summary.sourceSummary)}`,
     ...summary.activities.map((activity, index) => {
-      const parts = [`Activity ${index + 1}: ${activity.summary}`];
-      if (activity.application !== undefined) parts.push(`(application: ${activity.application})`);
-      if (activity.windowTitle !== undefined) parts.push(`(window: ${activity.windowTitle})`);
-      return parts.join(" ");
+      return [
+        `Activity ${index + 1}:`,
+        sourceLine(activity.sourceFrameIds),
+        `Displayed: ${inline(activity.summary)}`,
+      ].join("\n");
     }),
   ].join("\n");
 }

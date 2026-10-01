@@ -42,49 +42,85 @@ interface FrameGroup {
   memberSourceIds: string[];
 }
 
-// Real capture data showed windows with dozens of frames sharing byte-identical
-// visibleText (a static terminal, an unchanged chat window) — up to ~83% of a
-// window's input tokens in the worst case. Only dedupe on non-empty exact
-// matches: an undefined/empty visibleText says nothing about whether two
-// frames are really the same moment, so those always stay distinct. The model
-// only ever sees one representative per group; every group's real sourceIds
-// are restored onto that activity's source_frame_ids after the model answers
-// (see expandSources below), so rollout/coverage stays complete.
-function dedupeFrames(
-  frames: readonly ChronicleFrameProjection[],
-): FrameGroup[] {
+function groupRepeatedText(frames: readonly ChronicleFrameProjection[]): FrameGroup[] {
   const groups: FrameGroup[] = [];
-  const byText = new Map<string, FrameGroup>();
+  const lastByMonitor = new Map<string, FrameGroup>();
   for (const frame of frames) {
-    const text = frame.visibleText;
-    if (text === undefined || text === "") {
-      groups.push({ representative: frame, memberSourceIds: [frame.sourceId] });
+    const previous = lastByMonitor.get(frame.monitorKey);
+    const representative = previous?.representative;
+    if (frame.visibleText && representative?.visibleText === frame.visibleText
+      && representative.application === frame.application
+      && representative.windowTitle === frame.windowTitle
+      && representative.url === frame.url) {
+      previous!.memberSourceIds.push(frame.sourceId);
       continue;
     }
-    const existing = byText.get(text);
-    if (existing === undefined) {
-      const group: FrameGroup = { representative: frame, memberSourceIds: [frame.sourceId] };
-      byText.set(text, group);
-      groups.push(group);
-    } else {
-      existing.memberSourceIds.push(frame.sourceId);
-    }
+    const group = { representative: frame, memberSourceIds: [frame.sourceId] };
+    groups.push(group);
+    lastByMonitor.set(frame.monitorKey, group);
   }
   return groups;
 }
 
-function expandSources(
+function hasUnsupportedCaptureCount(text: string, frames: readonly ChronicleFrameProjection[]): boolean {
+  const claims = [...text.matchAll(/\b(?:\d+|a|an|one|two|three|four|five|six|seven|eight|nine|ten|first|second|third|fourth|fifth|last|next|previous)\s+(?:[\p{L}-]+\s+){0,3}(?:frames?|captures?|screenshots?)\b/giu)];
+  return claims.some(([claim]) => !frames.some(frame => frame.visibleText?.toLowerCase().includes(claim.toLowerCase())));
+}
+
+function removeUnsupportedSourceCount(summary: ChronicleSummary, frames: readonly ChronicleFrameProjection[]): ChronicleSummary {
+  if (summary.activities.some(activity => hasUnsupportedCaptureCount(activity.summary, frames))) {
+    throw new Error("Chronicle summaries must describe visible content, not unsupported capture counts");
+  }
+  if (!hasUnsupportedCaptureCount(summary.sourceSummary, frames)) return summary;
+  return { ...summary, sourceSummary: summary.activities.map(activity => activity.summary).join(" ") };
+}
+
+function expandSources(summary: ChronicleSummary, groups: readonly FrameGroup[], frames: readonly ChronicleFrameProjection[]): ChronicleSummary {
+  const membersByRepresentative = new Map(groups.map(({ representative, memberSourceIds }) => [representative.sourceId, memberSourceIds]));
+  const order = new Map(frames.map(({ sourceId }, index) => [sourceId, index]));
+  if (order.size !== frames.length) throw new Error("Chronicle window contains duplicate source IDs");
+  const activities = summary.activities.map((activity) => ({
+    ...activity,
+    sourceFrameIds: activity.sourceFrameIds.flatMap((id) => {
+      const members = membersByRepresentative.get(id);
+      if (!members) throw new Error(`Unknown Chronicle representative ${id}`);
+      return members;
+    }).sort((a, b) => order.get(a)! - order.get(b)!),
+  }));
+  const expanded = activities.flatMap(({ sourceFrameIds }) => sourceFrameIds);
+  if (expanded.length !== frames.length || new Set(expanded).size !== frames.length
+    || expanded.some((id) => !order.has(id))) {
+    throw new Error("Chronicle expanded source coverage must include every original frame exactly once");
+  }
+  return { ...summary, activities };
+}
+
+function metadataForActivity(
+  sourceIds: readonly string[],
+  framesById: ReadonlyMap<string, ChronicleFrameProjection>,
+  field: "application" | "windowTitle",
+): string | undefined {
+  const values = sourceIds.map((id) => framesById.get(id)?.[field]);
+  const first = values[0];
+  return first !== undefined && values.every((value) => value === first) ? first : undefined;
+}
+
+function useCapturedMetadata(
   summary: ChronicleSummary,
-  membersBySourceId: ReadonlyMap<string, readonly string[]>,
+  frames: readonly ChronicleFrameProjection[],
 ): ChronicleSummary {
+  const framesById = new Map(frames.map((frame) => [frame.sourceId, frame]));
   return {
     ...summary,
-    activities: summary.activities.map((activity) => ({
-      ...activity,
-      sourceFrameIds: activity.sourceFrameIds.flatMap(
-        (sourceId) => membersBySourceId.get(sourceId) ?? [sourceId],
-      ),
-    })),
+    activities: summary.activities.map(({ application: _application, windowTitle: _windowTitle, ...activity }) => {
+      const application = metadataForActivity(activity.sourceFrameIds, framesById, "application");
+      const windowTitle = metadataForActivity(activity.sourceFrameIds, framesById, "windowTitle");
+      return {
+        ...activity,
+        ...(application === undefined ? {} : { application }),
+        ...(windowTitle === undefined ? {} : { windowTitle }),
+      };
+    }),
   };
 }
 
@@ -194,10 +230,11 @@ export async function summarizeChronicleWindow({
         throw new Error(`Unexpected Chronicle tool ${toolCall.name}`);
       }
       try {
-        return [parseChronicleSummary(
+        const parsed = parseChronicleSummary(
           toolCall.arguments,
           new Set(batch.map(({ sourceId }) => sourceId)),
-        )];
+        );
+        return [removeUnsupportedSourceCount(parsed, batch)];
       } catch (error) {
         if (repairsLeft <= 0) throw error;
         const repairContext: Context = {
@@ -225,15 +262,12 @@ export async function summarizeChronicleWindow({
       batch: readonly ChronicleFrameProjection[],
     ): Promise<ChronicleSummary[]> =>
       request(buildChronicleContext(batch), batch, MAX_REPAIR_ATTEMPTS);
-    const groups = dedupeFrames(frames);
-    const representativeFrames = groups.map((group) => group.representative);
-    const membersBySourceId = new Map<string, readonly string[]>(
-      groups.map((group) => [group.representative.sourceId, group.memberSourceIds]),
-    );
+    const groups = groupRepeatedText(frames);
+    const representatives = groups.map(({ representative }) => representative);
     let offset = 0;
-    while (offset < representativeFrames.length) {
+    while (offset < representatives.length) {
       const batch = nextChunk(
-        representativeFrames,
+        representatives,
         offset,
         policy.maxSourcesPerRequest,
         policy.maxInputTokens,
@@ -241,17 +275,17 @@ export async function summarizeChronicleWindow({
       outputs.push(...await summarize(batch));
       offset += batch.length;
     }
-    const summary = expandSources(combine(outputs), membersBySourceId);
+    const summary = useCapturedMetadata(expandSources(combine(outputs), groups, frames), frames);
     const rollout = renderChronicleRollout({
       jobKey: windowId,
       sources: frames,
       summary,
       generatedAt: now(),
     });
-    await recordChronicleWindow(writePath, chronicleObservationText(summary), {
+    await recordChronicleWindow(writePath, chronicleObservationText(summary, frames), {
       relativePath: rollout.relativePath,
       content: rollout.content,
-    });
+    }, new Date(Math.max(...frames.map((frame) => Date.parse(frame.capturedAt)))).toISOString());
     return { status: "summarized", requestCount };
   } catch (error) {
     return { status: "failed", error: message(error) };

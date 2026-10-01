@@ -269,3 +269,28 @@ export async function validateMemoryCitation(
   }
   return { entries, rolloutIds };
 }
+
+export async function validateProseMemoryCitation(
+  answer: string,
+  memoryRoot: string,
+  tracker: MemoryFileAccessTracker,
+): Promise<MemoryCitation | undefined> {
+  const match = /`(?:memory\/)?(MEMORY\.md|ACTIVITY\.md):(\d+)(?:-(\d+))?`/u.exec(answer)
+    ?? /`(?:memory\/)?(MEMORY\.md|ACTIVITY\.md)`\s+line\s+(\d+)(?:-(\d+))?/iu.exec(answer);
+  if (match === null) return undefined;
+  const lineStart = Number(match[2]);
+  const lineEnd = match[3] === undefined ? lineStart : Number(match[3]);
+  try {
+    return await validateMemoryCitation(JSON.stringify({
+      entries: [{
+        path: match[1],
+        lineStart,
+        lineEnd,
+        note: "Explicit source cited in the answer",
+      }],
+      rolloutIds: [],
+    }), memoryRoot, tracker);
+  } catch {
+    return undefined;
+  }
+}

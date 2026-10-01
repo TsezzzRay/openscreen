@@ -149,6 +149,10 @@ test("summarizes a Chronicle window and immediately archives its rollout + obser
 
   assert.equal(requests.length, 2);
   assert.match(requests[0]?.systemPrompt ?? "", /submit_chronicle_summary/);
+  assert.match(requests[0]?.systemPrompt ?? "", /not evidence of a verified user choice or authorization/);
+  assert.match(requests[0]?.systemPrompt ?? "", /Do not call visible text a window title, heading, or UI field/);
+  assert.match(requests[0]?.systemPrompt ?? "", /Do not identify visible text as a code comment/);
+  assert.match(requests[0]?.systemPrompt ?? "", /Do not assert highlighting, selection, cursor position, or focus from visibleText alone/);
   assert.deepEqual(requests[0]?.tools, [{
     name: "submit_chronicle_summary",
     description: "Submit the factual activity summary for this Chronicle window.",
@@ -160,7 +164,7 @@ test("summarizes a Chronicle window and immediately archives its rollout + obser
   assert.match(rollout, /屏幕内容/);
 });
 
-test("dedupes frames sharing identical visibleText before calling the model, then restores full coverage", async (t) => {
+test("archives every frame while showing only representatives to the model", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "openscreen-chronicle-processor-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const dup1: ChronicleFrameInput = {
@@ -190,19 +194,32 @@ test("dedupes frames sharing identical visibleText before calling the model, the
     capturedAt: "2026-08-15T10:00:03.000Z",
   };
   const frames = [dup1, distinct, dup2].map(projectFrame);
-  const requestedSourceIds: string[][] = [];
+  const requestedFrames: Array<Array<{
+    sourceId: string;
+    frameId: string;
+    capturedAt: string;
+    visibleText?: string;
+  }>> = [];
   const models = {
     completeSimple: async (_model: Model<string>, context: Context) => {
       const input = JSON.parse(String(context.messages[0]?.content)) as {
-        frames: Array<{ sourceId: string }>;
+        frames: Array<{
+          sourceId: string;
+          frameId: string;
+          capturedAt: string;
+          visibleText?: string;
+        }>;
+        originalFrameCount?: number;
       };
-      requestedSourceIds.push(input.frames.map(({ sourceId }) => sourceId));
+      requestedFrames.push(input.frames);
+      assert.equal(input.originalFrameCount, undefined);
+      assert.doesNotMatch(context.systemPrompt ?? "", /visibleTextRef|originalFrameCount/);
       return toolResponse({
         activities: [
           { summary: "Unchanged terminal.", source_frame_ids: ["frame:1"], application: null, window_title: null },
           { summary: "A different screen.", source_frame_ids: ["frame:2"], application: null, window_title: null },
         ],
-        source_summary: "Two activities, one deduped.",
+        source_summary: "Terminal and another screen were observed.",
       });
     },
   } as unknown as Models;
@@ -220,20 +237,162 @@ test("dedupes frames sharing identical visibleText before calling the model, the
     assert.deepEqual(result, { status: "summarized", requestCount: 1 });
   });
 
-  // The model only ever saw the two distinct texts — frame:3 (a duplicate of
-  // frame:1) never went into a request.
-  assert.deepEqual(requestedSourceIds, [["frame:1", "frame:2"]]);
+  assert.deepEqual(requestedFrames.map((batch) => batch.map(({ sourceId }) => sourceId)), [["frame:1", "frame:2"]]);
+  assert.equal(requestedFrames[0]?.[0]?.visibleText, "same terminal, unchanged");
 
   const [rolloutName] = await readdir(join(root, "rollout_summaries"));
   const rollout = await readFile(join(root, "rollout_summaries", rolloutName!), "utf8");
-  // The archive still lists every real frame, and frame:1's activity gets
-  // frame:3 folded back in even though the model never mentioned it.
+  // Expansion restores the duplicate source without losing its capture record.
   assert.match(rollout, /source_frame_id: frame:1/);
   assert.match(rollout, /source_frame_id: frame:2/);
   assert.match(rollout, /source_frame_id: frame:3/);
+  assert.match(rollout, /captured_at: 2026-08-15T10:00:03.000Z/);
   const activity1 = rollout.slice(rollout.indexOf("Unchanged terminal"));
   assert.match(activity1, /- frame:1/);
   assert.match(activity1, /- frame:3/);
+});
+
+test("deduplicates per monitor, but not after an intervening frame or across metadata changes", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "openscreen-chronicle-processor-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const base = { ...frame("1"), monitorKey: "left", application: "Terminal", windowTitle: "Tests", url: "file:///tests", visibleText: "12 passed" };
+  const frames = [
+    projectFrame(base),
+    projectFrame({ ...base, sourceId: "frame:2", frameId: "2", monitorKey: "right" }),
+    projectFrame({ ...base, sourceId: "frame:3", frameId: "3" }),
+    projectFrame({ ...base, sourceId: "frame:4", frameId: "4", visibleText: "Editor" }),
+    projectFrame({ ...base, sourceId: "frame:5", frameId: "5" }),
+    projectFrame({ ...base, sourceId: "frame:6", frameId: "6", windowTitle: "Other" }),
+    projectFrame({ ...base, sourceId: "frame:7", frameId: "7", application: "Browser" }),
+    projectFrame({ ...base, sourceId: "frame:8", frameId: "8", url: "file:///other" }),
+    projectFrame({ ...base, sourceId: "frame:9", frameId: "9", visibleText: "" }),
+    projectFrame({ ...base, sourceId: "frame:10", frameId: "10", visibleText: "" }),
+  ];
+  const seen: string[][] = [];
+  const models = { completeSimple: async (_model: Model<string>, context: Context) => {
+    const input = JSON.parse(String(context.messages[0]?.content)) as { frames: Array<{ sourceId: string }> };
+    const ids = input.frames.map(({ sourceId }) => sourceId);
+    seen.push(ids);
+    return toolResponse({ activities: ids.map((id) => ({ summary: "Observed.", source_frame_ids: [id], application: null, window_title: null })), source_summary: "Observed screen changes." });
+  } } as unknown as Models;
+  await withWritePath(root, async (writePath) => {
+    const result = await summarizeChronicleWindow({ windowId: "chronicle-window:2026-08-15T10:01:00.000Z", frames, policy: { ...policy, maxSourcesPerRequest: 10 }, models, model, writePath });
+    assert.deepEqual(result, { status: "summarized", requestCount: 1 });
+  });
+  assert.deepEqual(seen, [["frame:1", "frame:2", "frame:4", "frame:5", "frame:6", "frame:7", "frame:8", "frame:9", "frame:10"]]);
+});
+
+test("keeps duplicate groups intact across request boundaries and output-limit splits", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "openscreen-chronicle-processor-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const base = { ...frame("1"), monitorKey: "left", application: "Terminal", visibleText: "12 passed" };
+  const frames = [
+    projectFrame(base),
+    projectFrame({ ...base, sourceId: "frame:2", frameId: "2" }),
+    projectFrame({ ...base, sourceId: "frame:3", frameId: "3", visibleText: "next command" }),
+    projectFrame({ ...base, sourceId: "frame:4", frameId: "4", visibleText: "done" }),
+    projectFrame({ ...base, sourceId: "frame:5", frameId: "5", visibleText: "done" }),
+  ];
+  const seen: string[][] = [];
+  const models = { completeSimple: async (_model: Model<string>, context: Context) => {
+    const input = JSON.parse(String(context.messages[0]?.content)) as { frames: Array<{ sourceId: string }> };
+    const ids = input.frames.map(({ sourceId }) => sourceId);
+    seen.push(ids);
+    if (ids.length > 1) return { ...toolResponse({}), stopReason: "length" as const };
+    return toolResponse({ activities: [{ summary: `Observed ${ids[0]}.`, source_frame_ids: ids, application: null, window_title: null }], source_summary: "Observed terminal state." });
+  } } as unknown as Models;
+  await withWritePath(root, async (writePath) => {
+    const result = await summarizeChronicleWindow({ windowId: "chronicle-window:2026-08-15T10:01:00.000Z", frames, policy: { ...policy, maxSourcesPerRequest: 2 }, models, model, writePath });
+    assert.deepEqual(result, { status: "summarized", requestCount: 4 });
+  });
+  assert.deepEqual(seen, [["frame:1", "frame:3"], ["frame:1"], ["frame:3"], ["frame:4"]]);
+  const [rolloutName] = await readdir(join(root, "rollout_summaries"));
+  const rollout = await readFile(join(root, "rollout_summaries", rolloutName!), "utf8");
+  assert.match(rollout, /## Activity 1[\s\S]*?source_frame_ids:\n- frame:1\n- frame:2\n## Activity 2/);
+  assert.match(rollout, /## Activity 3[\s\S]*?source_frame_ids:\n- frame:4\n- frame:5/);
+});
+
+test("keeps blank text and unrelated monitor frames separate across requests", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "openscreen-chronicle-processor-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const frames = [
+    projectFrame({ ...frame("1"), visibleText: "same content" }),
+    projectFrame({ ...frame("2"), visibleText: "" }),
+    projectFrame({ ...frame("3"), visibleText: "same content" }),
+    projectFrame({ ...frame("4"), visibleText: "" }),
+  ];
+  const seen: Array<Array<{ sourceId: string; visibleText?: string; visibleTextRef?: string }>> = [];
+  const models = {
+    completeSimple: async (_model: Model<string>, context: Context) => {
+      const input = JSON.parse(String(context.messages[0]?.content)) as {
+        frames: Array<{ sourceId: string; visibleText?: string; visibleTextRef?: string }>;
+      };
+      seen.push(input.frames);
+      return toolResponse({
+        activities: [{
+          summary: "Observed the screens.",
+          source_frame_ids: input.frames.map(({ sourceId }) => sourceId),
+          application: null,
+          window_title: null,
+        }],
+        source_summary: "The screens were observed.",
+      });
+    },
+  } as unknown as Models;
+
+  await withWritePath(root, async (writePath) => {
+    const result = await summarizeChronicleWindow({
+      windowId: "chronicle-window:2026-08-15T10:01:00.000Z",
+      frames,
+      policy: { ...policy, maxSourcesPerRequest: 2 },
+      models,
+      model,
+      writePath,
+    });
+    assert.deepEqual(result, { status: "summarized", requestCount: 2 });
+  });
+  assert.deepEqual(seen.map((batch) => batch.map(({ sourceId }) => sourceId)), [["frame:1", "frame:2"], ["frame:3", "frame:4"]]);
+  assert.equal(seen[1]?.[0]?.visibleText, "same content");
+  assert.equal(seen[1]?.[0]?.visibleTextRef, undefined);
+  assert.equal(seen[0]?.[1]?.visibleText, "");
+  assert.equal(seen[1]?.[1]?.visibleText, "");
+});
+
+test("uses captured metadata instead of model-invented window titles", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "openscreen-chronicle-processor-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const frames = [
+    projectFrame({ ...frame("1"), application: "Editor", windowTitle: "Actual title" }),
+    projectFrame({ ...frame("2"), application: "Terminal" }),
+  ];
+  const models = {
+    completeSimple: async () => toolResponse({
+      activities: [
+        { summary: "Edited a file.", source_frame_ids: ["frame:1"], application: "Invented app", window_title: "Invented title" },
+        { summary: "Viewed a command.", source_frame_ids: ["frame:2"], application: "Terminal", window_title: "Visible terminal text" },
+      ],
+      source_summary: "Two observed activities.",
+    }),
+  } as unknown as Models;
+
+  await withWritePath(root, async (writePath) => {
+    const result = await summarizeChronicleWindow({
+      windowId: "chronicle-window:2026-08-15T10:01:00.000Z",
+      frames,
+      policy: { ...policy, maxSourcesPerRequest: 10 },
+      models,
+      model,
+      writePath,
+    });
+    assert.deepEqual(result, { status: "summarized", requestCount: 1 });
+  });
+
+  const [rolloutName] = await readdir(join(root, "rollout_summaries"));
+  const rollout = await readFile(join(root, "rollout_summaries", rolloutName!), "utf8");
+  assert.match(rollout, /Application: Editor/);
+  assert.match(rollout, /Window title: Actual title/);
+  assert.match(rollout, /Application: Terminal/);
+  assert.doesNotMatch(rollout, /Invented app|Invented title|Visible terminal text/);
 });
 
 test("splits a Chronicle chunk when the model reaches its output limit", async (t) => {
@@ -408,6 +567,92 @@ test("repairs a rejected tool call by resubmitting with the rejection reason", a
   const [rolloutName] = await readdir(join(root, "rollout_summaries"));
   const rollout = await readFile(join(root, "rollout_summaries", rolloutName!), "utf8");
   assert.match(rollout, /Corrected after rejection/);
+});
+
+test("repairs unsupported capture-count claims instead of archiving them", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "openscreen-chronicle-processor-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const frames = [projectFrame({ ...frame("1"), visibleText: "npm test: 12 passed" })];
+  let calls = 0;
+  const models = { completeSimple: async (_model: Model<string>, context: Context) => {
+    calls += 1;
+    if (calls > 1) assert.match(JSON.stringify(context.messages), /capture counts/i);
+    return toolResponse({
+      activities: [{ summary: calls === 1 ? "Two screen frames were captured showing npm test: 12 passed." : "Terminal showed npm test: 12 passed.", source_frame_ids: ["frame:1"], application: null, window_title: null }],
+      source_summary: "Terminal showed npm test: 12 passed.",
+    });
+  } } as unknown as Models;
+  await withWritePath(root, async (writePath) => {
+    const result = await summarizeChronicleWindow({ windowId: "chronicle-window:2026-08-15T10:01:00.000Z", frames, policy: { ...policy, maxSourcesPerRequest: 10 }, models, model, writePath });
+    assert.deepEqual(result, { status: "summarized", requestCount: 2 });
+  });
+  const [rolloutName] = await readdir(join(root, "rollout_summaries"));
+  const rollout = await readFile(join(root, "rollout_summaries", rolloutName!), "utf8");
+  assert.doesNotMatch(rollout, /Two screen frames/);
+});
+
+test("rebuilds a counted source summary from grounded activities without retrying", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "openscreen-chronicle-processor-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const frames = [projectFrame({ ...frame("1"), visibleText: "npm test: 12 passed" })];
+  let calls = 0;
+  const models = { completeSimple: async () => {
+    calls += 1;
+    return toolResponse({
+      activities: [{ summary: "Terminal showed npm test: 12 passed.", source_frame_ids: ["frame:1"], application: null, window_title: null }],
+      source_summary: "Two screen captures were observed; npm test: 12 passed.",
+    });
+  } } as unknown as Models;
+  await withWritePath(root, async (writePath) => {
+    const result = await summarizeChronicleWindow({ windowId: "chronicle-window:2026-08-15T10:01:00.000Z", frames, policy: { ...policy, maxSourcesPerRequest: 10 }, models, model, writePath });
+    assert.deepEqual(result, { status: "summarized", requestCount: 1 });
+  });
+  assert.equal(calls, 1);
+  const [rolloutName] = await readdir(join(root, "rollout_summaries"));
+  const rollout = await readFile(join(root, "rollout_summaries", rolloutName!), "utf8");
+  assert.match(rollout, /Source summary: Terminal showed npm test: 12 passed\./);
+  assert.doesNotMatch(rollout, /Two screen captures/);
+});
+
+test("rebuilds an ordinal frame narration from grounded activities", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "openscreen-chronicle-processor-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const frames = [projectFrame({ ...frame("1"), application: "Browser", visibleText: "Deployment dashboard status: failed" })];
+  let calls = 0;
+  const models = { completeSimple: async () => {
+    calls += 1;
+    return toolResponse({
+      activities: [{ summary: "Browser displayed deployment status: failed.", source_frame_ids: ["frame:1"], application: null, window_title: null }],
+      source_summary: "The first frame showed a deployment dashboard status of failed.",
+    });
+  } } as unknown as Models;
+  await withWritePath(root, async (writePath) => {
+    const result = await summarizeChronicleWindow({ windowId: "chronicle-window:2026-08-15T10:01:00.000Z", frames, policy: { ...policy, maxSourcesPerRequest: 10 }, models, model, writePath });
+    assert.deepEqual(result, { status: "summarized", requestCount: 1 });
+  });
+  assert.equal(calls, 1);
+  const [rolloutName] = await readdir(join(root, "rollout_summaries"));
+  const rollout = await readFile(join(root, "rollout_summaries", rolloutName!), "utf8");
+  assert.match(rollout, /Source summary: Browser displayed deployment status: failed\./);
+  assert.doesNotMatch(rollout, /first frame/);
+});
+
+test("removes per-application frame counts from the source summary", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "openscreen-chronicle-processor-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const frames = [projectFrame({ ...frame("1"), application: "Terminal", visibleText: "npm test: 12 passed" })];
+  const models = { completeSimple: async () => toolResponse({
+    activities: [{ summary: "Terminal displayed npm test: 12 passed.", source_frame_ids: ["frame:1"], application: null, window_title: null }],
+    source_summary: "One terminal frame shows npm test: 12 passed.",
+  }) } as unknown as Models;
+  await withWritePath(root, async (writePath) => {
+    const result = await summarizeChronicleWindow({ windowId: "chronicle-window:2026-08-15T10:01:00.000Z", frames, policy: { ...policy, maxSourcesPerRequest: 10 }, models, model, writePath });
+    assert.deepEqual(result, { status: "summarized", requestCount: 1 });
+  });
+  const [rolloutName] = await readdir(join(root, "rollout_summaries"));
+  const rollout = await readFile(join(root, "rollout_summaries", rolloutName!), "utf8");
+  assert.match(rollout, /Source summary: Terminal displayed npm test: 12 passed\./);
+  assert.doesNotMatch(rollout, /One terminal frame/);
 });
 
 test("abandons a batch after exhausting repair attempts on a persistently invalid model", async (t) => {

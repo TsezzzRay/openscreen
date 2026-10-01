@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   chmod,
   mkdir,
@@ -12,6 +12,8 @@ import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 
 import type { ObservationalMemory } from "@mastra/memory/processors";
 
+import { appendMemoryDiagnostic } from "../diagnostics-log.js";
+import { screenAttributionMetric } from "./screen-attribution.js";
 import { MEMORY_THREAD_IDS } from "./thread-ids.js";
 
 // Replaces artifact-projector.ts. No job queue, no crash-replay bookkeeping:
@@ -92,6 +94,7 @@ export function createMemoryProjector(
   root: string,
   om: { interactive: ObservationalMemory; screenActivity: ObservationalMemory },
 ): MemoryProjector {
+  let lastFlaggedActivityHash: string | undefined;
   return {
     async appendRollout(artifact: MemoryArtifact): Promise<void> {
       await mkdir(root, { recursive: true, mode: 0o700 });
@@ -110,6 +113,14 @@ export function createMemoryProjector(
         atomicWrite(artifactPath(root, "MEMORY.md"), interactiveText ?? ""),
         atomicWrite(artifactPath(root, "ACTIVITY.md"), screenActivityText ?? ""),
       ]);
+      const attribution = screenAttributionMetric(screenActivityText ?? "");
+      if (attribution.flaggedLines > 0) {
+        const hash = createHash("sha256").update(screenActivityText ?? "").digest("hex");
+        if (hash !== lastFlaggedActivityHash) {
+          appendMemoryDiagnostic(root, "activity-provenance", `Screen attribution phrase matches: ${attribution.flaggedLines}/${attribution.contentLines}`);
+          lastFlaggedActivityHash = hash;
+        }
+      } else lastFlaggedActivityHash = undefined;
     },
 
     async pruneChronicleRollouts(maxAgeMilliseconds: number, now = Date.now()): Promise<string[]> {

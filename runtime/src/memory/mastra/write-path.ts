@@ -1,4 +1,5 @@
 import { MessageList } from "@mastra/core/agent";
+import { randomUUID } from "node:crypto";
 import type { Memory } from "@mastra/memory";
 import type { ObservationalMemory } from "@mastra/memory/processors";
 
@@ -42,9 +43,12 @@ async function saveAndObserve(
   om: ObservationalMemory,
   threadId: string,
   text: string,
+  capturedAt?: string,
 ): Promise<void> {
   const list = new MessageList({ threadId, resourceId: RESOURCE_ID });
-  list.add([{ role: "user", content: text }], "memory");
+  list.add(capturedAt === undefined
+    ? [{ role: "user", content: text }]
+    : [{ id: randomUUID(), role: "user", type: "text", content: text, createdAt: new Date(capturedAt), threadId, resourceId: RESOURCE_ID }], "memory");
   await memory.saveMessages({ messages: list.get.all.db() });
   // Confirmed cheap/idempotent when under threshold (Stage A): safe to call
   // unconditionally after every save rather than pre-checking a threshold
@@ -68,9 +72,21 @@ export async function recordChronicleWindow(
   deps: WritePathDeps,
   observationText: string,
   artifact: MemoryArtifact,
+  capturedAt?: string,
 ): Promise<void> {
   await ensureThread(deps.store.memory, SCREEN_ACTIVITY_THREAD_ID, "Screen activity memory");
-  await saveAndObserve(deps.store.memory, deps.store.screenActivity, SCREEN_ACTIVITY_THREAD_ID, observationText);
+  let messageTime = capturedAt;
+  if (capturedAt !== undefined) {
+    const record = await deps.store.screenActivity.getRecord(SCREEN_ACTIVITY_THREAD_ID, RESOURCE_ID);
+    const captureTime = Date.parse(capturedAt);
+    if (!Number.isFinite(captureTime)) throw new Error("Invalid Chronicle capture timestamp");
+    const observedTime = record?.lastObservedAt?.getTime();
+    // Mastra queries only messages newer than lastObservedAt. A late/retried
+    // window must retain its real capture time in the envelope, but use a
+    // strictly newer transport timestamp or it will never be observed.
+    messageTime = new Date(Math.max(captureTime, observedTime === undefined ? captureTime : observedTime + 1)).toISOString();
+  }
+  await saveAndObserve(deps.store.memory, deps.store.screenActivity, SCREEN_ACTIVITY_THREAD_ID, observationText, messageTime);
   await deps.projector.appendRollout(artifact);
 }
 

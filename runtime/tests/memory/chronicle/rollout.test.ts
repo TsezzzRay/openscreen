@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { chronicleObservationText } from "../../../src/memory/chronicle/rollout.js";
-import type { ChronicleSummary } from "../../../src/memory/chronicle/types.js";
+import type { ChronicleFrameProjection, ChronicleSummary } from "../../../src/memory/chronicle/types.js";
 
-test("renders a plain-text observation body with no provenance header", () => {
+test("renders source-attributed screen observations with frame times", () => {
   const summary: ChronicleSummary = {
     sourceSummary: "Observed the user editing code and browsing docs.",
     activities: [
@@ -12,9 +12,14 @@ test("renders a plain-text observation body with no provenance header", () => {
       { summary: "Reading Mastra docs.", sourceFrameIds: ["b"] },
     ],
   };
-  const text = chronicleObservationText(summary);
-  assert.match(text, /^Observed the user editing code and browsing docs\.$/m);
-  assert.match(text, /^Activity 1: Editing runtime\/src\/memory\. \(application: Code\) \(window: memory\.ts\)$/m);
-  assert.match(text, /^Activity 2: Reading Mastra docs\.$/m);
-  assert.doesNotMatch(text, /sourceFrameIds|source_frame_ids/);
+  const frames = [
+    { sourceId: "a", capturedAt: "2026-09-01T09:00:00.000Z", application: "Code", windowTitle: "memory.ts" },
+    { sourceId: "b", capturedAt: "2026-09-01T09:00:01.000Z", application: "Browser" },
+  ] as ChronicleFrameProjection[];
+  const text = chronicleObservationText(summary, frames);
+  assert.match(text, /SCREEN CAPTURE.*not a statement, choice, or approval by the user/);
+  assert.match(text, /captured_at: 2026-09-01T09:00:00.000Z.*frames: a/);
+  assert.match(text, /captured_at: 2026-09-01T09:00:01.000Z.*frames: b/);
+  assert.match(text, /Displayed: Editing runtime\/src\/memory\./);
+  assert.match(text, /app: Code/);
 });
