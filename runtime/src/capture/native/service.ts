@@ -1,7 +1,7 @@
-import { mkdtemp, open, rm } from "node:fs/promises";
+import { mkdtemp, open, realpath, rm } from "node:fs/promises";
 import { constants } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 
 import type {
   CapturedFrame,
@@ -37,8 +37,10 @@ function throwIfAborted(signal?: AbortSignal): void {
   }
 }
 
-async function readJpeg(path: string): Promise<Uint8Array | undefined> {
+async function readJpeg(path: string, outDir: string, captureRoot: string, monitorKey: string): Promise<Uint8Array | undefined> {
   try {
+    if (!isAbsolute(path) || path !== join(outDir, `display-${monitorKey}.jpg`) ||
+      await realpath(dirname(path)) !== captureRoot) return undefined;
     const flags = constants.O_RDONLY |
       (typeof constants.O_NOFOLLOW === "number" ? constants.O_NOFOLLOW : 0);
     const file = await open(path, flags);
@@ -134,11 +136,12 @@ export class NativeCaptureService implements CaptureService {
       throwIfAborted(signal);
 
       const captureId = report.capturedAt;
+      const captureRoot = await realpath(outDir);
       const frames: CapturedFrame[] = [];
       const images: CapturedFrameImage[] = [];
       for (const frame of projectReport(report, captureId)) {
         throwIfAborted(signal);
-        const data = await readJpeg(frame.imagePath);
+        const data = await readJpeg(frame.imagePath, outDir, captureRoot, frame.monitorKey);
         if (data === undefined) continue;
         frames.push(frame);
         images.push({ sourceId: frame.sourceId, data, mimeType: "image/jpeg" });

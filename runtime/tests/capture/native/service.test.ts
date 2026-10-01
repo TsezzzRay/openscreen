@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -174,6 +174,67 @@ test("reads each frame's bytes and clears the scratch directory", async (t) => {
   assert.deepEqual(context.images.map((image) => [...image.data]), [[...JPEG]]);
   assert.equal(context.images[0]?.sourceId, context.frames[0]?.sourceId);
   assert.equal(existsSync(outDir), false);
+});
+
+test("drops a helper JPEG path outside the current capture directory", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "openscreen-native-boundary-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const outDir = join(root, "capture");
+  await mkdir(outDir);
+  const outside = join(root, "display-1.jpg");
+  await writeFile(outside, JPEG);
+  const service = new NativeCaptureService({
+    helperPath: "/bin/helper",
+    makeTempDir: async () => outDir,
+    run: async () => report({
+      displays: [{ displayId: 1, width: 10, height: 10, focused: true, path: outside }],
+    }),
+  });
+
+  const context = await service.capture("request-1");
+  assert.deepEqual(context.frames, []);
+  assert.deepEqual(context.images, []);
+  assert.equal(existsSync(outside), true);
+});
+
+test("drops a helper JPEG path through a parent symlink outside the capture directory", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "openscreen-native-boundary-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const outDir = join(root, "capture");
+  const outsideDir = join(root, "outside");
+  await mkdir(outDir);
+  await mkdir(outsideDir);
+  await writeFile(join(outsideDir, "display-1.jpg"), JPEG);
+  await symlink(outsideDir, join(outDir, "alias"));
+  const service = new NativeCaptureService({
+    helperPath: "/bin/helper",
+    makeTempDir: async () => outDir,
+    run: async () => report({
+      displays: [{ displayId: 1, width: 10, height: 10, focused: true, path: join(outDir, "alias", "display-1.jpg") }],
+    }),
+  });
+
+  const context = await service.capture("request-1");
+  assert.deepEqual(context.frames, []);
+  assert.deepEqual(context.images, []);
+});
+
+test("drops an aliased helper path even when its parent currently points back into the capture directory", async (t) => {
+  const outDir = await mkdtemp(join(tmpdir(), "openscreen-native-boundary-"));
+  t.after(() => rm(outDir, { recursive: true, force: true }));
+  await writeFile(join(outDir, "display-1.jpg"), JPEG);
+  await symlink(outDir, join(outDir, "alias"));
+  const service = new NativeCaptureService({
+    helperPath: "/bin/helper",
+    makeTempDir: async () => outDir,
+    run: async () => report({
+      displays: [{ displayId: 1, width: 10, height: 10, focused: true, path: join(outDir, "alias", "display-1.jpg") }],
+    }),
+  });
+
+  const context = await service.capture("request-1");
+  assert.deepEqual(context.frames, []);
+  assert.deepEqual(context.images, []);
 });
 
 test("aborts before spawning and clears the scratch directory", async (t) => {
