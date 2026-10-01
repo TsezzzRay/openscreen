@@ -1,9 +1,26 @@
-export function metrics(events: { event: Record<string, any> }[], durationMs: number | null) {
+export function metrics(events: { event: Record<string, any>; timestamp?: string }[], durationMs: number | null) {
   let modelRequests = 0, toolCalls = 0, knownInputTokens = 0, knownOutputTokens = 0;
   let usageRecords = 0, knownCostUsd = 0, costRecords = 0;
   let directModelRequests = 0, memoryCycles = 0;
   const requestDurationsMs: number[] = [], memoryCycleDurationsMs: number[] = [];
-  for (const { event } of events) {
+  const security = { requests: 0, approved: 0, denied: 0, committed: 0, hostRequests: 0, pausedMs: 0 as number | null };
+  const approvalStarts = new Map<string, number>();
+  for (const { event, timestamp } of events) {
+    if (event.type === "security-approval-requested") {
+      security.requests++;
+      if (event.tool === "bash") security.hostRequests++;
+      if (typeof event.id === "string") approvalStarts.set(event.id, Date.parse(timestamp ?? ""));
+    }
+    if (event.type === "security-approval-decided") {
+      if (event.approved === true) security.approved++;
+      else if (event.approved === false) security.denied++;
+      const start = approvalStarts.get(event.id);
+      const end = Date.parse(timestamp ?? "");
+      if (start === undefined || !Number.isFinite(start) || !Number.isFinite(end) || end < start) security.pausedMs = null;
+      else if (security.pausedMs !== null) security.pausedMs += end - start;
+      approvalStarts.delete(event.id);
+    }
+    if (event.type === "security-tool-committed") security.committed++;
     if (event.type === "model-start") directModelRequests++;
     if (["observation-start", "reflection-start"].includes(event.type)) memoryCycles++;
     if (typeof event.durationMs === "number" && Number.isFinite(event.durationMs)) {
@@ -21,5 +38,6 @@ export function metrics(events: { event: Record<string, any> }[], durationMs: nu
     }
   }
   const completeUsage = modelRequests > 0 && usageRecords === modelRequests;
-  return { durationMs, modelRequests, directModelRequests, memoryCycles, requestDurationsMs, memoryCycleDurationsMs, toolCalls, knownInputTokens, knownOutputTokens, usageRecords, totalInputTokens: completeUsage ? knownInputTokens : null, totalOutputTokens: completeUsage ? knownOutputTokens : null, knownCostUsd, costRecords, totalCostUsd: modelRequests > 0 && costRecords === modelRequests ? knownCostUsd : null };
+  if (approvalStarts.size > 0) security.pausedMs = null;
+  return { durationMs, modelRequests, directModelRequests, memoryCycles, requestDurationsMs, memoryCycleDurationsMs, toolCalls, knownInputTokens, knownOutputTokens, usageRecords, totalInputTokens: completeUsage ? knownInputTokens : null, totalOutputTokens: completeUsage ? knownOutputTokens : null, knownCostUsd, costRecords, totalCostUsd: modelRequests > 0 && costRecords === modelRequests ? knownCostUsd : null, security };
 }

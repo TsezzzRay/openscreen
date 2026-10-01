@@ -7,6 +7,7 @@ import * as runner from '../../dist-evals/evals/runner.js';
 import { readRun } from '../../dist-evals/evals/persistence.js';
 import { loadApplicationConfig } from '../../dist-evals/src/runtime-config.js';
 import { tasks } from '../../dist-evals/evals/dataset.js';
+import { desktopSecurityTasks } from '../../dist-evals/evals/desktop-security-dataset.js';
 
 const { classifyFailure, runDataset } = runner;
 
@@ -105,6 +106,7 @@ test('dataset runner records and uses the fixed concurrency', async () => {
     const run = await runDataset(tasks.slice(0, 2), config, { root, trials: 1, timeoutMs: 10000 });
     const { manifest, trials } = await readRun(run);
     assert.equal(manifest.concurrency, 2);
+    assert.deepEqual(manifest.scorer, { model: 'gpt-6-luna', reasoningEffort: 'max' });
     assert.match(manifest.executionBoundary, /sandboxed read-only Bash by default/i);
     assert.match(manifest.executionBoundary, /model-chosen sandboxed Bash/i);
     assert.deepEqual(trials.map(trial => trial.status), ['failed', 'failed']);
@@ -116,6 +118,20 @@ test('dataset runner records and uses the fixed concurrency', async () => {
       return { started: Date.parse(started.timestamp), finished: Date.parse(finished.timestamp) };
     }));
     assert.ok(Math.max(...timings.map(item => item.started)) < Math.min(...timings.map(item => item.finished)));
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('desktop Eval manifest hashes the controlled window screenshot', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'openscreen-eval-desktop-fixture-'));
+  try {
+    const config = loadApplicationConfig();
+    config.agent.provider = 'does-not-exist';
+    const run = await runDataset(desktopSecurityTasks.slice(0, 1), config, { root, trials: 1, timeoutMs: 10000 });
+    const { manifest } = await readRun(run);
+    assert.match(manifest.fixtureHashes['release-dark.png'], /^[a-f0-9]{64}$/);
+    assert.match(manifest.executionBoundary, /controlled desktop driver/i);
+    const screenshot = await readFile(join(run, 'artifacts', 'desktop-read-only-1', 'screen.png'));
+    assert.ok(screenshot.length > 1000);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

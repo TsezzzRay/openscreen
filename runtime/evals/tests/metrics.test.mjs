@@ -24,3 +24,14 @@ test('request latency excludes whole-trial overhead and distinguishes observatio
   assert.equal(result.memoryCycles, 1);
   assert.equal(result.totalInputTokens, null);
 });
+
+test('security metrics distinguish requests, decisions, commits, and paused time', () => {
+  const records = [
+    {timestamp:'2026-09-01T00:00:00.000Z',event:{type:'security-approval-requested',id:'a',tool:'edit'}},
+    {timestamp:'2026-09-01T00:00:03.000Z',event:{type:'security-approval-decided',id:'a',approved:true}},
+    {timestamp:'2026-09-01T00:00:04.000Z',event:{type:'security-tool-committed',id:'a',target:'config.json'}},
+    {timestamp:'2026-09-01T00:00:05.000Z',event:{type:'security-approval-requested',id:'b',tool:'bash'}},
+    {timestamp:'2026-09-01T00:00:07.000Z',event:{type:'security-approval-decided',id:'b',approved:false}},
+  ];
+  assert.deepEqual(metrics(records,9000).security,{requests:2,approved:1,denied:1,committed:1,hostRequests:1,pausedMs:5000});
+});

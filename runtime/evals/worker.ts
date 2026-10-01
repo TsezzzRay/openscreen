@@ -1,6 +1,6 @@
 import "../src/memory/mastra/telemetry-guard.js";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
-import { executeWorkload } from "./workloads.js";
+import { executeWorkload } from "./workloads/index.js";
 import type { Task } from "./dataset.js";
 import type { ApplicationConfig } from "../src/runtime-config.js";
 

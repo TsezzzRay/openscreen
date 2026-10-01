@@ -8,7 +8,7 @@ import { createRun, appendEvent, finishTrial, hash, writeJson } from "./persiste
 import type { ApplicationConfig } from "../src/runtime-config.js";
 import type { Task } from "./dataset.js";
 import { publicCalibrationCases } from "./calibration.js";
-import { screenFixturePath, snapshot } from "./workloads.js";
+import { screenFixturePath, snapshot } from "./workspace.js";
 
 export type FailureKind = "provider_error" | "configuration_error" | "product_error" | "timeout" | "interrupted";
 
@@ -73,15 +73,17 @@ export async function runDataset(selected: Task[], config: ApplicationConfig, op
   const instructions = await readFile("runtime/evals/scoring-instructions.md", "utf8");
   const evalSource = await snapshot("runtime/evals");
   for (const path of Object.keys(evalSource)) if (path.endsWith(".png") || path === "calibration.ts") delete evalSource[path];
-  const fixtureHashes = Object.fromEntries(await Promise.all([...new Set(selected.map(task => task.input.screenFixture).filter((name): name is string => !!name))].map(async name => [name, hash((await readFile(screenFixturePath(name))).toString("base64"))])));
+  const fixtureNames = selected.flatMap(task => [task.input.screenFixture, task.input.desktopSecurity ? "release-dark.png" : undefined])
+    .filter((name): name is string => !!name);
+  const fixtureHashes = Object.fromEntries(await Promise.all([...new Set(fixtureNames)].map(async name => [name, hash((await readFile(screenFixturePath(name))).toString("base64"))])));
   const source = { runtime: await snapshot("runtime/src"), eval: evalSource };
   const run = await createRun(options.root, {
     runId, tasks: selected, trials: options.trials, concurrency: evalConcurrency, commit, dirty, config,
-    scorer: { model: "gpt-6-luna", reasoningEffort: "low" },
+    scorer: { model: "gpt-6-luna", reasoningEffort: "max" },
     datasetHash: hash(selected), instructionHash: hash(instructions), createdAt: new Date().toISOString(),
     nodeVersion: process.version, timeoutMs: options.timeoutMs, sourceHash: hash(source), fixtureHashes,
     lockfileHash: hash(await readFile("package-lock.json", "utf8")),
-    executionBoundary: "File tools are confined to fixture paths. Ordinary tasks use sandboxed read-only Bash by default; tasks may declare an exact-command allowlist or model-chosen sandboxed Bash with writes confined to the fixture workspace. Both Bash modes allow output redirection to /dev/null. The macOS sandbox scrubs inherited environment values and denies network access. Up to two isolated scenarios run concurrently. HTTP 429/rate-limit failures receive shared 10s and 20s dispatch cooldowns and are retried at most twice in fresh workspaces; other failures are not retried. Fixed synthetic UI PNGs are checked into the repository and sent without OCR text. Observation threshold=1 (standalone Chronicle and non-observing Turn pipelines=1000000); reflection threshold=1000000 with explicit manual reflection for reflect fixtures.",
+    executionBoundary: "File tools are confined to fixture paths. Ordinary tasks use sandboxed read-only Bash by default; tasks may declare an exact-command allowlist or model-chosen sandboxed Bash with writes confined to the fixture workspace. Both Bash modes allow output redirection to /dev/null. The macOS sandbox scrubs inherited environment values and denies network access. Desktop Security Eval uses a controlled desktop driver; it cannot operate the user's daily desktop. Up to two isolated scenarios run concurrently. HTTP 429/rate-limit failures receive shared 10s and 20s dispatch cooldowns and are retried at most twice in fresh workspaces; other failures are not retried. Fixed synthetic UI PNGs are checked into the repository and sent without OCR text. Observation threshold=1 (standalone Chronicle and non-observing Turn pipelines=1000000); reflection threshold=1000000 with explicit manual reflection for reflect fixtures.",
   });
   await writeJson(join(run, "dataset.json"), selected);
   await writeJson(join(run, "source.json"), source);
@@ -96,7 +98,8 @@ export async function runDataset(selected: Task[], config: ApplicationConfig, op
     const started = Date.now();
     let writes = Promise.resolve();
     const emit = (event: unknown) => { writes = writes.then(() => appendEvent(run, trialId, event)); };
-    if (task.input.screenFixture) await copyFile(screenFixturePath(task.input.screenFixture), join(run, "artifacts", trialId, "screen.png"));
+    const screenshotFixture = task.input.screenFixture ?? (task.input.desktopSecurity ? "release-dark.png" : undefined);
+    if (screenshotFixture) await copyFile(screenFixturePath(screenshotFixture), join(run, "artifacts", trialId, "screen.png"));
     console.log(`${trialId}: starting`);
     const attempts: Array<{ attempt: number; status: string; failureKind: FailureKind | null; error?: string; durationMs: number }> = [];
     let finalResult: Record<string, unknown> = { status: "failed", error: "Trial did not start", failureKind: "product_error" };
