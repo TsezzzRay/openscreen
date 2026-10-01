@@ -28,6 +28,8 @@ class StubGateway implements AgentGateway {
   readonly commands: ApplicationCommand[] = [];
   views = new Map<string, ProductSessionView>();
   sessions: ProductSessionView["session"][] = [];
+  failSessionReads = false;
+  sessionReadResponse?: Promise<ProductSessionView>;
   run:
     | {
         emit: (event: ApplicationEvent) => void;
@@ -37,13 +39,19 @@ class StubGateway implements AgentGateway {
     | undefined;
 
   private readonly runListeners = new Set<(runs: ActiveRun[]) => void>();
+  private readonly statusListeners = new Set<(status: AgentStatus) => void>();
   private readonly invalidationListeners = new Set<() => void>();
   private readonly unclaimedListeners = new Set<
     (requestId: string, event: ApplicationEvent) => void
   >();
 
-  onStatus(_listener: (status: AgentStatus) => void): () => void {
-    return () => {};
+  onStatus(listener: (status: AgentStatus) => void): () => void {
+    this.statusListeners.add(listener);
+    return () => this.statusListeners.delete(listener);
+  }
+
+  emitStatus(status: AgentStatus): void {
+    for (const listener of this.statusListeners) listener(status);
   }
 
   onActiveRuns(listener: (runs: ActiveRun[]) => void): () => void {
@@ -94,11 +102,15 @@ class StubGateway implements AgentGateway {
     type: T,
   ): Promise<Extract<ApplicationEvent, { type: T }>> {
     this.commands.push(command);
+    if (command.type === "get_session" && this.sessionReadResponse) {
+      return { type: "session_view", view: await this.sessionReadResponse } as Extract<ApplicationEvent, { type: T }>;
+    }
     const make = (): ApplicationEvent => {
       switch (command.type) {
         case "list_sessions":
           return { type: "sessions", sessions: this.sessions };
         case "get_session":
+          if (this.failSessionReads) throw new Error("Runtime stopped");
           return { type: "session_view", view: this.views.get(command.sessionId)! };
         case "create_session":
           return { type: "session_view", view: view("new") };
@@ -309,6 +321,17 @@ describe("prompt lifecycle", () => {
     });
   });
 
+  test("keeps streamed answer text when the final assistant message is empty", async () => {
+    const { gateway, store } = await started();
+    gateway.run!.emit({ type: "answer_delta", sessionId: "a", delta: "The build failed: missing REGION." });
+    gateway.run!.emit({ type: "answer_completed", sessionId: "a", answer: "" });
+
+    expect(store.getSnapshot().turns[0]).toMatchObject({
+      status: "completed",
+      answer: "The build failed: missing REGION.",
+    });
+  });
+
   test("ignores events addressed to a different session", async () => {
     const { gateway, store } = await started();
     gateway.run!.emit({ type: "answer_delta", sessionId: "b", delta: "wrong" });
@@ -512,6 +535,195 @@ describe("runs started in the other window", () => {
         status: "completed",
       });
     });
+  });
+
+  for (const historyFirst of [false, true]) {
+    test(`keeps remote cancellation when history refresh ${historyFirst ? "precedes" : "follows"} the terminal event`, async () => {
+      const { gateway, store } = await observing();
+      gateway.emitRuns([remote]);
+      let resolveRead!: (result: ProductSessionView) => void;
+      gateway.sessionReadResponse = new Promise(resolve => { resolveRead = resolve; });
+      gateway.emitRuns([]);
+      const history = view("a", [
+        { id: "persisted-user", role: "user", timestamp: at, text: remote.text },
+        { id: "persisted-error", role: "assistant", timestamp: at, text: "", isError: true },
+      ]);
+      if (historyFirst) {
+        resolveRead(history);
+        await vi.waitFor(() => expect(store.getSnapshot().turns[0]?.status).toBe("failed"));
+      }
+      gateway.emitUnclaimed(remote.requestId, { type: "failed", error: { code: "aborted", message: "Run aborted" } });
+      expect(store.getSnapshot().turns[0]).toMatchObject({ id: remote.requestId, status: "aborted", error: undefined });
+      if (!historyFirst) resolveRead(history);
+      await new Promise(resolve => setTimeout(resolve, 0));
+      expect(store.getSnapshot().turns).toHaveLength(1);
+      expect(store.getSnapshot().turns[0]).toMatchObject({ status: "aborted", error: undefined });
+      store.selectSession("a");
+      await vi.waitFor(() => expect(store.getSnapshot().isManagingSession).toBe(false));
+      expect(store.getSnapshot().turns[0]?.status).toBe("aborted");
+      expect(store.getSnapshot().activeSessionIds).not.toContain("a");
+    });
+  }
+
+  test("correlates terminal failures by request ID, not the currently selected session", async () => {
+    const { gateway, store } = await observing();
+    gateway.emitRuns([remote]);
+    store.selectSession("b");
+    await vi.waitFor(() => expect(store.getSnapshot().currentSessionId).toBe("b"));
+    gateway.emitRuns([]);
+    gateway.emitUnclaimed("unrelated-request", { type: "failed", error: { code: "aborted", message: "Unrelated" } });
+    gateway.emitUnclaimed(remote.requestId, { type: "failed", error: { code: "provider", message: "Provider unavailable" } });
+    expect(store.getSnapshot().turns).toHaveLength(0);
+    gateway.views.set("a", view("a", [{ id: "user", role: "user", timestamp: at, text: remote.text }]));
+    store.selectSession("a");
+    await vi.waitFor(() => expect(store.getSnapshot().currentSessionId).toBe("a"));
+    expect(store.getSnapshot().turns).toHaveLength(1);
+    expect(store.getSnapshot().turns[0]).toMatchObject({ status: "failed", error: "Provider unavailable" });
+  });
+
+  test("does not apply an earlier cancellation to a repeated question's completed run", async () => {
+    const { gateway, store } = await observing();
+    gateway.emitRuns([remote]);
+    gateway.emitRuns([]);
+    gateway.emitUnclaimed(remote.requestId, { type: "failed", error: { code: "aborted", message: "Run aborted" } });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    const next = { ...remote, requestId: "remote-2" };
+    gateway.emitRuns([next]);
+    gateway.emitUnclaimed(next.requestId, { type: "answer_completed", sessionId: "a", answer: "Finished" });
+    gateway.views.set("a", view("a", [
+      { id: "u1", role: "user", timestamp: at, text: remote.text },
+      { id: "e1", role: "assistant", timestamp: at, text: "", isError: true },
+      { id: "u2", role: "user", timestamp: at, text: remote.text },
+      { id: "a2", role: "assistant", timestamp: at, text: "Finished" },
+    ]));
+    gateway.emitRuns([]);
+    await vi.waitFor(() => expect(store.getSnapshot().turns[1]?.answer).toBe("Finished"));
+    expect(store.getSnapshot().turns).toHaveLength(2);
+    expect(store.getSnapshot().turns.map(turn => [turn.id, turn.status])).toEqual([
+      [remote.requestId, "aborted"], [next.requestId, "completed"],
+    ]);
+  });
+
+  test("retains cancellation when no user message was persisted", async () => {
+    const { gateway, store } = await observing();
+    gateway.emitRuns([remote]);
+    gateway.emitRuns([]);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    gateway.emitUnclaimed(remote.requestId, { type: "failed", error: { code: "aborted", message: "Run aborted" } });
+    expect(store.getSnapshot().turns).toHaveLength(1);
+    expect(store.getSnapshot().turns[0]).toMatchObject({ id: remote.requestId, status: "aborted" });
+  });
+
+  test("keeps an unpersisted cancellation separate from an identical completed question across repeated refreshes", async () => {
+    const { gateway, store } = await observing();
+    gateway.emitRuns([remote]);
+    gateway.emitUnclaimed(remote.requestId, { type: "failed", error: { code: "aborted", message: "Run aborted" } });
+    gateway.emitRuns([]);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    const next = { ...remote, requestId: "remote-2" };
+    gateway.emitRuns([next]);
+    gateway.emitUnclaimed(next.requestId, { type: "answer_completed", sessionId: "a", answer: "Finished" });
+    gateway.views.set("a", view("a", [
+      { id: "u2", role: "user", timestamp: at, text: remote.text },
+      { id: "a2", role: "assistant", timestamp: at, text: "Finished" },
+    ]));
+    gateway.emitRuns([]);
+    await vi.waitFor(() => expect(store.getSnapshot().turns.some(turn => turn.answer === "Finished")).toBe(true));
+    await new Promise(resolve => setTimeout(resolve, 0));
+    for (let refresh = 0; refresh < 2; refresh += 1) {
+      store.selectSession("a");
+      await vi.waitFor(() => expect(store.getSnapshot().isManagingSession).toBe(false));
+      expect(store.getSnapshot().turns.map(turn => [turn.id, turn.status, turn.answer])).toEqual([
+        [remote.requestId, "aborted", ""], [next.requestId, "completed", "Finished"],
+      ]);
+    }
+  });
+
+  test("does not bind a delayed reconciliation to a newer identical request", async () => {
+    const { gateway, store } = await observing();
+    gateway.emitRuns([remote]);
+    gateway.emitUnclaimed(remote.requestId, { type: "failed", error: { code: "aborted", message: "Run aborted" } });
+    let resolveRead!: (result: ProductSessionView) => void;
+    gateway.sessionReadResponse = new Promise(resolve => { resolveRead = resolve; });
+    gateway.emitRuns([]);
+
+    const next = { ...remote, requestId: "remote-2" };
+    gateway.emitRuns([next]);
+    resolveRead(view("a", [
+      { id: "u1", role: "user", timestamp: at, text: remote.text },
+      { id: "e1", role: "assistant", timestamp: at, text: "", isError: true },
+    ]));
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(store.getSnapshot().turns.map(turn => [turn.id, turn.status, turn.transcriptId])).toEqual([
+      [remote.requestId, "aborted", undefined], [next.requestId, "requesting", undefined],
+    ]);
+
+    gateway.sessionReadResponse = undefined;
+    gateway.emitUnclaimed(next.requestId, { type: "answer_completed", sessionId: "a", answer: "Finished" });
+    gateway.views.set("a", view("a", [
+      { id: "u1", role: "user", timestamp: at, text: remote.text },
+      { id: "e1", role: "assistant", timestamp: at, text: "", isError: true },
+      { id: "u2", role: "user", timestamp: at, text: remote.text },
+      { id: "a2", role: "assistant", timestamp: at, text: "Finished" },
+    ]));
+    gateway.emitRuns([]);
+    await vi.waitFor(() => expect(store.getSnapshot().turns[1]?.transcriptId).toBe("u2"));
+    for (let refresh = 0; refresh < 2; refresh += 1) {
+      store.selectSession("a");
+      await vi.waitFor(() => expect(store.getSnapshot().isManagingSession).toBe(false));
+      expect(store.getSnapshot().turns.map(turn => [turn.id, turn.status, turn.answer, turn.transcriptId])).toEqual([
+        [remote.requestId, "aborted", "", "u1"], [next.requestId, "completed", "Finished", "u2"],
+      ]);
+    }
+  });
+
+  test("marks a remote approval-paused turn failed when the runtime stops before it can be re-read", async () => {
+    const { gateway, store } = await observing();
+    gateway.emitRuns([remote]);
+    gateway.emitUnclaimed(remote.requestId, {
+      type: "approval_requested",
+      sessionId: "a",
+      request: { id: "approval-1", sessionId: "a", callId: "call-1", tool: "bash", target: "pwd" },
+    });
+    expect(store.getSnapshot().turns[0]?.status).toBe("awaiting-approval");
+
+    gateway.failSessionReads = true;
+    gateway.emitRuns([]);
+    gateway.emitStatus({ state: "stopped", message: "Runtime exited" });
+
+    await vi.waitFor(() => {
+      expect(store.getSnapshot().turns[0]?.status).toBe("failed");
+      expect(store.getSnapshot().turns[0]?.error).toBe("Runtime exited");
+    });
+  });
+
+  test("ignores a stale remote Session read that completes after runtime stop", async () => {
+    const { gateway, store } = await observing();
+    gateway.emitRuns([remote]);
+    let resolveRead!: (result: ProductSessionView) => void;
+    gateway.sessionReadResponse = new Promise(resolve => { resolveRead = resolve; });
+    gateway.emitRuns([]);
+    gateway.emitStatus({ state: "stopped", message: "Runtime exited" });
+    expect(store.getSnapshot().turns[0]?.status).toBe("failed");
+
+    resolveRead(view("a", [{ id: "m1", role: "user", timestamp: at, text: remote.text }]));
+    await vi.waitFor(() => expect(gateway.commands.filter(command => command.type === "get_session")).toHaveLength(2));
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(store.getSnapshot().turns[0]?.status).toBe("failed");
+  });
+
+  test("does not apply an old runtime's Session read after the replacement is ready", async () => {
+    const { gateway, store } = await observing();
+    gateway.emitRuns([remote]);
+    let resolveRead!: (result: ProductSessionView) => void;
+    gateway.sessionReadResponse = new Promise(resolve => { resolveRead = resolve; });
+    gateway.emitRuns([]);
+    gateway.emitStatus({ state: "stopped", message: "Runtime exited" });
+    gateway.emitStatus({ state: "ready" });
+
+    resolveRead(view("a", [{ id: "m1", role: "user", timestamp: at, text: remote.text }]));
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(store.getSnapshot().turns[0]?.status).toBe("failed");
   });
 
   test("re-reads the chat list when the other window changes it", async () => {

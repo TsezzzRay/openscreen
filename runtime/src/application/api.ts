@@ -1,3 +1,20 @@
+/** Product DTO: independent of Agent and desktop-driver dependencies. */
+export type ProductDesktopApprovalTarget = {
+  scope: "application";
+  pid: number;
+  windowId: string;
+  appName: string;
+  bundleId: string | null;
+  windowTitle?: string;
+  observationId: string;
+  screenshotSha256: string;
+} & (
+  | { action: "click"; deliveryMode: "background"; position: { x: number; y: number } | { elementToken: string } }
+  | { action: "scroll"; x: number; y: number; direction: "up" | "down" | "left" | "right"; by: "line" | "page"; amount: number }
+  | { action: "type"; elementToken: string; role: string; label?: string;
+      frame: { x: number; y: number; w: number; h: number }; textSha256: string; textLength: number }
+);
+export type ProductApprovalTarget = string | ProductDesktopApprovalTarget;
 export type ProductImageMimeType = "image/png" | "image/jpeg";
 
 export interface ProductImageAttachment {
@@ -62,8 +79,22 @@ export interface ProductFailure {
   message: string;
 }
 
+export interface ProductApprovalRequest {
+  id: string;
+  sessionId: string;
+  callId: string;
+  tool: "bash" | "write" | "edit" | "desktop_click" | "desktop_scroll" | "desktop_type";
+  target: ProductApprovalTarget;
+  previewImage?: { mimeType: ProductImageMimeType; dataBase64: string };
+  proposedContent?: string;
+  expectedContent?: string;
+  expectedAbsent?: boolean;
+}
+
 export type ApplicationCommand =
   | { requestId: string; type: "list_sessions" }
+  | { requestId: string; type: "list_approvals" }
+  | { requestId: string; type: "decide_approval"; sessionId: string; approvalId: string; approved: boolean }
   | { requestId: string; type: "create_session" }
   | { requestId: string; type: "get_session"; sessionId: string }
   | {
@@ -102,6 +133,10 @@ export type ApplicationCommand =
 
 export type ApplicationEvent =
   | { type: "sessions"; sessions: ProductSessionSummary[] }
+  | { type: "approvals"; requests: ProductApprovalRequest[] }
+  | { type: "approval_requested"; sessionId: string; request: ProductApprovalRequest }
+  | { type: "approval_decided"; sessionId: string; id: string; approved: boolean }
+  | { type: "approval_committed"; sessionId: string; id: string; callId: string; tool: "bash" | "write" | "edit" | "desktop_click" | "desktop_scroll" | "desktop_type"; target: ProductApprovalTarget }
   | { type: "session_view"; view: ProductSessionView }
   | { type: "session_renamed"; session: ProductSessionSummary }
   | { type: "run_started"; sessionId: string }

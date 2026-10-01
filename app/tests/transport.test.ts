@@ -1,6 +1,6 @@
 import { describe, expect, test, vi } from "vitest";
 
-import type { AgentEventEnvelope, AgentStatus } from "@shared/ipc.ts";
+import type { ActiveRun, AgentEventEnvelope, AgentStatus } from "@shared/ipc.ts";
 import type { ApplicationCommand, ApplicationEvent } from "@shared/protocol.ts";
 
 import { AgentFailureError, AgentTransport } from "@/store/transport.ts";
@@ -40,6 +40,29 @@ function harness() {
 }
 
 describe("AgentTransport", () => {
+  test("does not replace a newer run broadcast with a stale initial snapshot", async () => {
+    let notifyRuns!: (runs: ActiveRun[]) => void;
+    let resolveSnapshot!: (runs: ActiveRun[]) => void;
+    const bridge = {
+      agent: { onEvent: () => () => {}, onStatus: () => () => {} },
+      session: {
+        onRuns: (listener: (runs: ActiveRun[]) => void) => {
+          notifyRuns = listener;
+          return () => {};
+        },
+        getRuns: () => new Promise<ActiveRun[]>(resolve => { resolveSnapshot = resolve; }),
+      },
+    };
+    const transport = new AgentTransport(bridge as never);
+    const observed: ActiveRun[][] = [];
+    transport.onActiveRuns(runs => observed.push(runs));
+    const run = { sessionId: "session-a", requestId: "request-a", text: "Help", startedAt: "now" };
+    notifyRuns([run]);
+    resolveSnapshot([]);
+    await Promise.resolve();
+    expect(observed).toEqual([[run]]);
+  });
+
   test("settles a request on its terminal completed event", async () => {
     const { transport, emit } = harness();
     const settled = transport.send({ requestId: "r1", type: "list_sessions" });
@@ -112,6 +135,30 @@ describe("AgentTransport", () => {
 
     await expect(first).rejects.toThrow("The agent stopped.");
     await expect(second).rejects.toThrow("The agent stopped.");
+  });
+
+  test("handles runtime termination before the IPC acknowledgement settles", async () => {
+    let notifyStatus!: (status: AgentStatus) => void;
+    let acknowledge!: () => void;
+    const bridge = {
+      agent: {
+        send: () => new Promise<void>(resolve => { acknowledge = resolve; }),
+        onEvent: () => () => {},
+        onStatus: (listener: (status: AgentStatus) => void) => { notifyStatus = listener; return () => {}; },
+      },
+    };
+    const transport = new AgentTransport(bridge as never);
+    const result = transport.send({ requestId: "early-stop", type: "list_sessions" }).then(
+      () => "completed", error => error.message,
+    );
+    notifyStatus({ state: "stopped", message: "Runtime stopped before IPC returned" });
+    try {
+      expect(await Promise.race([result, new Promise(resolve => setTimeout(() => resolve("still awaiting IPC"), 10))]))
+        .toBe("Runtime stopped before IPC returned");
+    } finally {
+      acknowledge();
+      await result;
+    }
   });
 
   test("refuses to reuse a request id that is still in flight", async () => {

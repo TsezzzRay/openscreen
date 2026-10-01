@@ -1,6 +1,6 @@
 import type { ProductTranscriptMessage } from "@shared/protocol.ts";
 
-import { type ChatTurn, newTurn } from "./types.ts";
+import { type ChatTurn, isTurnInFlight, newTurn } from "./types.ts";
 
 /**
  * Folds the runtime's flat transcript into the turn shape the interface
@@ -20,6 +20,7 @@ export function projectTranscript(messages: ProductTranscriptMessage[]): ChatTur
         result.push(
           newTurn({
             id: message.id,
+            transcriptId: message.id,
             question: message.text,
             historicalImageCount: message.imageCount ?? 0,
           }),
@@ -53,34 +54,38 @@ export function projectTranscript(messages: ProductTranscriptMessage[]): ChatTur
   return result;
 }
 
-/**
- * A reloaded transcript reports only how many images a turn carried, not where
- * they live. Re-attach the local files from the copy held before the reload by
- * matching question text from the newest turn backwards, so each local set is
- * claimed at most once.
- */
-export function restoreLocalAttachments(
-  restored: ChatTurn[],
-  previous: ChatTurn[],
-): ChatTurn[] {
-  const available = previous
-    .map((turn, index) => ({ turn, index }))
-    .filter((entry) => entry.turn.attachments.length > 0);
-
+/** Preserve request identity and live decisions across a Session projection refresh. */
+export function restoreLiveTurnState(restored: ChatTurn[], previous: ChatTurn[]): ChatTurn[] {
+  const available = [...previous];
   const result = [...restored];
+  const persistedIds = new Set(restored.map(turn => turn.id));
   for (let index = result.length - 1; index >= 0; index -= 1) {
     const turn = result[index]!;
-    if (turn.attachments.length > 0) continue;
-    let matchIndex = -1;
-    for (let candidate = available.length - 1; candidate >= 0; candidate -= 1) {
-      if (available[candidate]!.turn.question === turn.question) {
-        matchIndex = candidate;
-        break;
-      }
+    let candidate = available.findIndex(live => (live.transcriptId ?? live.id) === turn.id);
+    if (candidate < 0) {
+      candidate = available.length - 1;
+      while (candidate >= 0 && (available[candidate]!.transcriptId !== undefined ||
+        persistedIds.has(available[candidate]!.id) || available[candidate]!.question !== turn.question)) candidate -= 1;
     }
-    if (matchIndex < 0) continue;
-    const [match] = available.splice(matchIndex, 1);
-    result[index] = { ...turn, attachments: match!.turn.attachments };
+    if (candidate < 0) continue;
+    const [match] = available.splice(candidate, 1);
+    const live = match!;
+    result[index] = {
+      ...turn,
+      id: live.id,
+      transcriptId: turn.id,
+      attachments: turn.attachments.length > 0 ? turn.attachments : live.attachments,
+      approvals: live.approvals,
+      ...(live.status === "aborted" || live.status === "failed"
+        ? { status: live.status, error: live.error } : {}),
+    };
+  }
+  // Cancellation can precede writing the user message. Keep the live turn so
+  // the terminal event can still be correlated even if the file has no entry.
+  for (const live of available.filter(turn => isTurnInFlight(turn.status) || turn.status === "aborted" || turn.status === "failed")) {
+    const following = new Set(previous.slice(previous.indexOf(live) + 1).map(turn => turn.id));
+    const next = result.findIndex(turn => following.has(turn.id));
+    result.splice(next < 0 ? result.length : next, 0, live);
   }
   return result;
 }

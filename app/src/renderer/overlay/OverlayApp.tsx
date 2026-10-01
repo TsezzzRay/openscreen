@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { AttachmentStrip } from "../components/AttachmentStrip.tsx";
+import { ApprovalPanel } from "../components/ApprovalPanel.tsx";
 import { CaptureDot } from "../components/CaptureDot.tsx";
 import { Composer } from "../components/Composer.tsx";
 import { ShortcutHint } from "../components/ShortcutHint.tsx";
@@ -27,6 +28,8 @@ export function OverlayApp(): React.ReactNode {
   const atBottom = useRef(true);
   const [historyIndex, setHistoryIndex] = useState(-1);
   const [showSessions, setShowSessions] = useState(false);
+
+  useEffect(() => { void store.refreshApprovals(); }, [store]);
 
   const latest = state.turns[state.turns.length - 1];
   const hasTranscript = state.turns.some(
@@ -158,6 +161,8 @@ export function OverlayApp(): React.ReactNode {
           <ShortcutHint keys={["esc"]} />
         </div>
       </div>
+
+      <ApprovalPanel requests={state.approvals} sessions={state.sessions} decisionsInFlight={state.approvalDecisionsInFlight} error={state.approvalError} onDecide={(id, approved) => void store.decideApproval(id, approved)} />
 
       {state.composer.pendingAttachments.length === 0 ? null : (
         <div className="border-t border-edge-soft px-4 py-2.5">

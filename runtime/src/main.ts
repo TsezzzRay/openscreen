@@ -10,8 +10,10 @@ import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 
 import { PiAgentService } from "./agent/pi/service.js";
-import { createAgentTools } from "./agent/pi/tools/create-agent-tools.js";
+import { ToolSecurity } from "./security/tool-security.js";
+import { createCuaDesktopDriver } from "./desktop/cua-driver.js";
 import { ApplicationRuntime } from "./application/runtime.js";
+import { DiagnosticStore } from "./application/diagnostics/store.js";
 import type { CaptureService } from "./capture/api.js";
 import { NativeCaptureService } from "./capture/native/service.js";
 import { ScreenpipeRuntime } from "./capture/screenpipe/runtime.js";
@@ -42,8 +44,12 @@ function nativeHelperPath(): string {
   // Resolved against this module, not the working directory, which a packaged
   // launch moves to the user's home.
   return fileURLToPath(
-    new URL("../../native/bin/openscreen-capture", import.meta.url),
+    new URL("../bin/openscreen-capture", import.meta.url),
   );
+}
+
+function nativeFocusHelperPath(): string {
+  return fileURLToPath(new URL("../bin/openscreen-ax-focus", import.meta.url));
 }
 
 export async function run(): Promise<void> {
@@ -63,8 +69,19 @@ export async function run(): Promise<void> {
   const cwd = process.cwd();
   const dataRoot = process.env.OPENSCREEN_DATA_DIR ??
     join(homedir(), "Library", "Application Support", "OpenScreen");
+  const diagnostics = new DiagnosticStore(join(dataRoot, "diagnostics", "traces"), message => {
+    process.stderr.write(`${message}\n`);
+  });
+  const appPid = Number(process.env.OPENSCREEN_APP_PID);
   const env = new NodeExecutionEnv({ cwd });
-  const tools = createAgentTools(env);
+  const desktopDriver = createCuaDesktopDriver(nativeFocusHelperPath());
+  const toolSecurity = new ToolSecurity({
+    cwd,
+    dataRoot,
+    ...(Number.isSafeInteger(appPid) && appPid > 0 ? { ownPid: appPid } : {}),
+    ...desktopDriver,
+  });
+  const tools = toolSecurity.tools;
   const memoryRoot = join(dataRoot, "memory");
   const screenpipeConfig = config.capture.screenpipe;
   let canDeleteGeneration = (_generationId: string) => !config.memory.enabled;
@@ -153,6 +170,7 @@ export async function run(): Promise<void> {
     models,
     model,
     tools,
+    toolSecurity,
     thinking: config.agent.thinking,
     onPromptSettled: (sessionId) => memory.notifySession(sessionId),
     loadPromptSystemContext: memoryReadPath?.loadPromptContext,
@@ -175,6 +193,8 @@ export async function run(): Promise<void> {
   const runtime = new ApplicationRuntime({
     agent,
     capture,
+    approvals: toolSecurity.approvals,
+    turnDiagnostics: ids => diagnostics.start(ids),
     onDiagnostic: (diagnostic) => {
       process.stderr.write(
         `OpenScreen ${diagnostic.area} ${diagnostic.phase} unavailable\n`,
@@ -214,13 +234,18 @@ export async function run(): Promise<void> {
     try {
       if (runtimeStartAttempted) await runtime.stop();
     } finally {
+      await diagnostics.close();
       try {
         await memoryLifecycle.stop();
       } finally {
         try {
           if (recorderStarted) await screenpipeRuntime.stop();
         } finally {
-          await env.cleanup();
+          try {
+            await desktopDriver.close();
+          } finally {
+            await env.cleanup();
+          }
         }
       }
     }

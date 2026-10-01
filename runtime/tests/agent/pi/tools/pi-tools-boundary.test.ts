@@ -3,7 +3,7 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
 
-import { moduleSpecifiersForSources } from "../../import-boundary.js";
+import { moduleSpecifiersForSources } from "../../../import-boundary.js";
 
 function sourceFiles(root: string): string[] {
   return readdirSync(root).flatMap((entry) => {

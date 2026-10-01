@@ -3,12 +3,13 @@
 // keeping a translated copy, so the two ends cannot drift.
 //
 // This is a type-only import. `runtime/src/application/api.ts` declares no
-// imports and no runtime values, so nothing from `runtime/` is linked into the
+// imports or runtime values, so nothing from `runtime/` is linked into the
 // frontend bundle and the dependency direction stays one-way.
 export type {
   ApplicationCommand,
   ApplicationEvent,
   ProductCompactionResult,
+  ProductApprovalTarget,
   ProductErrorCode,
   ProductFailure,
   ProductImageAttachment,

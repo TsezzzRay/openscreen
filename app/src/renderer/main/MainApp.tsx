@@ -5,6 +5,7 @@ import { THINKING_LEVELS, sessionDisplayName } from "@shared/protocol.ts";
 import type { ProductThinkingLevel } from "@shared/protocol.ts";
 
 import { AttachmentStrip } from "../components/AttachmentStrip.tsx";
+import { ApprovalPanel } from "../components/ApprovalPanel.tsx";
 import { CaptureDot } from "../components/CaptureDot.tsx";
 import { Composer } from "../components/Composer.tsx";
 import { ShortcutHint } from "../components/ShortcutHint.tsx";
@@ -30,6 +31,8 @@ export function MainApp(): React.ReactNode {
   const [preview, setPreview] = useState<ImportedAttachment | null>(null);
   const scroller = useRef<HTMLDivElement>(null);
   const atBottom = useRef(true);
+
+  useEffect(() => { void store.refreshApprovals(); }, [store]);
 
   // Follow the newest content while the reader is already at the bottom, and
   // leave them alone when they have scrolled up to read something.
@@ -208,6 +211,8 @@ export function MainApp(): React.ReactNode {
             <ShortcutHint keys={["opt", "space"]} label="overlay" />
           </span>
         </header>
+
+        <ApprovalPanel requests={state.approvals} sessions={state.sessions} decisionsInFlight={state.approvalDecisionsInFlight} error={state.approvalError} onDecide={(id, approved) => void store.decideApproval(id, approved)} />
 
         {state.sessionError === undefined ? null : (
           <p className="shrink-0 border-b border-alert/25 bg-alert/10 px-5 py-2 font-mono text-[11px] text-alert">

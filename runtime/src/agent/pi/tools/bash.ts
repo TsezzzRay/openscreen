@@ -10,6 +10,7 @@ import { textResult } from "./tool-support.js";
 export function createBashTool(env: ExecutionEnv) {
   const parameters = Type.Object({
     command: Type.String({ minLength: 1, description: "Shell command to execute" }),
+    host: Type.Optional(Type.Boolean({ description: "Request one-time approval to execute outside the sandbox, with host filesystem and network access" })),
     timeout: Type.Optional(Type.Number({
       exclusiveMinimum: 0,
       description: "Timeout in seconds",

@@ -18,7 +18,7 @@ import {
 } from "@earendil-works/pi-agent-core";
 import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
 
-import { createAgentTools } from "../../../src/agent/pi/tools/create-agent-tools.js";
+import { createAgentTools } from "../../../../src/agent/pi/tools/create-agent-tools.js";
 
 async function runtime(t: TestContext) {
   const root = await mkdtemp(join(tmpdir(), "openscreen-pi-tools-"));

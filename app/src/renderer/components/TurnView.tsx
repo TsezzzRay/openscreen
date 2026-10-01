@@ -16,6 +16,7 @@ const STATUS_LABEL: Record<string, string> = {
   capturing: "reading the screen",
   requesting: "thinking",
   generating: "answering",
+  "awaiting-approval": "paused for approval",
 };
 
 /**
@@ -77,6 +78,27 @@ export function TurnView({
         </div>
       )}
 
+      {turn.approvals.length === 0 ? null : (
+        <ul aria-label="Tool approvals" className="flex flex-col gap-1 pl-3 font-mono text-[10.5px] leading-5 text-ink-dim">
+          {turn.approvals.map(approval => (
+            <li key={`${approval.id}:${approval.callId}`} className="min-w-0">
+              <span className={approval.status === "denied" ? "text-alert" : "text-amber"}>
+                {approval.status === "pending" ? inFlight ? "Waiting for approval" : "Approval outcome unknown after run ended"
+                  : approval.status === "approved" ? approval.tool.startsWith("desktop_") ? "Application allowed for this chat; action not confirmed" : "Approved once; action not confirmed"
+                  : approval.status === "denied" ? approval.tool.startsWith("desktop_") ? "Application denied for this chat; not executed" : "Denied; not executed"
+                  : approval.tool === "bash" ? "Approved host command executed"
+                  : approval.tool === "desktop_click" ? "Desktop click executed under app approval"
+                  : approval.tool === "desktop_scroll" ? "Desktop scroll executed under app approval"
+                  : approval.tool === "desktop_type" ? "Desktop text entered under app approval"
+                  : "Approved file change committed"}
+              </span>
+              <span className="text-ink-faint"> · {approval.tool} · </span>
+              <code className="break-all whitespace-pre-wrap text-ink-faint">{typeof approval.target === "string" ? approval.target : JSON.stringify(approval.target)}</code>
+            </li>
+          ))}
+        </ul>
+      )}
+
       {turn.reasoning.length === 0 ? null : (
         <div className="pl-3">
           <button
@@ -102,9 +124,9 @@ export function TurnView({
         </div>
       )}
 
-      {inFlight && turn.answer.length === 0 ? (
+      {inFlight && (turn.answer.length === 0 || turn.status === "awaiting-approval") ? (
         <p className="flex items-center gap-2 pl-3 font-mono text-[11px] text-ink-faint">
-          <Spinner className="text-amber" />
+          {turn.status === "awaiting-approval" ? null : <Spinner className="text-amber" />}
           {STATUS_LABEL[turn.status] ?? "working"}
         </p>
       ) : null}

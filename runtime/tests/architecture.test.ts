@@ -41,9 +41,11 @@ test("contains only the clean TypeScript production layout", () => {
     "agent",
     "application",
     "capture",
+    "desktop",
     "main.ts",
     "memory",
     "runtime-config.ts",
+    "security",
     "transport",
   ]);
 });
@@ -144,8 +146,8 @@ test("keeps Agent, Capture, Memory, Application, and Transport boundaries strict
         path.startsWith("application/") &&
         !path.endsWith("api.ts") &&
         specifier.startsWith("..") &&
-        specifier !== "../agent/api.js" &&
-        specifier !== "../capture/api.js"
+        targetPath !== "agent/api.ts" &&
+        targetPath !== "capture/api.ts"
       ) {
         violations.push(`${path}: ${specifier}`);
       }
@@ -217,10 +219,55 @@ test("main is the sole concrete composition root", () => {
   assert.deepEqual(composers, ["main.ts"]);
 });
 
+test("main owns the same-process desktop adapter used for window observation", () => {
+  const main = readFileSync(join(sourceRoot, "main.ts"), "utf8");
+  assert.match(main, /createCuaDesktopDriver\(nativeFocusHelperPath\(\)\)/);
+  assert.match(main, /await desktopDriver\.close\(\)/);
+  assert.doesNotMatch(main, /from "@trycua\/cua-driver"/);
+  const adapter = readFileSync(join(sourceRoot, "desktop/cua-driver.ts"), "utf8");
+  assert.match(adapter, /import \{[^}]*CuaDriver[^}]*\} from "@trycua\/cua-driver"/);
+  assert.match(adapter, /CuaDriver\.create\(undefined\)/);
+  assert.match(adapter, /desktopWindows: async/);
+  assert.match(adapter, /listWindows\(\{ onScreenOnly: true \}\)/);
+  assert.match(adapter, /desktopWindowState: async/);
+  assert.match(adapter, /getWindowState\(/);
+  assert.match(adapter, /includeScreenshot: true/);
+  assert.match(adapter, /maxImageDimension: 1_200/);
+});
+
+test("desktop adapter sends approved clicks to exact background Cua Driver targets", () => {
+  const main = readFileSync(join(sourceRoot, "desktop/cua-driver.ts"), "utf8");
+  assert.match(main, /desktopClick: async/);
+  assert.match(main, /ActionTarget\.Window\.new\(\{ pid, windowId \}\)/);
+  assert.match(main, /ClickPosition\.Element\.new/);
+  assert.match(main, /ClickPosition\.Coordinates\.new/);
+  assert.match(main, /InputDeliveryMode\.Background/);
+  assert.doesNotMatch(main, /InputDeliveryMode\.Foreground/);
+  assert.match(main, /desktopDriver\.click\(/);
+});
+
+test("desktop adapter sends approved window-local scrolls to the Cua Driver", () => {
+  const main = readFileSync(join(sourceRoot, "desktop/cua-driver.ts"), "utf8");
+  assert.match(main, /desktopScroll: async/);
+  assert.match(main, /desktopDriver\.scroll\(/);
+  assert.match(main, /ActionTarget\.Window\.new\(\{ pid, windowId \}\)/);
+  assert.match(main, /ScrollDirection\./);
+  assert.match(main, /ScrollBy\./);
+  assert.match(main, /BigInt\(amount\)/);
+});
+
+test("desktop execution uncertainty preserves the exact tool in session audit", () => {
+  const runner = readFileSync(join(sourceRoot, "agent/pi/prompt-runner.ts"), "utf8");
+  assert.match(runner, /tool: event\.type === "security-host-execution-uncertain" \? "bash" : event\.tool/);
+});
+
 test("ships no Swift target, including the retired capture backends", () => {
   // The frontend is Electron. This subsumes the earlier guard against
   // resurrecting the ObservationHelper and CaptureCore capture backends, which
   // only ever existed as Swift targets.
+  // Match the actual root spelling: on case-insensitive macOS filesystems,
+  // existsSync("Tests") also matches the supported lowercase integration tests.
+  const rootEntries = new Set(readdirSync(resolve()));
   for (const path of [
     "Package.swift",
     "Sources",
@@ -228,6 +275,7 @@ test("ships no Swift target, including the retired capture backends", () => {
     "Sources/ObservationHelper",
     "Sources/CaptureCore",
   ]) {
-    assert.equal(existsSync(resolve(path)), false, `${path} should not exist`);
+    assert.equal(rootEntries.has(path.split("/")[0]!) && existsSync(resolve(path)), false,
+      `${path} should not exist`);
   }
 });

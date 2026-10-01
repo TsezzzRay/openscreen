@@ -84,11 +84,21 @@ export class AgentTransport implements AgentGateway {
   }
 
   onActiveRuns(listener: (runs: ActiveRun[]) => void): () => void {
-    const unsubscribe = this.bridge.session.onRuns(listener);
+    let newerBroadcast = false;
+    let active = true;
+    const unsubscribe = this.bridge.session.onRuns((runs) => {
+      newerBroadcast = true;
+      listener(runs);
+    });
     // A window can be created while a run is already going, and the broadcast
     // that opened it is long gone.
-    void this.bridge.session.getRuns().then(listener, () => {});
-    return unsubscribe;
+    void this.bridge.session.getRuns().then((runs) => {
+      if (active && !newerBroadcast) listener(runs);
+    }, () => {});
+    return () => {
+      active = false;
+      unsubscribe();
+    };
   }
 
   onSessionsInvalidated(listener: () => void): () => void {
@@ -110,12 +120,14 @@ export class AgentTransport implements AgentGateway {
       this.pending.set(command.requestId, { onEvent, resolve, reject });
     });
     try {
-      await this.bridge.agent.send(command);
+      // Listen to both immediately: a terminal event or runtime exit can arrive
+      // before Electron acknowledges the IPC send. Neither rejection may be
+      // left unhandled while the other promise is still pending.
+      await Promise.all([this.bridge.agent.send(command), settled]);
     } catch (error) {
       this.pending.delete(command.requestId);
       throw error instanceof Error ? error : new Error(String(error));
     }
-    return settled;
   }
 
   /** Sends a command and returns the first event matching `type`. */

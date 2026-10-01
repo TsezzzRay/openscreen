@@ -11,4 +11,4 @@ eval-submission-*.json
 .worktrees/
 app/out/
 .signing-identity
-native/bin/
+runtime/bin/

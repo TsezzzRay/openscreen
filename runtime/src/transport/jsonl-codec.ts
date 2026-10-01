@@ -74,6 +74,13 @@ export function parseJsonlCommand(line: string): ApplicationCommand {
     case "create_session":
       exact(value, ["requestId", "type"]);
       return { requestId, type };
+    case "list_approvals":
+      exact(value, ["requestId", "type"]);
+      return { requestId, type };
+    case "decide_approval":
+      exact(value, ["requestId", "type", "sessionId", "approvalId", "approved"]);
+      if (typeof value.approved !== "boolean") return invalid();
+      return { requestId, type, sessionId: text(value.sessionId), approvalId: text(value.approvalId), approved: value.approved };
     case "get_session":
       exact(value, ["requestId", "type", "sessionId"]);
       return { requestId, type, sessionId: text(value.sessionId) };

@@ -640,23 +640,22 @@ test("normalizes foreign error codes at the product boundary", async () => {
 
 });
 
-test("abort delegates to Agent after Capture completes", async () => {
+test("abort signals only the owning Agent request after Capture completes", async () => {
   let agentStarted!: () => void;
   const started = new Promise<void>((resolve) => {
     agentStarted = resolve;
   });
-  let rejectPrompt!: (error: unknown) => void;
   let abortCalls = 0;
   const agent = fakeAgent({
-    onPrompt: async () => {
-      agentStarted();
+    prompt: async (_sessionId, _prompt, _onEvent, _onDiagnostic, signal) => {
       return new Promise((_, reject) => {
-        rejectPrompt = reject;
+        assert.ok(signal);
+        signal.addEventListener("abort", () => reject(new AgentServiceError("aborted", "prompt aborted")), { once: true });
+        agentStarted();
       });
     },
     abort: async () => {
       abortCalls += 1;
-      rejectPrompt(new AgentServiceError("aborted", "prompt aborted"));
     },
   });
   const runtime = new ApplicationRuntime({ agent, capture: fakeCapture() });
@@ -682,7 +681,7 @@ test("abort delegates to Agent after Capture completes", async () => {
   });
   await prompt;
 
-  assert.equal(abortCalls, 1);
+  assert.equal(abortCalls, 0);
   assert.deepEqual(promptEvents.at(-1), {
     type: "failed",
     error: { code: "aborted", message: "prompt aborted" },

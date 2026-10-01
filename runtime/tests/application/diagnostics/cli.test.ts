@@ -1,0 +1,35 @@
+import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import test from "node:test";
+import { DiagnosticStore, readDiagnosticTurns } from "../../../src/application/diagnostics/store.js";
+
+const cli = fileURLToPath(new URL("../../../src/application/diagnostics/cli.js", import.meta.url));
+test("CLI lists sessions and shows a persisted run in readable or JSON form", async t => {
+  const root = await mkdtemp(join(tmpdir(), "openscreen-diagnostics-cli-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const store = new DiagnosticStore(root);
+  const trace = store.start({ sessionId: "session-1", requestId: "request-1" });
+  trace.agentEvent({ type: "tool-start", callId: "call-1", name: "bash", input: { command: "SECRET" } });
+  trace.agentEvent({ type: "tool-end", callId: "call-1", name: "bash", isError: true, text: "SECRET" });
+  trace.finish("failed", "provider");
+  await store.close();
+  const turnId = (await readDiagnosticTurns(root))[0].turnId;
+  const list = spawnSync(process.execPath, [cli, "list", "--root", root, "--session", "session-1", "--json"], { encoding: "utf8" });
+  assert.equal(list.status, 0, list.stderr);
+  assert.equal(JSON.parse(list.stdout)[0].turnId, turnId);
+  const show = spawnSync(process.execPath, [cli, "show", turnId, "--root", root], { encoding: "utf8" });
+  assert.equal(show.status, 0, show.stderr);
+  assert.match(show.stdout, /tool_call_ended.*call-1.*bash.*tool_error/);
+  assert.match(show.stdout, /turn_complete.*failed.*provider/);
+  assert.doesNotMatch(show.stdout, /SECRET/);
+  const json = spawnSync(process.execPath, [cli, "show", turnId, "--root", root, "--json"], { encoding: "utf8" });
+  assert.equal(json.status, 0, json.stderr);
+  assert.equal(JSON.parse(json.stdout).records.at(-1).payload.status, "failed");
+  const invalid = spawnSync(process.execPath, [cli, "show", "../../secret", "--root", root], { encoding: "utf8" });
+  assert.equal(invalid.status, 1);
+  assert.match(invalid.stderr, /Invalid Turn ID/);
+});

@@ -68,6 +68,7 @@ function startAgent(): void {
     env: {
       ...process.env,
       ELECTRON_RUN_AS_NODE: "1",
+      OPENSCREEN_APP_PID: String(process.pid),
     },
     onStderr: (line) => process.stderr.write(`[runtime] ${line}\n`),
   });

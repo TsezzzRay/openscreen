@@ -4,6 +4,7 @@ import type {
   AgentPrompt,
   AgentRunEvent,
   AgentService,
+  AgentApprovalRequest,
 } from "../agent/api.js";
 import type {
   CapturedFrameImage,
@@ -18,6 +19,7 @@ import type {
   ApplicationHandler,
   ProductFailure,
 } from "./api.js";
+import type { TurnDiagnosticSink } from "./diagnostics/turn-trace.js";
 
 const CAPTURE_CONTEXT_MAX_CHARACTERS = 12_000;
 type ScreenFrame = CapturedFrameContext["frames"][number];
@@ -31,13 +33,15 @@ export interface ApplicationDiagnostic {
 export interface ApplicationRuntimeOptions {
   agent: AgentService;
   capture: CaptureService;
+  approvals?: { pending(): AgentApprovalRequest[]; decide(id: string, approved: boolean): boolean; close(): void };
   onDiagnostic?: (diagnostic: ApplicationDiagnostic) => void;
+  turnDiagnostics?: (ids: { sessionId: string; requestId: string }) => TurnDiagnosticSink;
 }
 
-type ActivePrompt = {
+type ActiveExecution = {
   sessionId: string;
   controller: AbortController;
-  phase: "capture" | "agent";
+  phase: "capture" | "agent" | "compaction";
 };
 
 function errorMessage(error: unknown): string {
@@ -246,6 +250,12 @@ function mapAgentEvent(
   switch (event.type) {
     case "run-start":
       return { type: "run_started", sessionId };
+    case "approval-requested":
+      return { type: "approval_requested", sessionId, request: event.request };
+    case "approval-decided":
+      return { type: "approval_decided", sessionId, id: event.id, approved: event.approved };
+    case "approval-committed":
+      return { type: "approval_committed", sessionId, id: event.id, callId: event.callId, tool: event.tool, target: event.target };
     case "answer-delta":
       return { type: "answer_delta", sessionId, delta: event.delta };
     case "reasoning-delta":
@@ -283,7 +293,7 @@ function mapAgentEvent(
 }
 
 export class ApplicationRuntime implements ApplicationHandler {
-  private readonly active = new Map<string, ActivePrompt | undefined>();
+  private readonly active = new Map<string, ActiveExecution | undefined>();
   private readonly executions = new Set<Promise<void>>();
 
   constructor(private readonly options: ApplicationRuntimeOptions) {}
@@ -297,10 +307,11 @@ export class ApplicationRuntime implements ApplicationHandler {
   }
 
   async stop(): Promise<void> {
+    this.options.approvals?.close();
     const agentSessions = new Set<string>();
     for (const prompt of this.active.values()) {
       prompt?.controller.abort();
-      if (prompt?.phase === "agent") agentSessions.add(prompt.sessionId);
+      if (prompt !== undefined && prompt.phase !== "capture") agentSessions.add(prompt.sessionId);
     }
     await Promise.allSettled(
       [...agentSessions].map((sessionId) => this.options.agent.abort(sessionId)),
@@ -340,12 +351,24 @@ export class ApplicationRuntime implements ApplicationHandler {
       });
       return;
     }
-    this.active.set(command.requestId, undefined);
+    const active: ActiveExecution | undefined = command.type === "prompt" || command.type === "compact"
+      ? { sessionId: command.sessionId, controller: new AbortController(), phase: command.type === "prompt" ? "capture" : "compaction" }
+      : undefined;
+    this.active.set(command.requestId, active);
+    let trace: TurnDiagnosticSink | undefined;
+    if (command.type === "prompt" || command.type === "compact") {
+      try { trace = this.options.turnDiagnostics?.({ sessionId: command.sessionId, requestId: command.requestId }); }
+      catch { /* A diagnostics initialization failure cannot affect the request. */ }
+    }
     try {
-      await this.dispatch(command, emit);
+      await this.dispatch(command, emit, trace);
+      this.throwIfAborted(active);
       await emit({ type: "completed" });
+      trace?.finish("completed");
     } catch (error) {
-      await emit({ type: "failed", error: failure(error) });
+      const normalized = failure(error);
+      trace?.finish(normalized.code === "aborted" ? "cancelled" : "failed", normalized.code);
+      await emit({ type: "failed", error: normalized });
     } finally {
       this.active.delete(command.requestId);
     }
@@ -354,8 +377,19 @@ export class ApplicationRuntime implements ApplicationHandler {
   private async dispatch(
     command: ApplicationCommand,
     emit: ApplicationEventSink,
+    trace?: TurnDiagnosticSink,
   ): Promise<void> {
     switch (command.type) {
+      case "list_approvals":
+        await emit({ type: "approvals", requests: this.options.approvals?.pending() ?? [] });
+        return;
+      case "decide_approval": {
+        const pending = this.options.approvals?.pending().find(item => item.id === command.approvalId);
+        if (!pending || pending.sessionId !== command.sessionId || !this.options.approvals?.decide(command.approvalId, command.approved)) {
+          throw new ErrorWithCode("invalid-argument", "Approval request is not pending for this session");
+        }
+        return;
+      }
       case "list_sessions":
         await emit({ type: "sessions", sessions: await this.options.agent.listSessions() });
         return;
@@ -372,20 +406,28 @@ export class ApplicationRuntime implements ApplicationHandler {
         });
         return;
       case "prompt":
-        await this.prompt(command, emit);
+        await this.prompt(command, emit, trace);
         return;
       case "abort":
         await this.abort(command);
         await emit({ type: "abort_completed", targetRequestId: command.targetRequestId });
         return;
-      case "compact":
+      case "compact": {
+        const active = this.active.get(command.requestId);
+        this.throwIfAborted(active);
+        trace?.stage("compaction", "start");
+        const result = await this.options.agent.compact(command.sessionId, command.instructions, active?.controller.signal,
+          trace === undefined ? undefined : event => trace.agentDiagnostic(event));
+        this.throwIfAborted(active);
+        trace?.stage("compaction", "end");
         await emit({
           type: "compaction_completed",
           sessionId: command.sessionId,
           automatic: false,
-          result: await this.options.agent.compact(command.sessionId, command.instructions),
+          result,
         });
         return;
+      }
       case "set_thinking":
         await emit({
           type: "state_updated",
@@ -399,44 +441,55 @@ export class ApplicationRuntime implements ApplicationHandler {
   private async prompt(
     command: Extract<ApplicationCommand, { type: "prompt" }>,
     emit: ApplicationEventSink,
+    trace?: TurnDiagnosticSink,
   ): Promise<void> {
-    const active: ActivePrompt = {
-      sessionId: command.sessionId,
-      controller: new AbortController(),
-      phase: "capture",
-    };
-    this.active.set(command.requestId, active);
+    const active = this.active.get(command.requestId)!;
     let context: CapturedContext | undefined;
+    trace?.stage("capture", "start");
     try {
       context = await this.options.capture.capture(
         command.requestId,
         active.controller.signal,
       );
+      trace?.stage("capture", "end");
     } catch (error) {
       if (isAbort(error, active.controller.signal)) {
         throw new ErrorWithCode("aborted", "Request was aborted");
       }
+      trace?.stage("capture", "end", "degraded", "capture-unavailable");
       this.diagnostic("request", error);
     }
     if (active.controller.signal.aborted) {
       throw new ErrorWithCode("aborted", "Request was aborted");
     }
     active.phase = "agent";
+    trace?.stage("agent", "start");
     const result = await this.options.agent.prompt(
       command.sessionId,
       toAgentPrompt(command, context),
       async (event) => {
+        trace?.agentEvent(event);
         const mapped = mapAgentEvent(command.sessionId, event);
         if (mapped !== undefined) await emit(mapped);
       },
+      trace === undefined ? undefined : event => trace.agentDiagnostic(event),
+      active.controller.signal,
     );
+    this.throwIfAborted(active);
+    trace?.stage("agent", "end");
     await emit({
       type: "answer_completed",
       sessionId: command.sessionId,
       answer: result.answer,
       contextUsage: result.contextUsage,
     });
-    const compacted = await this.options.agent.compactIfNeeded(command.sessionId);
+    this.throwIfAborted(active);
+    active.phase = "compaction";
+    trace?.stage("compaction", "start");
+    const compacted = await this.options.agent.compactIfNeeded(command.sessionId, active.controller.signal,
+      trace === undefined ? undefined : event => trace.agentDiagnostic(event));
+    this.throwIfAborted(active);
+    trace?.stage("compaction", "end");
     if (compacted !== undefined) {
       await emit({
         type: "compaction_completed",
@@ -453,9 +506,12 @@ export class ApplicationRuntime implements ApplicationHandler {
     const target = this.active.get(command.targetRequestId);
     if (target === undefined || target.sessionId !== command.sessionId) return;
     target.controller.abort();
-    if (target.phase === "agent") {
-      await this.options.agent.abort(command.sessionId);
-    }
+    // Single-request cancellation is signal-owned. Session-wide abort is
+    // reserved for shutdown; a queued prompt must not cancel another owner.
+  }
+
+  private throwIfAborted(active: ActiveExecution | undefined): void {
+    if (active?.controller.signal.aborted) throw new ErrorWithCode("aborted", "Request was aborted");
   }
 
   private diagnostic(

@@ -6,7 +6,7 @@ import type {
   SessionTreeEntry,
 } from "@earendil-works/pi-agent-core";
 
-import { projectSession } from "../../src/agent/pi/session-projection.js";
+import { projectSession } from "../../../src/agent/pi/session-projection.js";
 
 function message(
   id: string,

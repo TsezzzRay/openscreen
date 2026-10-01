@@ -4,7 +4,7 @@ import type { ProductTranscriptMessage } from "@shared/protocol.ts";
 
 import {
   projectTranscript,
-  restoreLocalAttachments,
+  restoreLiveTurnState,
   sessionToRestore,
 } from "@/store/transcript.ts";
 import { newTurn } from "@/store/types.ts";
@@ -80,7 +80,7 @@ describe("projectTranscript", () => {
   });
 });
 
-describe("restoreLocalAttachments", () => {
+describe("restoreLiveTurnState", () => {
   const attachment = (id: string) => ({
     id,
     path: `/tmp/${id}.png`,
@@ -94,7 +94,7 @@ describe("restoreLocalAttachments", () => {
     ];
     const restored = [newTurn({ id: "r1", question: "same" })];
 
-    expect(restoreLocalAttachments(restored, previous)[0]?.attachments).toEqual([
+    expect(restoreLiveTurnState(restored, previous)[0]?.attachments).toEqual([
       attachment("a"),
     ]);
   });
@@ -110,7 +110,7 @@ describe("restoreLocalAttachments", () => {
       newTurn({ id: "r3", question: "same" }),
     ];
 
-    const result = restoreLocalAttachments(restored, previous);
+    const result = restoreLiveTurnState(restored, previous);
     expect(result[2]?.attachments).toEqual([attachment("b")]);
     expect(result[1]?.attachments).toEqual([attachment("a")]);
     expect(result[0]?.attachments).toEqual([]);
@@ -122,7 +122,7 @@ describe("restoreLocalAttachments", () => {
     ];
     const restored = [newTurn({ id: "r1", question: "same" })];
 
-    expect(restoreLocalAttachments(restored, previous)[0]?.attachments).toEqual([]);
+    expect(restoreLiveTurnState(restored, previous)[0]?.attachments).toEqual([]);
   });
 });
 
@@ -140,4 +140,20 @@ describe("sessionToRestore", () => {
   test("reports nothing to restore when there are no sessions", () => {
     expect(sessionToRestore([], "a")).toBeUndefined();
   });
+});
+
+test("history matching reserves stable IDs before falling back to repeated question text", () => {
+  const attachment = { id: "a", path: "/tmp/a.png", mimeType: "image/png" as const, url: "osfile://local/a" };
+  const previous = [newTurn({ id: "u1", question: "same", attachments: [attachment], approvals: [
+    { id: "grant", callId: "call", tool: "write", target: "/tmp/report", status: "committed" },
+  ] })];
+  const result = restoreLiveTurnState([
+    newTurn({ id: "u1", question: "same" }),
+    newTurn({ id: "u2", question: "same" }),
+  ], previous);
+  expect(result.map(turn => turn.id)).toEqual(["u1", "u2"]);
+  expect(result[0]?.attachments).toEqual([attachment]);
+  expect(result[0]?.approvals).toEqual(previous[0]?.approvals);
+  expect(result[1]?.attachments).toEqual([]);
+  expect(result[1]?.approvals).toEqual([]);
 });

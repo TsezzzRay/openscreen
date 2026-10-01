@@ -11,11 +11,21 @@ import { sessionDisplayName } from "@shared/protocol.ts";
 
 import {
   projectTranscript,
-  restoreLocalAttachments,
+  restoreLiveTurnState,
   sessionToRestore,
 } from "./transcript.ts";
 import { AgentFailureError, type AgentGateway, AgentTransport } from "./transport.ts";
-import { type ChatTurn, newTurn, toProductAttachment } from "./types.ts";
+import { type ChatTurn, isTurnInFlight, newTurn, toProductAttachment } from "./types.ts";
+
+type ApprovalRequest = Extract<ApplicationEvent, { type: "approval_requested" }>["request"];
+type ApprovalChange = Extract<ApplicationEvent, { type: "approval_requested" | "approval_decided" }>;
+
+function applyApprovalChange(requests: ApprovalRequest[], event: ApprovalChange): ApprovalRequest[] {
+  if (event.type === "approval_requested") {
+    return requests.some(item => item.id === event.request.id) ? requests : [...requests, event.request];
+  }
+  return requests.filter(item => item.id !== event.id);
+}
 
 /**
  * Which window this store belongs to. The two renderers share an origin, so
@@ -42,6 +52,9 @@ export interface AgentSnapshot {
   currentTitle: string;
   turns: ChatTurn[];
   activeSessionIds: string[];
+  approvals: ApprovalRequest[];
+  approvalDecisionsInFlight: string[];
+  approvalError?: string | undefined;
   thinking: ProductThinkingLevel;
   isManagingSession: boolean;
   isUpdatingAgentState: boolean;
@@ -65,6 +78,8 @@ const INITIAL: AgentSnapshot = {
   currentTitle: "New Chat",
   turns: [],
   activeSessionIds: [],
+  approvals: [],
+  approvalDecisionsInFlight: [],
   thinking: "off",
   isManagingSession: false,
   isUpdatingAgentState: false,
@@ -96,6 +111,8 @@ export class AgentStore {
    * it and leave the session marked busy forever.
    */
   private readonly localRequestIds = new Set<string>();
+  private readonly approvalRefreshes = new Set<ApprovalChange[]>();
+  private runtimeGeneration = 0;
   private observedRuns: ActiveRun[] = [];
   private readonly selectionKey: string;
 
@@ -104,7 +121,20 @@ export class AgentStore {
     surface: Surface = "main",
   ) {
     this.selectionKey = `${SELECTED_SESSION_KEY}:${surface}`;
-    this.transport.onStatus((status) => this.patch({ status }));
+    this.transport.onStatus((status) => {
+      if (status.state === "ready" || status.state === "stopped") this.runtimeGeneration += 1;
+      this.patch({ status, ...(status.state === "stopped" ? { approvals: [], approvalDecisionsInFlight: [], approvalError: undefined } : {}) });
+      if (status.state === "stopped") {
+        for (const [sessionId, turns] of this.turnCache) {
+          if (turns.some(turn => isTurnInFlight(turn.status))) {
+            this.setTurns(sessionId, turns.map(turn => isTurnInFlight(turn.status)
+              ? { ...turn, status: "failed" as const, error: status.message }
+              : turn));
+          }
+        }
+      }
+      if (status.state === "ready") void this.refreshApprovals();
+    });
     this.transport.onActiveRuns((runs) => this.observeRuns(runs));
     this.transport.onUnclaimedEvent((requestId, event) =>
       this.observeEvent(requestId, event),
@@ -122,6 +152,36 @@ export class AgentStore {
   get isSending(): boolean {
     const id = this.state.currentSessionId;
     return id !== undefined && this.state.activeSessionIds.includes(id);
+  }
+
+  async refreshApprovals(): Promise<void> {
+    const generation = this.runtimeGeneration;
+    const changes: ApprovalChange[] = [];
+    this.approvalRefreshes.add(changes);
+    try {
+      const event = await this.transport.collect({ requestId: crypto.randomUUID(), type: "list_approvals" }, "approvals");
+      if (generation !== this.runtimeGeneration || this.state.status.state === "stopped") return;
+      this.patch({ approvals: changes.reduce(applyApprovalChange, event.requests) });
+    } catch {
+      // A later approval event or explicit refresh can recover the view.
+    } finally {
+      this.approvalRefreshes.delete(changes);
+    }
+  }
+
+  async decideApproval(id: string, approved: boolean): Promise<void> {
+    const request = this.state.approvals.find(item => item.id === id);
+    if (!request || this.state.approvalDecisionsInFlight.includes(id)) return;
+    this.patch({ approvalDecisionsInFlight: [...this.state.approvalDecisionsInFlight, id], approvalError: undefined });
+    try {
+      await this.transport.send({ requestId: crypto.randomUUID(), type: "decide_approval", sessionId: request.sessionId, approvalId: id, approved });
+      this.patch({ approvals: this.state.approvals.filter(item => item.id !== id) });
+    } catch (error) {
+      this.patch({ approvalError: error instanceof Error ? error.message : String(error) });
+      await this.refreshApprovals();
+    } finally {
+      this.patch({ approvalDecisionsInFlight: this.state.approvalDecisionsInFlight.filter(item => item !== id) });
+    }
   }
 
   // ---------------------------------------------------------------- sessions
@@ -302,6 +362,8 @@ export class AgentStore {
   ): void {
     if ("sessionId" in event && event.sessionId !== sessionId) return;
 
+    this.observeApprovalEvent(event);
+
     if (event.type === "compaction_completed") {
       if (event.automatic && this.state.currentSessionId === sessionId) {
         this.patch({ compactionResult: event.result });
@@ -311,8 +373,37 @@ export class AgentStore {
 
     this.updateTurn(sessionId, turnId, (turn) => {
       switch (event.type) {
+        case "failed":
+          return event.error.code === "aborted"
+            ? { ...turn, status: "aborted", error: undefined }
+            : { ...turn, status: "failed", error: event.error.message };
         case "run_started":
           return { ...turn, status: "requesting" };
+        case "approval_requested":
+          return {
+            ...turn,
+            status: "awaiting-approval",
+            approvals: turn.approvals.some(item => item.id === event.request.id) ? turn.approvals : [
+              ...turn.approvals,
+              { id: event.request.id, callId: event.request.callId, tool: event.request.tool, target: event.request.target, status: "pending" as const },
+            ],
+          };
+        case "approval_decided":
+          return {
+            ...turn,
+            status: "requesting",
+            approvals: turn.approvals.map(item => item.id === event.id
+              ? { ...item, status: event.approved ? "approved" : "denied" }
+              : item),
+          };
+        case "approval_committed":
+          return {
+            ...turn,
+            approvals: turn.approvals.some(item => item.id === event.id && item.callId === event.callId)
+              ? turn.approvals.map(item => item.id === event.id && item.callId === event.callId
+                ? { ...item, tool: event.tool, target: event.target, status: "committed" as const } : item)
+              : [...turn.approvals, { id: event.id, callId: event.callId, tool: event.tool, target: event.target, status: "committed" as const }],
+          };
         case "reasoning_delta":
           return { ...turn, status: "generating", reasoning: turn.reasoning + event.delta };
         case "answer_delta":
@@ -321,7 +412,7 @@ export class AgentStore {
           return {
             ...turn,
             status: "completed",
-            answer: event.answer,
+            answer: turn.answer || event.answer,
             ...(event.contextUsage === undefined
               ? {}
               : { contextUsage: event.contextUsage }),
@@ -393,11 +484,31 @@ export class AgentStore {
   }
 
   private observeEvent(requestId: string, event: ApplicationEvent): void {
+    if (event.type === "approval_requested" || event.type === "approval_decided") {
+      this.observeApprovalEvent(event);
+    }
+    if (event.type === "failed") {
+      // Shared run inventory closes before its terminal event is forwarded.
+      // The cached turn retains the existing request ID across file refreshes.
+      for (const [sessionId, turns] of this.turnCache) {
+        if (turns.some(turn => turn.id === requestId)) {
+          this.applyRunEvent(event, sessionId, requestId);
+          return;
+        }
+      }
+      return;
+    }
     if (!("sessionId" in event)) return;
     if (!this.turnCache.has(event.sessionId)) return;
     const run = this.observedRuns.find((item) => item.requestId === requestId);
     this.ensureObservedTurn(event.sessionId, requestId, run?.text ?? "");
     this.applyRunEvent(event, event.sessionId, requestId);
+  }
+
+  private observeApprovalEvent(event: ApplicationEvent): void {
+    if (event.type !== "approval_requested" && event.type !== "approval_decided") return;
+    for (const changes of this.approvalRefreshes) changes.push(event);
+    this.patch({ approvals: applyApprovalChange(this.state.approvals, event) });
   }
 
   private ensureObservedTurn(
@@ -422,7 +533,15 @@ export class AgentStore {
    */
   private async reconcile(sessionId: string): Promise<void> {
     try {
-      this.cacheView(await this.getSession(sessionId));
+      if (this.state.status.state === "stopped") return;
+      const generation = this.runtimeGeneration;
+      const knownTurnIds = new Set((this.turnCache.get(sessionId) ?? []).map(turn => turn.id));
+      const view = await this.getSession(sessionId);
+      if (generation !== this.runtimeGeneration) return;
+      // A newer request can repeat the same question while this read is in
+      // flight. Its live identity must not bind to this older disk snapshot.
+      if ((this.turnCache.get(sessionId) ?? []).some(turn => !knownTurnIds.has(turn.id))) return;
+      this.cacheView(view);
     } catch {
       // The streamed turns stay on screen; reopening the session re-reads it.
     }
@@ -654,7 +773,7 @@ export class AgentStore {
 
   private cacheView(view: ProductSessionView): void {
     const previous = this.turnCache.get(view.session.id) ?? [];
-    const rebound = restoreLocalAttachments(projectTranscript(view.messages), previous);
+    const rebound = restoreLiveTurnState(projectTranscript(view.messages), previous);
     this.sessionViews.set(view.session.id, view);
     this.turnCache.set(view.session.id, rebound);
     if (this.state.currentSessionId === view.session.id) {
