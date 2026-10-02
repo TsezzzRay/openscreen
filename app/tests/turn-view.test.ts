@@ -2,6 +2,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { expect, test } from "vitest";
 
+import { toolSummary } from "../src/renderer/components/ToolStrip.tsx";
 import { TurnView } from "../src/renderer/components/TurnView.tsx";
 import { newTurn } from "../src/renderer/store/types.ts";
 
@@ -16,7 +17,7 @@ test("shows the paused label even after answer text has streamed", () => {
   }));
 
   expect(html).toContain("I found the current value.");
-  expect(html).toContain("paused for approval");
+  expect(html).toContain("Paused for approval");
 });
 
 test("does not show a failed turn's unresolved approval as still waiting", () => {
@@ -80,4 +81,31 @@ test("labels an approved desktop app as a chat-scoped grant", () => {
     }),
   }));
   expect(html).toContain("Application allowed for this chat; action not confirmed");
+});
+
+test("keeps tool steps open while one is running and folds them once all finish", () => {
+  const running = toolSummary([
+    { callId: "a", name: "read", text: "", status: "finished", isError: false },
+    { callId: "b", name: "bash", text: "", status: "running", isError: false },
+  ]);
+  expect(running.running).toBe(true);
+
+  const finished = toolSummary([
+    { callId: "a", name: "read", text: "", status: "finished", isError: false },
+    { callId: "b", name: "bash", text: "", status: "finished", isError: true },
+  ]);
+  expect(finished).toEqual({ running: false, failed: 1, label: "Ran 2 actions · 1 failed" });
+  expect(toolSummary([{ callId: "a", name: "ls", text: "", status: "finished", isError: false }]).label)
+    .toBe("Ran 1 action");
+});
+
+test("renders finished tool steps as a collapsed summary", () => {
+  const html = renderToStaticMarkup(createElement(TurnView, {
+    turn: newTurn({
+      id: "turn-tools",
+      toolActivities: [{ callId: "a", name: "bash", text: "hello\nworld", status: "finished", isError: false }],
+    }),
+  }));
+  expect(html).toContain("Ran 1 action");
+  expect(html).not.toContain("hello");
 });

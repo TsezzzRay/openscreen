@@ -1,38 +1,62 @@
 @import "tailwindcss";
 
 /*
- * OpenScreen is an instrument that reads a screen continuously and keeps a
- * dated record of it. The interface takes its cues from that, not from chat:
+ * OpenScreen sits on top of whatever the user is working in, so the interface
+ * stays out of the way: neutral glass, white primary actions, and no accent
+ * colour in the chrome. Colour is reserved for state.
  *
- *   - Cold neutral glass with a single warm accent. Amber is the colour of a
- *     recording indicator, which is what this application actually is.
- *   - Two type roles carrying one rule: sans is what was *said* (the user's
- *     question, the model's prose) and mono is what was *recorded* (timestamps,
- *     tool names, token counts, key caps, frame provenance). Every piece of
- *     metadata in both windows is mono; no prose ever is.
+ *   - Signal blue marks the one live fact a screen assistant must report at a
+ *     glance: the recorder is running, a screen read is happening, a chat has a
+ *     run in flight.
+ *   - Alert red is for failures and the risk warnings on approvals.
+ *
+ * Sans carries every label and all prose; mono is only for literal machine
+ * text — commands, paths, code, and token counts.
+ *
+ * The palette is dark only. Every colour is a token here so a light palette
+ * can be added as one more block of values.
  */
 @theme {
-  --color-glass: rgba(16, 18, 22, 0.72);
-  --color-glass-raised: rgba(255, 255, 255, 0.05);
-  --color-edge: rgba(255, 255, 255, 0.1);
-  --color-edge-soft: rgba(255, 255, 255, 0.06);
+  --color-ink: rgba(255, 255, 255, 0.94);
+  --color-ink-dim: rgba(255, 255, 255, 0.58);
+  --color-ink-faint: rgba(255, 255, 255, 0.4);
 
-  --color-ink: rgba(255, 255, 255, 0.92);
-  --color-ink-dim: rgba(255, 255, 255, 0.48);
-  --color-ink-faint: rgba(255, 255, 255, 0.28);
+  --color-edge: rgba(255, 255, 255, 0.12);
+  --color-edge-soft: rgba(255, 255, 255, 0.07);
 
-  --color-amber: #ffb454;
-  --color-amber-wash: rgba(255, 180, 84, 0.16);
-  --color-alert: #ff6b5e;
+  --color-fill: rgba(255, 255, 255, 0.05);
+  --color-fill-hover: rgba(255, 255, 255, 0.07);
+  --color-fill-selected: rgba(255, 255, 255, 0.1);
 
-  --color-surface: #101216;
-  --color-surface-raised: #171a20;
-  --color-surface-sunken: #0b0d10;
+  /* The overlay sits on the panel's HUD vibrancy; the main window's sidebar on
+     the sidebar material, with the conversation pane painted opaque. */
+  --color-glass: rgba(28, 28, 30, 0.72);
+  --color-surface: #1c1c1e;
+  --color-surface-sunken: #141416;
+
+  --color-primary: rgba(255, 255, 255, 0.92);
+  --color-on-primary: #111113;
+
+  --color-signal: #0a84ff;
+  --color-alert: #ff5f57;
 
   --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
   --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace;
 
-  --radius-pane: 16px;
+  /* Five sizes, no more. */
+  --text-caption: 12px;
+  --text-caption--line-height: 16px;
+  --text-body: 13px;
+  --text-body--line-height: 20px;
+  --text-ui: 14px;
+  --text-ui--line-height: 22px;
+  --text-title: 16px;
+  --text-title--line-height: 24px;
+  --text-display: 20px;
+  --text-display--line-height: 28px;
+
+  /* Matches the corner mask Electron applies to a frameless vibrant window. */
+  --radius-window: 9px;
 }
 
 @layer base {
@@ -49,17 +73,19 @@
 
   body {
     font-family: var(--font-sans);
+    font-size: var(--text-ui);
+    letter-spacing: -0.005em;
     color: var(--color-ink);
-    /* The overlay document is transparent so the vibrancy layer shows through;
-       the main window paints its own opaque surface. */
+    /* Both documents are transparent so the window's vibrancy shows through;
+       opaque areas paint their own surface. */
     background: transparent;
     overflow: hidden;
   }
 
   :focus-visible {
-    outline: 2px solid var(--color-amber);
+    outline: 2px solid var(--color-signal);
     outline-offset: 2px;
-    border-radius: 4px;
+    border-radius: 6px;
   }
 
   ::-webkit-scrollbar {
@@ -78,34 +104,19 @@
 }
 
 @layer components {
-  /* The eyebrow is the main window's display role: there is no display face,
-     the record register does the work instead. */
-  .eyebrow {
-    font-family: var(--font-mono);
-    font-size: 10px;
-    letter-spacing: 0.14em;
-    text-transform: uppercase;
-    color: var(--color-ink-faint);
-  }
-
-  /* A key cap is a recorded fact about the keyboard, so it is mono too. */
-  .keycap {
-    font-family: var(--font-mono);
-    font-size: 10px;
-    line-height: 1;
-    padding: 3px 5px;
-    color: var(--color-ink-faint);
-    border: 1px solid var(--color-edge);
-    border-radius: 4px;
-    background: var(--color-glass-raised);
-  }
-
   .drag-region {
     -webkit-app-region: drag;
   }
 
   .no-drag {
     -webkit-app-region: no-drag;
+  }
+
+  /* The thin top highlight that makes a glass edge read as a raised pane. */
+  .glass-edge {
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.1),
+      0 0 0 0.5px rgba(0, 0, 0, 0.8);
   }
 }
 
@@ -117,7 +128,7 @@
 @keyframes capture-breath {
   0%,
   100% {
-    opacity: 0.45;
+    opacity: 0.5;
     transform: scale(0.86);
   }
   50% {
@@ -143,20 +154,17 @@
   }
 }
 
-/* Markdown prose. Deliberately narrow in scope: the answer is the only place
-   rich text appears, and it stays in the sans register. */
+/* Markdown prose. The answer is the only place rich text appears. */
 .prose-answer {
-  /* 68ch keeps the answer inside the readable measure at both densities; the
-     overlay is 720px wide and would otherwise run to ~95 characters a line. */
   max-width: 68ch;
-  font-size: 13.5px;
-  line-height: 1.62;
+  font-size: var(--text-ui);
+  line-height: 1.65;
   color: var(--color-ink);
 }
 
 .compact .prose-answer {
-  font-size: 12.5px;
-  line-height: 1.58;
+  font-size: var(--text-body);
+  line-height: 1.62;
 }
 
 .prose-answer > * + * {
@@ -173,7 +181,7 @@
 
 .prose-answer ul,
 .prose-answer ol {
-  padding-left: 1.15em;
+  padding-left: 1.25em;
 }
 
 .prose-answer ul {
@@ -185,38 +193,41 @@
 }
 
 .prose-answer li + li {
-  margin-top: 0.25em;
+  margin-top: 0.3em;
+}
+
+.prose-answer li::marker {
+  color: var(--color-ink-faint);
 }
 
 .prose-answer a {
-  color: var(--color-amber);
+  color: var(--color-ink);
   text-underline-offset: 2px;
   text-decoration: underline;
+  text-decoration-color: var(--color-ink-faint);
 }
 
 .prose-answer code {
   font-family: var(--font-mono);
-  font-size: 0.86em;
-  padding: 1px 4px;
-  border-radius: 4px;
-  background: var(--color-glass-raised);
-  border: 1px solid var(--color-edge-soft);
+  font-size: 0.88em;
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: var(--color-fill-selected);
 }
 
 .prose-answer pre {
   font-family: var(--font-mono);
-  font-size: 12px;
-  line-height: 1.5;
+  font-size: var(--text-caption);
+  line-height: 1.55;
   padding: 10px 12px;
-  border-radius: 8px;
-  background: rgba(0, 0, 0, 0.32);
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.3);
   border: 1px solid var(--color-edge-soft);
   overflow-x: auto;
 }
 
 .prose-answer pre code {
   padding: 0;
-  border: 0;
   background: transparent;
 }
 
@@ -230,7 +241,7 @@
   display: block;
   overflow-x: auto;
   border-collapse: collapse;
-  font-size: 12.5px;
+  font-size: var(--text-body);
 }
 
 .prose-answer th,
@@ -241,7 +252,6 @@
 }
 
 .prose-answer th {
-  font-family: var(--font-mono);
   font-weight: 500;
   color: var(--color-ink-dim);
 }

@@ -40,7 +40,6 @@ const bridge = {
       subscribe(IPC.sessionsInvalidated, listener),
   },
   overlay: {
-    resize: (contentHeight: number): void => ipcRenderer.send(IPC.overlayResize, contentHeight),
     hide: (): void => ipcRenderer.send(IPC.overlayHide),
   },
   window: {

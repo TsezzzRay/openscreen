@@ -123,13 +123,32 @@ when the overlay is summoned. It calls `setContentProtection(true)`, which keeps
 it out of every screen capture including the runtime's own ScreenCaptureKit
 recorder.
 
-The overlay's height is driven from its rendered content, growing downward from
-a fixed top edge between `OVERLAY_COLLAPSED_HEIGHT` and `OVERLAY_MAX_HEIGHT`.
+The overlay has one fixed size, `OVERLAY_WIDTH` by `OVERLAY_HEIGHT` (720 by
+500), in every state; the window never resizes. Its HUD vibrancy is masked to
+the small corner radius Electron gives a frameless vibrant window, and the
+renderer's panel uses the same radius so no material shows outside it. Under the input bar, the
+conversation, the chat picker, pending approvals, and pending attachments share
+one scrolling region. Idle, that region shows the current chat with earlier
+turns dimmed, so a follow-up starts where the chat left off. Overlay keys:
 
-The main window is an ordinary opaque window and is deliberately **not**
+| Key | Action |
+| --- | --- |
+| `Enter` | Send, or open the highlighted chat while the picker is shown |
+| `Up` / `Down` | Recall earlier questions, or move through the picker |
+| `Command + O` | Show or hide the chat picker |
+| `Command + N` | Start a new chat |
+| `Command + C` | Copy the latest answer when nothing is selected; with a selection, the ordinary copy |
+| `Command + Enter` | Open the main window |
+| `Escape` | Close the picker, else stop the run in progress, else hide the overlay |
+
+The application forces the dark appearance, because the interface has only a
+dark palette and the window materials would otherwise turn light with the
+system. The main window uses the macOS sidebar vibrancy material; the renderer paints
+the conversation pane opaque over it. The window is deliberately **not**
 content-protected, so the user can screenshot it. It stays out of the recorder
 through the `capture.screenpipe.ignoredWindows` title filter in `config.json`
-instead.
+instead. Its sidebar groups chats by creation day and filters them by name; the
+header holds the thinking level and compaction.
 
 `Option + Space` means "let me ask something", and where that lands depends on
 what is in front. With the main window focused there is already a composer on
@@ -204,12 +223,15 @@ paths inside that directory rather than enabling `file://` access.
 
 ## Design
 
-Two type roles carry one rule: sans is what was *said* — the question and the
-model's prose — and mono is what was *recorded* — timestamps, tool names, token
-counts, key caps, and image counts. Colour is cold neutral glass with a single
-amber accent, which is also the capture indicator: it breathes while the runtime
-that records the screen is alive and greys when it stops. Tokens are defined once
-in `src/renderer/styles.css`.
+The chrome is neutral dark glass with no accent colour: primary actions are
+white on black and selection is a lighter fill. Colour marks state only. Signal
+blue is the capture indicator — it breathes while the runtime that records the
+screen is alive and greys when it stops — and also marks a screen read or a chat
+with a run in flight; red marks failures and approval risk warnings. Sans carries
+labels and prose; mono is only for literal machine text such as commands, paths,
+code, and token counts. Icons come from `lucide-react`. The palette is dark only.
+Colour, type scale, and radius tokens are defined once in
+`src/renderer/styles.css`.
 
 ## Development launch
 
@@ -235,7 +257,8 @@ The suites cover the development-only architecture, transcript projection,
 per-request correlation and failure mapping in the transport, the store's
 session and prompt lifecycles, adoption of runs started in the other window,
 per-surface chat selection, `SessionHub` run bookkeeping, the attachment path
-guard, overlay height clamping, and the stdio framing in `AgentClient` against a
+guard, finished tool steps folding into a summary, the overlay's Command+C
+selection rule, sidebar date grouping, and the stdio framing in `AgentClient` against a
 real child process.
 
 The opt-in [desktop host smoke](../runtime/evals/README.md) also

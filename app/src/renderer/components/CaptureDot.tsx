@@ -23,18 +23,18 @@ export function CaptureDot({
 
   return (
     <span
-      className="relative flex size-2.5 shrink-0 items-center justify-center"
+      className="relative flex size-5 shrink-0 items-center justify-center"
       role="img"
       aria-label={label}
       title={label}
     >
       {attaching && !stopped ? (
-        <span className="absolute size-2.5 rounded-full bg-amber/35" />
+        <span className="absolute size-4 rounded-full bg-signal/30 motion-safe:animate-ping" />
       ) : null}
       <span
         className={[
-          "size-1.5 rounded-full transition-colors",
-          stopped ? "bg-ink-faint" : "bg-amber",
+          "size-2 rounded-full transition-colors",
+          stopped ? "bg-ink-faint" : "bg-signal shadow-[0_0_10px_var(--color-signal)]",
           !stopped && !attaching ? "capture-live" : "",
         ].join(" ")}
       />

@@ -4,8 +4,8 @@ import { rendererEntry } from "../renderer-entry.ts";
 
 /**
  * The full application window: sessions, history, transcript, and settings.
- * A conventional opaque desktop window — the translucent treatment belongs to
- * the overlay alone.
+ * The window carries the sidebar material so the chat list reads as a macOS
+ * source list; the renderer paints the conversation pane opaque on top of it.
  */
 export function createMainWindow(preload: string): BrowserWindow {
   const window = new BrowserWindow({
@@ -17,7 +17,8 @@ export function createMainWindow(preload: string): BrowserWindow {
     title: "OpenScreen",
     titleBarStyle: "hiddenInset",
     trafficLightPosition: { x: 14, y: 18 },
-    backgroundColor: "#14161a",
+    vibrancy: "sidebar",
+    backgroundColor: "#00000000",
     webPreferences: { preload, sandbox: false },
   });
 

@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 
-import { BrowserWindow, app, dialog, ipcMain } from "electron";
+import { BrowserWindow, app, dialog, ipcMain, nativeTheme } from "electron";
 
 import type { ActiveRun, AgentStatus, ImportedAttachment } from "@shared/ipc.ts";
 import { IPC } from "@shared/ipc.ts";
@@ -20,7 +20,7 @@ import {
   ensureScreenRecordingAccess,
 } from "./permissions.ts";
 import { createMainWindow } from "./windows/main-window.ts";
-import { createOverlayWindow, positionOverlay, resizeOverlay } from "./windows/overlay.ts";
+import { createOverlayWindow, positionOverlay } from "./windows/overlay.ts";
 
 // The development application runs against the current checkout. This path
 // owns the built runtime, config.json, local tool working directory, and
@@ -48,6 +48,16 @@ function broadcast(channel: string, payload: unknown): void {
     if (window.isDestroyed()) continue;
     window.webContents.send(channel, payload);
   }
+}
+
+/**
+ * Status is pushed only when it changes, so a window that finishes loading after
+ * the runtime became ready would otherwise keep showing "starting" forever.
+ */
+function replayStatusOnLoad(window: BrowserWindow): void {
+  window.webContents.on("did-finish-load", () => {
+    if (!window.isDestroyed()) window.webContents.send(IPC.agentStatus, lastStatus);
+  });
 }
 
 function runtimeEntry(): string {
@@ -126,6 +136,7 @@ function openMainWindow(): void {
     return;
   }
   mainWindow = createMainWindow(preload);
+  replayStatusOnLoad(mainWindow);
   mainWindow.on("closed", () => {
     mainWindow = undefined;
   });
@@ -171,12 +182,6 @@ function registerIpc(): void {
     attachments.remove(path),
   );
 
-  ipcMain.on(IPC.overlayResize, (_event, contentHeight: number) => {
-    if (overlay !== undefined && !overlay.isDestroyed()) {
-      resizeOverlay(overlay, contentHeight);
-    }
-  });
-
   ipcMain.on(IPC.overlayHide, () => overlay?.hide());
   ipcMain.on(IPC.windowOpenMain, () => openMainWindow());
 }
@@ -185,6 +190,9 @@ app.whenReady().then(async () => {
   // Accessory policy: no Dock icon until the full interface is opened, matching
   // an assistant that lives in the overlay.
   app.dock?.hide();
+  // The interface has only a dark palette, so the window materials must not
+  // follow a light system appearance.
+  nativeTheme.themeSource = "dark";
   handleAttachmentScheme(attachments);
   registerIpc();
 
@@ -204,6 +212,7 @@ app.whenReady().then(async () => {
   }
 
   overlay = createOverlayWindow(preload);
+  replayStatusOnLoad(overlay);
   overlay.on("blur", () => {
     // The panel is only ever key while the app is inactive, so losing key
     // status means the user moved on.

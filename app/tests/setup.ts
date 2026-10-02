@@ -11,7 +11,7 @@ Object.defineProperty(window, "openscreen", {
       importBuffers: vi.fn(async () => []),
       remove: vi.fn(async () => {}),
     },
-    overlay: { resize: vi.fn(), hide: vi.fn(), onFocusRequested: vi.fn(() => () => {}) },
+    overlay: { hide: vi.fn(), onFocusRequested: vi.fn(() => () => {}) },
     shell: { openMainWindow: vi.fn() },
   },
 });

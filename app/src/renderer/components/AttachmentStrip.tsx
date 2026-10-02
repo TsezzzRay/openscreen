@@ -1,3 +1,5 @@
+import { X } from "lucide-react";
+
 import type { ImportedAttachment } from "@shared/ipc.ts";
 
 export function AttachmentStrip({
@@ -17,13 +19,13 @@ export function AttachmentStrip({
           <button
             type="button"
             onClick={() => onOpen?.(attachment)}
-            className="block overflow-hidden rounded-md border border-edge"
+            className="block overflow-hidden rounded-lg border border-edge transition-colors hover:border-white/25"
             aria-label="Open screenshot"
           >
             <img
               src={attachment.url}
               alt=""
-              className="h-11 w-16 object-cover"
+              className="h-12 w-[72px] object-cover"
               draggable={false}
             />
           </button>
@@ -31,10 +33,10 @@ export function AttachmentStrip({
             <button
               type="button"
               onClick={() => onRemove(attachment.id)}
-              className="absolute -right-1.5 -top-1.5 flex size-4 items-center justify-center rounded-full border border-edge bg-surface-sunken font-mono text-[9px] text-ink-dim opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
+              className="absolute -right-1.5 -top-1.5 flex size-[18px] items-center justify-center rounded-full border border-edge bg-surface text-ink-dim opacity-0 transition-opacity hover:text-ink group-hover:opacity-100 focus-visible:opacity-100"
               aria-label="Remove screenshot"
             >
-              ✕
+              <X size={11} strokeWidth={2.5} aria-hidden />
             </button>
           )}
         </li>

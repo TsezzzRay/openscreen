@@ -51,7 +51,6 @@ export const IPC = {
   attachmentsPick: "attachments:pick",
   attachmentsImport: "attachments:import",
   attachmentsRemove: "attachments:remove",
-  overlayResize: "overlay:resize",
   overlayHide: "overlay:hide",
   sessionRuns: "session:runs",
   sessionRunsGet: "session:runs-get",

@@ -4,11 +4,10 @@ import { BrowserWindow, screen, shell } from "electron";
 
 import { rendererEntry } from "../renderer-entry.ts";
 
+// One fixed size for every state: the bar never moves and the panel never
+// reflows while an answer streams in. The conversation scrolls inside it.
 export const OVERLAY_WIDTH = 720;
-export const OVERLAY_COLLAPSED_HEIGHT = 60;
-// Tall enough for the chat picker or a scrolled-back conversation under the
-// bar, while still reading as a panel rather than a second window.
-export const OVERLAY_MAX_HEIGHT = 720;
+export const OVERLAY_HEIGHT = 500;
 const OVERLAY_TOP_MARGIN = 14;
 
 /**
@@ -25,7 +24,7 @@ const OVERLAY_TOP_MARGIN = 14;
 export function createOverlayWindow(preload: string): BrowserWindow {
   const window = new BrowserWindow({
     width: OVERLAY_WIDTH,
-    height: OVERLAY_COLLAPSED_HEIGHT,
+    height: OVERLAY_HEIGHT,
     show: false,
     frame: false,
     transparent: true,
@@ -40,6 +39,9 @@ export function createOverlayWindow(preload: string): BrowserWindow {
     type: "panel",
     alwaysOnTop: true,
     acceptFirstMouse: true,
+    // Electron masks the vibrancy of a frameless window to a small fixed corner
+    // radius; the renderer's panel uses the same radius (`--radius-window` in
+    // styles.css) so no material shows outside its corners.
     vibrancy: "hud",
     // The application is never frontmost by design, so without this the
     // vibrancy layer would permanently render in its washed-out inactive state.
@@ -71,25 +73,6 @@ export function positionOverlay(window: BrowserWindow): void {
     Math.round(workArea.y + OVERLAY_TOP_MARGIN),
     false,
   );
-}
-
-/** The window height a given content height maps to, clamped to the panel's range. */
-export function overlayHeight(contentHeight: number): number {
-  if (!Number.isFinite(contentHeight)) return OVERLAY_COLLAPSED_HEIGHT;
-  return Math.round(
-    Math.min(OVERLAY_MAX_HEIGHT, Math.max(OVERLAY_COLLAPSED_HEIGHT, contentHeight)),
-  );
-}
-
-/**
- * Grows or shrinks the overlay around its own top edge so the command bar stays
- * put while the answer panel expands below it.
- */
-export function resizeOverlay(window: BrowserWindow, contentHeight: number): void {
-  const bounds = window.getBounds();
-  const height = overlayHeight(contentHeight);
-  if (height === bounds.height) return;
-  window.setBounds({ ...bounds, height }, false);
 }
 
 export const overlayPreloadPath = (root: string): string => join(root, "preload", "index.mjs");

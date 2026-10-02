@@ -16,9 +16,6 @@ vi.mock("electron", () => ({
 
 const { AttachmentStore, attachmentUrl } = await import("@/../main/attachments.ts");
 const { AgentClient } = await import("@/../main/agent-client.ts");
-const { overlayHeight, OVERLAY_COLLAPSED_HEIGHT, OVERLAY_MAX_HEIGHT } = await import(
-  "@/../main/windows/overlay.ts"
-);
 const { SessionHub } = await import("@/../main/session-hub.ts");
 
 describe("AttachmentStore path guard", () => {
@@ -49,24 +46,6 @@ describe("AttachmentStore path guard", () => {
   test("encodes the path so a custom-scheme URL round-trips", () => {
     const path = "/data/OpenScreen/user-attachments/a b.png";
     expect(decodeURIComponent(new URL(attachmentUrl(path)).pathname.slice(1))).toBe(path);
-  });
-});
-
-describe("overlay height", () => {
-  test("never collapses below the command bar", () => {
-    expect(overlayHeight(10)).toBe(OVERLAY_COLLAPSED_HEIGHT);
-  });
-
-  test("never grows past the panel ceiling", () => {
-    expect(overlayHeight(5000)).toBe(OVERLAY_MAX_HEIGHT);
-  });
-
-  test("follows the content between those bounds", () => {
-    expect(overlayHeight(240.4)).toBe(240);
-  });
-
-  test("falls back to the collapsed height for a non-finite measurement", () => {
-    expect(overlayHeight(Number.NaN)).toBe(OVERLAY_COLLAPSED_HEIGHT);
   });
 });
 

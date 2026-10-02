@@ -1,7 +1,6 @@
 import { useEffect, useRef, type ClipboardEvent, type KeyboardEvent } from "react";
 
-const MIN_HEIGHT = 22;
-const MAX_HEIGHT = 120;
+const MAX_LINES = 5;
 
 export interface ComposerProps {
   value: string;
@@ -37,8 +36,11 @@ export function Composer({
   useEffect(() => {
     const element = textarea.current;
     if (element === null) return;
+    // The line height comes from the caller's type size, so one line is the
+    // floor and five lines the ceiling at whatever size the surface uses.
+    const line = Number.parseFloat(getComputedStyle(element).lineHeight) || 22;
     element.style.height = "0px";
-    element.style.height = `${Math.min(MAX_HEIGHT, Math.max(MIN_HEIGHT, element.scrollHeight))}px`;
+    element.style.height = `${Math.min(line * MAX_LINES, Math.max(line, element.scrollHeight))}px`;
   }, [value]);
 
   useEffect(() => {
@@ -85,7 +87,7 @@ export function Composer({
       onChange={(event) => onChange(event.target.value)}
       onKeyDown={handleKeyDown}
       onPaste={handlePaste}
-      className={`no-drag w-full resize-none bg-transparent leading-[22px] text-ink outline-none placeholder:text-ink-faint disabled:opacity-50 ${className}`}
+      className={`no-drag w-full resize-none bg-transparent text-ink outline-none placeholder:text-ink-faint disabled:opacity-50 ${className}`}
     />
   );
 }
